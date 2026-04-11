@@ -10,6 +10,19 @@
 
 ---
 
+## Mathematical Foundations To Implement
+
+The judging core is not a generic score blender. The implementation must explicitly include:
+
+- reference-class forecasting through empirical-Bayes base-rate priors
+- liquidity-adjusted market and prediction-market priors
+- Bayesian evidence updates expressed as bounded log Bayes factors
+- regularized logarithmic opinion pooling in log-odds space
+- proper scoring rules: Brier score and log score
+- online expert reweighting with exponentially weighted updates
+- isotonic calibration with logistic fallback
+- bootstrap-based uncertainty estimation over evidence clusters and judge subsets
+
 ## Target File Layout
 
 ```text
@@ -64,8 +77,11 @@
         |   |-- models.py
         |   |-- api.py
         |   `-- scoring/
+        |       |-- priors.py
         |       |-- aggregate.py
         |       |-- calibration.py
+        |       |-- uncertainty.py
+        |       |-- weights.py
         |       `-- judges/
         `-- tests/
 ```
@@ -147,6 +163,20 @@ Implement Zod schemas and exported types for:
 - `CalibrationSnapshot`
 
 Use exact enum values for source families and judgment statuses so API and UI cannot drift.
+
+Ensure the mathematical trace fields are part of the schema from day one:
+
+- `JudgeOpinion.logBayesFactor`
+- `JudgeOpinion.reliabilityWeight`
+- `JudgeOpinion.dependencyDiscount`
+- `VerdictTrace.priorProbability`
+- `VerdictTrace.rawPosteriorProbability`
+- `VerdictTrace.ensembleMethod`
+- `VerdictTrace.calibrationMethod`
+- `VerdictTrace.uncertaintyMethod`
+- `CalibrationSnapshot.baseRateParams`
+- `CalibrationSnapshot.marketPriorParams`
+- `CalibrationSnapshot.onlineLearningParams`
 
 **Step 2: Add representative schema tests**
 
@@ -579,9 +609,14 @@ git commit -m "feat: scaffold judge service"
 - Create: `services/judge/app/scoring/judges/community_signal.py`
 - Create: `services/judge/app/scoring/judges/open_web_research.py`
 - Create: `services/judge/app/scoring/judges/cross_examiner.py`
+- Create: `services/judge/app/scoring/priors.py`
 - Create: `services/judge/app/scoring/aggregate.py`
+- Create: `services/judge/app/scoring/uncertainty.py`
+- Create: `services/judge/app/scoring/weights.py`
 - Create: `services/judge/tests/test_judges.py`
+- Create: `services/judge/tests/test_priors.py`
 - Create: `services/judge/tests/test_aggregate.py`
+- Create: `services/judge/tests/test_uncertainty.py`
 
 **Step 1: Implement judge functions**
 
@@ -596,42 +631,79 @@ At minimum, each judge must return:
 
 - probability
 - confidence
+- log Bayes factor
+- reliability weight
+- dependency discount
 - rationale
 - evidence ids
 - warnings
 
-**Step 2: Implement aggregation math**
+`market_prior.py` must produce both:
+
+- a liquidity-adjusted market prior probability
+- a bounded market-derived log Bayes factor contribution
+
+**Step 2: Implement forecasting-theory modules**
+
+Implement `priors.py` with:
+
+- empirical-Bayes base-rate prior estimation
+- shrinkage toward a global prior for sparse event classes
+- liquidity adjustment for market and Polymarket-derived priors
+
+Implement `weights.py` with:
+
+- initial expert weights
+- exponentially weighted online updates from rolling proper-score regret
+- caps and floors to prevent one judge from collapsing to zero or one
+
+Implement `uncertainty.py` with:
+
+- block bootstrap over evidence clusters
+- judge-subset resampling
+- conversion of bootstrap spread into `confidenceLow` and `confidenceHigh`
+
+**Step 3: Implement aggregation math**
 
 Implement:
 
 - probability to log-odds conversion
-- weighted pooling
+- Bayes-factor to posterior-log-odds updates
+- regularized logarithmic opinion pooling
 - freshness decay
 - quality modifiers
+- dependency discounts
 - contradiction penalty
+- isotonic-ready raw posterior output
 - confidence-band generation
 
-**Step 3: Add deterministic tests**
+**Step 4: Add deterministic tests**
 
 Cover:
 
 - probability edge cases near 0 and 1
+- empirical-Bayes priors shrinking sparse classes toward the global base rate
+- market priors being discounted when spread is high and liquidity is low
+- Bayes-factor contributions composing additively in log-odds space
+- dependency penalties reducing double-counting from overlapping judges
 - disagreement penalties lowering confidence
 - stale evidence contributing less than fresh evidence
+- bootstrap uncertainty widening when evidence clusters disagree
+- expert weights moving toward better-scoring judges over repeated resolved events
 
-**Step 4: Run judge and math tests**
+**Step 5: Run judge and math tests**
 
 Run:
 
 ```bash
-cd services/judge && uv run pytest -q tests/test_judges.py tests/test_aggregate.py
+cd services/judge && uv run pytest -q tests/test_judges.py tests/test_priors.py tests/test_aggregate.py tests/test_uncertainty.py
 ```
 
 Expected:
 
 - deterministic scoring tests pass
 
-**Step 5: Commit scoring engine**
+**Step 6: Commit scoring engine**
 
 Run:
 
@@ -655,8 +727,11 @@ Add functions to:
 
 - compute Brier score
 - compute log loss
-- fit a calibration model from historical predictions and outcomes
-- return judge weights and calibration parameters
+- compute reliability curves and calibration error by event family
+- fit isotonic calibration from historical predictions and outcomes
+- fall back to logistic or beta calibration when isotonic is underdetermined
+- update expert weights with exponentially weighted regret
+- return judge weights, calibration parameters, and online-learning parameters
 
 **Step 2: Expose the calibration API**
 
@@ -675,6 +750,9 @@ Backtest route should:
 Cover:
 
 - metric calculations
+- isotonic calibration output remaining monotonic
+- logistic fallback activating on small samples
+- weight updates favoring judges with lower proper-score regret
 - stable output format
 - snapshot persistence
 

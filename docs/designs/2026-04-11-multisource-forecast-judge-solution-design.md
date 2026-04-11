@@ -9,6 +9,8 @@
 
 Cassandra is a research system for producing traceable probability judgments about future events using multiple evidence families: public web sources, official and government publications, community discussions, traditional market signals, and prediction markets. The system does not rely on a single LLM verdict. Instead, it combines a panel of specialized judges with explicit mathematical aggregation and post-hoc calibration.
 
+Mathematically, the v1 system is grounded in Bayesian updating, reference-class forecasting, prediction-market priors, logarithmic opinion pooling, proper scoring rules, online expert weighting, and bootstrap-based uncertainty estimation. The goal is not to let the LLM invent the math. The goal is to force every forecast through a reproducible probabilistic pipeline.
+
 The v1 product is a hybrid monorepo with:
 
 - a TypeScript orchestration API
@@ -243,44 +245,120 @@ Each judge returns:
 
 - `probability`
 - `confidence`
+- `logBayesFactor`
+- `reliabilityWeight`
+- `dependencyDiscount`
 - `rationale`
 - `evidenceIds`
 - `warnings`
 - `missingEvidence`
 
-### 8.4 Stage 4: Mathematical aggregation
+### 8.4 Forecasting theories used in v1
+
+The mathematical core is based on a small set of explicit forecasting theories rather than a generic "weighted average" approach.
+
+- **Reference-class forecasting**
+  - Every event should start from a base-rate prior when a relevant historical class exists, such as regulatory approvals, election outcomes, product launches, or court decisions.
+  - This reduces anchoring on the latest headlines and follows the forecasting principle that outside-view rates should constrain inside-view narratives.
+- **Bayesian updating**
+  - New evidence is treated as a likelihood update against a prior, not as a fresh forecast from scratch.
+  - In implementation terms, each judge contributes a log Bayes factor or log-likelihood ratio rather than only a free-form probability.
+- **Prediction-market theory**
+  - Polymarket and traditional market signals are treated as noisy consensus priors.
+  - Market prices are not assumed correct; they are liquidity- and spread-adjusted because thin markets and manipulated markets are less informative.
+- **Logarithmic opinion pools**
+  - Multi-judge aggregation uses log-opinion pooling in log-odds space instead of a plain arithmetic average.
+  - This preserves probabilistic coherence better than linear averaging and makes judge contributions additive after transformation.
+- **Proper scoring rules**
+  - Brier score and logarithmic score are the main evaluation signals for judge quality, calibration quality, and rolling weight updates.
+  - This keeps weight learning aligned with real probabilistic accuracy rather than narrative plausibility.
+- **Online learning for forecaster weights**
+  - Judge weights should evolve over time using exponentially weighted updates or similar regret-minimizing expert algorithms.
+  - Judges that repeatedly forecast poorly lose influence without requiring hard-coded manual retuning.
+- **Calibration theory**
+  - Raw ensemble outputs are post-processed with monotonic calibration methods so predicted probabilities better match empirical frequencies.
+  - For v1, isotonic regression is preferred when there is enough data; logistic or beta calibration is the fallback for smaller samples.
+- **Uncertainty estimation**
+  - Confidence bands are not hand-waved from "confidence" text. They are derived from forecast dispersion, evidence coverage, calibration quality, and bootstrap resampling.
+
+### 8.5 Stage 4: Mathematical inference and aggregation
 
 The aggregation layer is explicit and reproducible:
 
-1. Convert judge probabilities into log-odds.
-2. Apply base judge weights from the latest calibration snapshot.
-3. Apply evidence-quality modifiers.
-4. Apply freshness decay where older evidence contributes less.
-5. Apply disagreement penalties when the cross-examiner identifies unsupported divergence.
-6. Clamp extreme values from any single judge to avoid domination.
-7. Convert combined log-odds back to probability.
+1. Construct a base-rate prior from the best available reference class.
+2. Blend the base-rate prior with liquidity-adjusted market and prediction-market priors.
+3. Convert each judge output into a log Bayes factor or log-odds contribution.
+4. Apply base judge weights from the latest calibration snapshot.
+5. Apply evidence-quality modifiers, freshness decay, and dependency discounts.
+6. Apply disagreement penalties when the cross-examiner identifies unsupported divergence.
+7. Pool the adjusted opinions with a regularized logarithmic opinion pool.
+8. Convert the pooled posterior log-odds back to raw probability.
+9. Pass the raw probability through the latest approved calibration model.
 
 Conceptual formula:
 
 ```text
-final_log_odds =
+prior_log_odds =
+  alpha * logit(base_rate_prior)
+  + (1 - alpha) * logit(liquidity_adjusted_market_prior)
+
+posterior_log_odds =
   prior_log_odds
-  + sum(judge_weight_j * evidence_quality_j * freshness_decay_j * opinion_log_odds_j)
+  + sum(
+      judge_weight_j
+      * reliability_j
+      * dependency_discount_j
+      * evidence_quality_j
+      * freshness_decay_j
+      * log_bayes_factor_j
+    )
   - contradiction_penalty
-  - uncertainty_penalty
+
+calibrated_probability = calibration_map(sigmoid(posterior_log_odds))
 ```
 
-### 8.5 Stage 5: Calibration
+Where:
+
+- `alpha` is the shrinkage term between outside-view and market-view priors
+- `dependency_discount_j` reduces overweighting when judges rely on overlapping evidence
+- `freshness_decay_j` follows an exponential forgetting curve
+- `calibration_map` is the learned monotonic post-processing function
+
+### 8.6 Selected algorithms for v1
+
+The v1 implementation should use the following concrete algorithms:
+
+- **Empirical-Bayes base-rate prior**
+  - Use historical event frequencies where available and shrink sparse classes toward a global prior.
+- **Liquidity-adjusted market prior**
+  - Convert market prices to log-odds, then discount them by spread, depth, and recent volatility to reduce noise from thin markets.
+- **Judge-level Bayes-factor mapping**
+  - Every judge returns a bounded `logBayesFactor` in addition to a probability, so aggregation is mathematically interpretable.
+- **Regularized log-opinion pool**
+  - Combine judges in log-odds space with caps and dependency discounts.
+- **Exponential recency weighting**
+  - Use half-life based decay so older evidence loses force smoothly rather than via hard cutoffs.
+- **Exponentially weighted expert updates**
+  - Update judge weights over time according to recent proper-score regret.
+- **Isotonic calibration with logistic fallback**
+  - Prefer isotonic regression on larger outcome sets; use logistic calibration when the dataset is too small for stable isotonic fits.
+- **Block bootstrap uncertainty bands**
+  - Resample evidence clusters and judge subsets to estimate forecast spread without assuming independence.
+
+### 8.7 Stage 5: Calibration
 
 Raw probability is not the final answer. A calibration layer fits historical predicted probabilities against actual outcomes. For v1:
 
 - store outcome labels as binary values
 - compute Brier score and log loss per judge and aggregate
-- fit a simple monotonic calibrator or logistic calibration model
+- compute reliability curves and calibration error by event family
+- fit isotonic calibration when data volume allows
+- fall back to logistic or beta calibration when the sample is small
+- update rolling judge weights with exponentially weighted regret
 - version the resulting calibration snapshot
 - include `weightVersion` and `calibrationVersion` in every verdict
 
-### 8.6 Stage 6: Confidence band
+### 8.8 Stage 6: Confidence band
 
 The confidence band should reflect:
 
@@ -289,6 +367,7 @@ The confidence band should reflect:
 - judge agreement
 - recency
 - calibration quality on similar historical events
+- bootstrap dispersion across evidence clusters and judge subsets
 
 The band is not a separate forecast. It is an uncertainty envelope around the final probability.
 
@@ -340,6 +419,9 @@ The band is not a separate forecast. It is an uncertainty envelope around the fi
 - `judgeName`
 - `probability`
 - `confidence`
+- `logBayesFactor`
+- `reliabilityWeight`
+- `dependencyDiscount`
 - `rationale`
 - `evidenceIds`
 - `warnings`
@@ -348,11 +430,16 @@ The band is not a separate forecast. It is an uncertainty envelope around the fi
 
 - `id`
 - `eventId`
+- `priorProbability`
+- `rawPosteriorProbability`
 - `finalProbability`
 - `confidenceLow`
 - `confidenceHigh`
 - `judgeOpinions`
 - `weightBreakdown`
+- `ensembleMethod`
+- `calibrationMethod`
+- `uncertaintyMethod`
 - `conflicts`
 - `missingEvidence`
 - `citations`
@@ -375,7 +462,10 @@ The band is not a separate forecast. It is an uncertainty envelope around the fi
 - `createdAt`
 - `trainingWindow`
 - `judgeWeights`
+- `baseRateParams`
+- `marketPriorParams`
 - `calibrationParams`
+- `onlineLearningParams`
 - `metrics`
 - `approved`
 
