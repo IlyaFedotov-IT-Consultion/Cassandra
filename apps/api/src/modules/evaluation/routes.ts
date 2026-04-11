@@ -18,6 +18,12 @@ const BaselineNameSchema = z.enum([
   "model_with_polymarket",
 ]);
 
+const ImportPolymarketBenchmarksInputSchema = z
+  .object({
+    benchmarkSetId: z.string().min(1).optional(),
+  })
+  .strict();
+
 const CreateEvaluationRunInputSchema = z
   .object({
     benchmarkSetId: z.string().min(1),
@@ -55,10 +61,21 @@ export function registerEvaluationRoutes(
     args.getEvaluationRun ?? ((runId: string) => getEvaluationRunById(args.pool, runId));
 
   app.post("/evaluation/benchmarks/import/polymarket", async (_request, reply) => {
+    const parsed = ImportPolymarketBenchmarksInputSchema.safeParse(_request.body ?? {});
+
+    if (!parsed.success) {
+      reply.code(400);
+      return {
+        error: "Invalid benchmark import input",
+        issues: parsed.error.issues,
+      };
+    }
+
     const markets = await importAndStoreResolvedPolymarketBenchmarks({
       pool: args.pool,
       baseUrl: args.env.POLYMARKET_GAMMA_URL,
       fetchImpl: args.fetchImpl,
+      benchmarkSetId: parsed.data.benchmarkSetId,
     });
 
     reply.code(201);

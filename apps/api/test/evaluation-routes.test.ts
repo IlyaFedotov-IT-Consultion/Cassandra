@@ -92,6 +92,124 @@ describe("evaluation routes", () => {
     }
   });
 
+  it("imports resolved Polymarket benchmarks into an explicit benchmark set", async () => {
+    const captured: unknown[][] = [];
+    const pool = {
+      async query(_text: string, params?: unknown[]) {
+        captured.push(params ?? []);
+
+        return {
+          rows: [
+            {
+              id: "market-1",
+              benchmark_set_id: "custom-benchmark-set",
+              title: "Will Example Corp launch Product X by 2026-12-31?",
+              resolution_criteria: "Official launch announcement by deadline.",
+              theme: "technology",
+              volume: 100000,
+              liquidity: 25000,
+              resolved_at: new Date("2026-12-31T23:59:59Z"),
+              resolved_value: true,
+              market_url: "https://polymarket.com/event/example-product-x",
+            },
+          ],
+        };
+      },
+    } as never;
+
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify([
+            {
+              id: "market-1",
+              question: "Will Example Corp launch Product X by 2026-12-31?",
+              resolution_criteria: "Official launch announcement by deadline.",
+              end_date_iso: "2026-12-31T23:59:59Z",
+              closed: true,
+              archived: false,
+              market_slug: "example-product-x",
+              volume_num: 100000,
+              liquidity_num: 25000,
+              outcomes: ["Yes", "No"],
+              outcome_prices: [1, 0],
+              tags: [{ slug: "technology" }],
+            },
+          ]),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        ),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/benchmarks/import/polymarket",
+        payload: {
+          benchmarkSetId: "custom-benchmark-set",
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({
+        imported: 1,
+        markets: [
+          expect.objectContaining({
+            benchmarkSetId: "custom-benchmark-set",
+            id: "market-1",
+          }),
+        ],
+      });
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toContain("custom-benchmark-set");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects invalid benchmark import input", async () => {
+    const app = buildApp({
+      dbPool: {
+        query: async () => ({ rows: [] }),
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/benchmarks/import/polymarket",
+        payload: {
+          benchmarkSetId: "",
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: "Invalid benchmark import input",
+        issues: expect.any(Array),
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("creates evaluation runs through the evaluation route", async () => {
     const createdRun: EvaluationRun = {
       id: "run-1",
