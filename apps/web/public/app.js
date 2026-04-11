@@ -11,6 +11,8 @@ const eventsList = document.getElementById("events-list");
 const eventsEmpty = document.getElementById("events-empty");
 const watchlistsList = document.getElementById("watchlists-list");
 const watchlistsEmpty = document.getElementById("watchlists-empty");
+const judgmentsList = document.getElementById("judgments-list");
+const judgmentsEmpty = document.getElementById("judgments-empty");
 const eventFeedback = document.getElementById("event-form-feedback");
 const watchlistFeedback = document.getElementById("watchlist-form-feedback");
 const judgmentOutput = document.getElementById("judgment-output");
@@ -60,6 +62,65 @@ function setStatus(target, value, tone = "default") {
   target.textContent = value;
   target.style.color =
     tone === "ok" ? "#245b41" : tone === "error" ? "#8c2f1c" : "var(--ink)";
+}
+
+function renderJudgments(judgments) {
+  judgmentsList.innerHTML = "";
+
+  if (!Array.isArray(judgments) || judgments.length === 0) {
+    judgmentsEmpty.textContent = "No judgments yet. Trigger one from an event card.";
+    return;
+  }
+
+  judgmentsEmpty.textContent = "";
+
+  for (const judgment of judgments) {
+    const probability = judgment.verdictTrace?.finalProbability;
+    const card = document.createElement("article");
+    card.className = "data-card";
+    card.innerHTML = `
+      <h3>${judgment.status}</h3>
+      <div class="meta-row">
+        <span class="pill">Judgment: ${judgment.id}</span>
+      </div>
+      <div class="meta-row">
+        <span class="pill">Event: ${judgment.eventId}</span>
+        <span class="pill">Updated: ${new Date(judgment.updatedAt).toLocaleString()}</span>
+      </div>
+      <div class="meta-row">
+        <span class="pill">Probability: ${
+          typeof probability === "number" ? `${(probability * 100).toFixed(1)}%` : "pending"
+        }</span>
+        <span class="pill">Trace: ${judgment.verdictTrace?.status ?? "not available"}</span>
+      </div>
+      <button type="button">View details</button>
+    `;
+
+    const button = card.querySelector("button");
+    button.addEventListener("click", async () => {
+      judgmentOutput.textContent = "Loading…";
+
+      try {
+        const detail = await requestJson(`/judgments/${encodeURIComponent(judgment.id)}`);
+        judgmentOutput.textContent = JSON.stringify(detail, null, 2);
+      } catch (error) {
+        judgmentOutput.textContent =
+          error instanceof Error ? error.message : "Unable to fetch judgment";
+      }
+    });
+
+    judgmentsList.appendChild(card);
+  }
+}
+
+async function refreshJudgments() {
+  try {
+    const judgments = await requestJson("/judgments");
+    renderJudgments(judgments);
+  } catch (error) {
+    judgmentsEmpty.textContent =
+      `Unable to load judgments: ${error instanceof Error ? error.message : "Unknown error"}`;
+  }
 }
 
 async function refreshServiceStatus() {
@@ -119,6 +180,7 @@ function renderEvents(events) {
         });
 
         judgmentOutput.textContent = JSON.stringify(judgment, null, 2);
+        await refreshJudgments();
         button.textContent = "Run fixture judgment";
       } catch (error) {
         judgmentOutput.textContent = String(error instanceof Error ? error.message : error);
@@ -268,6 +330,7 @@ document.getElementById("judgment-lookup-form").addEventListener("submit", async
   try {
     const judgment = await requestJson(`/judgments/${encodeURIComponent(judgmentId)}`);
     judgmentOutput.textContent = JSON.stringify(judgment, null, 2);
+    await refreshJudgments();
   } catch (error) {
     judgmentOutput.textContent = error instanceof Error ? error.message : "Unable to fetch judgment";
   }
@@ -277,4 +340,5 @@ await Promise.all([
   refreshServiceStatus(),
   refreshEvents(),
   refreshWatchlists(),
+  refreshJudgments(),
 ]);
