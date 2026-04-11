@@ -7,6 +7,7 @@ from fastapi import APIRouter
 
 from app.models import CalibrationRequest, CalibrationSnapshot, JudgeRequest, VerdictTrace
 from app.scoring.aggregate import aggregate_posterior
+from app.scoring.calibration import fit_calibration_snapshot
 from app.scoring.judges.community_signal import evaluate as evaluate_community_signal
 from app.scoring.judges.cross_examiner import evaluate as evaluate_cross_examiner
 from app.scoring.judges.official_records import evaluate as evaluate_official_records
@@ -190,37 +191,7 @@ def judge(request: JudgeRequest) -> VerdictTrace:
 
 @router.post("/calibrate", response_model=CalibrationSnapshot)
 def calibrate(request: CalibrationRequest) -> CalibrationSnapshot:
-    resolved_outcome_count = len(request.resolved_outcomes)
-    if resolved_outcome_count >= 100:
-        regime = "steady"
-        method = "isotonic"
-    elif resolved_outcome_count >= 20:
-        regime = "warming"
-        method = "logistic"
-    else:
-        regime = "cold_start"
-        method = "identity"
-
-    return CalibrationSnapshot.model_validate(
-        {
-            "id": f"snapshot-{resolved_outcome_count}",
-            "createdAt": _utc_now(),
-            "trainingWindow": "all_time",
-            "judgeWeights": {
-                "official_records": 1 / 3,
-                "community_signal": 1 / 3,
-                "open_web_research": 1 / 3,
-            },
-            "baseRateParams": {},
-            "marketPriorParams": {},
-            "calibrationParams": {"method": method},
-            "onlineLearningParams": {"enabled": regime != "cold_start"},
-            "metrics": {
-                "traceCount": len(request.historical_traces),
-                "outcomeCount": resolved_outcome_count,
-            },
-            "weightRegime": regime,
-            "resolvedOutcomeCount": resolved_outcome_count,
-            "approved": False,
-        }
+    return fit_calibration_snapshot(
+        historical_traces=[trace.model_dump(by_alias=True) for trace in request.historical_traces],
+        resolved_outcomes=[outcome.model_dump(by_alias=True) for outcome in request.resolved_outcomes],
     )
