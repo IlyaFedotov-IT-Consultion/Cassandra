@@ -1,13 +1,19 @@
 import Fastify from "fastify";
 import type { Pool } from "pg";
+import type { Redis } from "ioredis";
 
+import type { AppEnv } from "./config/env.js";
+import { getEnv } from "./config/env.js";
 import { registerBacktestRoutes } from "./modules/backtests/routes.js";
 import { registerEventRoutes } from "./modules/events/routes.js";
+import { registerJudgmentRoutes } from "./modules/judgments/routes.js";
 import { registerOutcomeRoutes } from "./modules/outcomes/routes.js";
 import { registerWatchlistRoutes } from "./modules/watchlists/routes.js";
 
 export interface ReadinessChecks {
   dbPool?: Pool;
+  env?: AppEnv;
+  redisConnection?: Redis;
   checkDb?: () => Promise<void>;
   checkRedis?: () => Promise<void>;
 }
@@ -49,6 +55,11 @@ export function buildApp(checks: ReadinessChecks = {}) {
     registerWatchlistRoutes(app, checks.dbPool);
     registerOutcomeRoutes(app, checks.dbPool);
     registerBacktestRoutes(app, checks.dbPool);
+    registerJudgmentRoutes(app, {
+      pool: checks.dbPool,
+      env: checks.env ?? getEnv(),
+      redisConnection: checks.redisConnection,
+    });
   }
 
   return app;

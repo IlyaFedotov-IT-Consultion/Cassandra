@@ -105,6 +105,23 @@ export async function createCalibrationSnapshot(
   return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
 }
 
+export async function getLatestCalibrationSnapshot(
+  pool: Pool,
+): Promise<CalibrationSnapshot | null> {
+  const result = await pool.query(`
+    SELECT *
+    FROM calibration_snapshots
+    ORDER BY created_at DESC
+    LIMIT 1
+  `);
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
+}
+
 export async function retrainCalibrationSnapshot(
   pool: Pool,
   resolvedOutcomeCount: number,
