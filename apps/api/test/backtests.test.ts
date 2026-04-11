@@ -71,6 +71,20 @@ describe("backtest retrain route", () => {
       async query(text: string, params?: unknown[]) {
         capturedQueries.push({ text, params });
 
+        if (text.includes("FROM outcomes") && !text.includes("verdict_trace")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                event_id: "event-1",
+                resolved_value: true,
+                resolved_at: new Date("2026-12-31T23:59:59Z"),
+                resolution_source_url: "https://example.com/resolution",
+              },
+            ],
+          };
+        }
+
         if (text.includes("FROM outcomes") && text.includes("verdict_trace")) {
           return {
             rowCount: 1,

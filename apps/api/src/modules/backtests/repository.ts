@@ -135,7 +135,17 @@ export async function loadCalibrationTrainingData(
   historicalTraces: VerdictTrace[];
   resolvedOutcomes: OutcomeInput[];
 }> {
-  const result = await pool.query(`
+  const outcomesResult = await pool.query(`
+    SELECT
+      event_id,
+      resolved_value,
+      resolved_at,
+      resolution_source_url
+    FROM outcomes
+    ORDER BY created_at ASC, event_id ASC
+  `);
+
+  const tracesResult = await pool.query(`
     SELECT DISTINCT ON (o.event_id)
       o.event_id,
       o.resolved_value,
@@ -152,8 +162,7 @@ export async function loadCalibrationTrainingData(
   const historicalTraces: VerdictTrace[] = [];
   const resolvedOutcomes: OutcomeInput[] = [];
 
-  for (const row of result.rows as Record<string, unknown>[]) {
-    const trace = VerdictTraceSchema.parse(row.verdict_trace);
+  for (const row of outcomesResult.rows as Record<string, unknown>[]) {
     const outcome = OutcomeInputSchema.parse({
       eventId: String(row.event_id),
       resolvedValue: Boolean(row.resolved_value),
@@ -161,8 +170,13 @@ export async function loadCalibrationTrainingData(
       resolutionSourceUrl: String(row.resolution_source_url),
     });
 
-    historicalTraces.push(trace);
     resolvedOutcomes.push(outcome);
+  }
+
+  for (const row of tracesResult.rows as Record<string, unknown>[]) {
+    const trace = VerdictTraceSchema.parse(row.verdict_trace);
+
+    historicalTraces.push(trace);
   }
 
   return {
