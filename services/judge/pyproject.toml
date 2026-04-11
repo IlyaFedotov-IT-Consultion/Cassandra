@@ -1,0 +1,28 @@
+[project]
+name = "cassandra-judge"
+version = "0.1.0"
+description = "Python judge service for the Cassandra forecasting prototype"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.116.1,<1.0.0",
+  "pydantic>=2.11.0,<3.0.0",
+  "uvicorn>=0.35.0,<1.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "datamodel-code-generator>=0.31.0,<1.0.0",
+  "httpx>=0.28.1,<1.0.0",
+  "pytest>=8.4.0,<9.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
