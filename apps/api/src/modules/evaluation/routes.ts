@@ -79,9 +79,23 @@ export function registerEvaluationRoutes(
       };
     }
 
-    const run = await runEvaluation(parsed.data);
-    reply.code(201);
-    return run;
+    try {
+      const run = await runEvaluation(parsed.data);
+      reply.code(201);
+      return run;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "No benchmark markets available for evaluation"
+      ) {
+        reply.code(404);
+        return {
+          error: error.message,
+        };
+      }
+
+      throw error;
+    }
   });
 
   app.get("/evaluation/runs/:id", async (request, reply) => {

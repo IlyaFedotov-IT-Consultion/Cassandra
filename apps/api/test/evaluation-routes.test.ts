@@ -145,6 +145,72 @@ describe("evaluation routes", () => {
     }
   });
 
+  it("rejects invalid evaluation run input", async () => {
+    const app = buildApp({
+      dbPool: {
+        query: async () => ({ rows: [] }),
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/runs",
+        payload: {
+          benchmarkSetId: "",
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: "Invalid evaluation run input",
+        issues: expect.any(Array),
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 404 when no benchmark markets are available for the requested evaluation run", async () => {
+    const app = buildApp({
+      dbPool: {
+        query: async () => ({ rows: [] }),
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+      runEvaluation: async () => {
+        throw new Error("No benchmark markets available for evaluation");
+      },
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/runs",
+        payload: {
+          benchmarkSetId: "benchmark-set-1",
+        },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        error: "No benchmark markets available for evaluation",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("fetches persisted evaluation runs through the evaluation route", async () => {
     const createdRun: EvaluationRun = {
       id: "run-1",
