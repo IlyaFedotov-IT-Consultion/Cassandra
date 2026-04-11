@@ -21,6 +21,7 @@ export interface ReadinessChecks {
   fetchImpl?: typeof fetch;
   runEvaluation?: RegisterEvaluationRoutesArgs["runEvaluation"];
   getEvaluationRun?: RegisterEvaluationRoutesArgs["getEvaluationRun"];
+  listBenchmarkSets?: RegisterEvaluationRoutesArgs["listBenchmarkSets"];
   checkDb?: () => Promise<void>;
   checkRedis?: () => Promise<void>;
 }
@@ -72,6 +73,7 @@ export function buildApp(checks: ReadinessChecks = {}) {
       redisConnection: checks.redisConnection,
       runEvaluation: checks.runEvaluation,
       getEvaluationRun: checks.getEvaluationRun,
+      listBenchmarkSets: checks.listBenchmarkSets,
     });
     registerJudgmentRoutes(app, {
       pool: checks.dbPool,

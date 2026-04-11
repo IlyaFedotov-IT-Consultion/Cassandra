@@ -8,7 +8,7 @@ import type { EvaluationRun } from "@cassandra/shared";
 import type { AppEnv } from "../../config/env.js";
 import { createEvidenceCacheStore, createJudgeCacheStore } from "../judgments/service.js";
 import { importAndStoreResolvedPolymarketBenchmarks } from "./polymarketImport.js";
-import { getEvaluationRunById } from "./repository.js";
+import { getEvaluationRunById, listBenchmarkSets, type BenchmarkSetSummary } from "./repository.js";
 import { runHistoricalEvaluation, type RunHistoricalEvaluationInput } from "./replay.js";
 
 const BaselineNameSchema = z.enum([
@@ -39,6 +39,7 @@ export interface RegisterEvaluationRoutesArgs {
   redisConnection?: Redis;
   runEvaluation?: (input: RunHistoricalEvaluationInput) => Promise<EvaluationRun>;
   getEvaluationRun?: (runId: string) => Promise<EvaluationRun | null>;
+  listBenchmarkSets?: () => Promise<BenchmarkSetSummary[]>;
 }
 
 export function registerEvaluationRoutes(
@@ -59,6 +60,7 @@ export function registerEvaluationRoutes(
       }));
   const getEvaluationRun =
     args.getEvaluationRun ?? ((runId: string) => getEvaluationRunById(args.pool, runId));
+  const getBenchmarkSets = args.listBenchmarkSets ?? (() => listBenchmarkSets(args.pool));
 
   app.post("/evaluation/benchmarks/import/polymarket", async (request, reply) => {
     const parsed = ImportPolymarketBenchmarksInputSchema.safeParse(request.body ?? {});
@@ -130,6 +132,8 @@ export function registerEvaluationRoutes(
       throw error;
     }
   });
+
+  app.get("/evaluation/benchmark-sets", async () => getBenchmarkSets());
 
   app.get("/evaluation/runs/:id", async (request, reply) => {
     const params = request.params as { id?: string };

@@ -42,6 +42,14 @@ export interface EvaluationPredictionRecord extends EvaluationPredictionInput {
   createdAt: string;
 }
 
+export interface BenchmarkSetSummary {
+  benchmarkSetId: string;
+  marketCount: number;
+  earliestResolvedAt: string;
+  latestResolvedAt: string;
+  themes: string[];
+}
+
 function toIsoString(value: unknown): string {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
 }
@@ -136,6 +144,16 @@ function mapEvaluationPredictionRow(
         ? (row.metadata as Record<string, unknown>)
         : {},
     createdAt: toIsoString(row.created_at),
+  };
+}
+
+function mapBenchmarkSetSummaryRow(row: Record<string, unknown>): BenchmarkSetSummary {
+  return {
+    benchmarkSetId: String(row.benchmark_set_id),
+    marketCount: Number(row.market_count),
+    earliestResolvedAt: toIsoString(row.earliest_resolved_at),
+    latestResolvedAt: toIsoString(row.latest_resolved_at),
+    themes: Array.isArray(row.themes) ? row.themes.map((theme) => String(theme)) : [],
   };
 }
 
@@ -237,6 +255,22 @@ export async function listBenchmarkMarkets(
       `);
 
   return result.rows.map((row) => mapBenchmarkMarketRow(row as Record<string, unknown>));
+}
+
+export async function listBenchmarkSets(pool: Pool): Promise<BenchmarkSetSummary[]> {
+  const result = await pool.query(`
+    SELECT
+      benchmark_set_id,
+      COUNT(*) AS market_count,
+      MIN(resolved_at) AS earliest_resolved_at,
+      MAX(resolved_at) AS latest_resolved_at,
+      ARRAY_AGG(DISTINCT theme ORDER BY theme) AS themes
+    FROM benchmark_markets
+    GROUP BY benchmark_set_id
+    ORDER BY latest_resolved_at DESC, benchmark_set_id ASC
+  `);
+
+  return result.rows.map((row) => mapBenchmarkSetSummaryRow(row as Record<string, unknown>));
 }
 
 export async function upsertBenchmarkPriceSnapshots(

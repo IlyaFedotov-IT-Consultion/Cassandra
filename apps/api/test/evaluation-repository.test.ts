@@ -7,6 +7,7 @@ import {
   getEvaluationRunById,
   insertEvaluationPredictions,
   listBenchmarkMarkets,
+  listBenchmarkSets,
   listEvaluationPredictionsForRun,
   listPriceSnapshotsForBenchmark,
   upsertBenchmarkPriceSnapshots,
@@ -66,12 +67,7 @@ describe("evaluation repository", () => {
     const pool = { query } as never;
 
     const inserted = await upsertBenchmarkMarkets(pool, [benchmark]);
-    const listed = await (
-      listBenchmarkMarkets as unknown as (
-        pool: typeof pool,
-        benchmarkSetId: string,
-      ) => ReturnType<typeof listBenchmarkMarkets>
-    )(pool, benchmark.benchmarkSetId);
+    const listed = await listBenchmarkMarkets(pool, benchmark.benchmarkSetId);
 
     expect(inserted).toEqual([
       {
@@ -118,6 +114,47 @@ describe("evaluation repository", () => {
     await expect(upsertBenchmarkMarkets(pool, [benchmark])).rejects.toThrow(
       "Benchmark market market-1 already belongs to benchmark set benchmark-set-1",
     );
+  });
+
+  it("lists benchmark set summaries", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      rows: [
+        {
+          benchmark_set_id: "custom-benchmark-set",
+          market_count: 2,
+          earliest_resolved_at: new Date("2026-12-01T00:00:00Z"),
+          latest_resolved_at: new Date("2026-12-31T23:59:59Z"),
+          themes: ["crypto", "technology"],
+        },
+        {
+          benchmark_set_id: "polymarket_recent_resolved",
+          market_count: 1,
+          earliest_resolved_at: new Date("2026-11-15T00:00:00Z"),
+          latest_resolved_at: new Date("2026-11-15T00:00:00Z"),
+          themes: ["politics"],
+        },
+      ],
+    });
+    const pool = { query } as never;
+    const summaries = await listBenchmarkSets(pool);
+
+    expect(summaries).toEqual([
+      {
+        benchmarkSetId: "custom-benchmark-set",
+        marketCount: 2,
+        earliestResolvedAt: "2026-12-01T00:00:00.000Z",
+        latestResolvedAt: "2026-12-31T23:59:59.000Z",
+        themes: ["crypto", "technology"],
+      },
+      {
+        benchmarkSetId: "polymarket_recent_resolved",
+        marketCount: 1,
+        earliestResolvedAt: "2026-11-15T00:00:00.000Z",
+        latestResolvedAt: "2026-11-15T00:00:00.000Z",
+        themes: ["politics"],
+      },
+    ]);
+    expect(query.mock.calls[0]?.[0]).toContain("GROUP BY benchmark_set_id");
   });
 
   it("creates and hydrates evaluation runs with slice metrics", async () => {

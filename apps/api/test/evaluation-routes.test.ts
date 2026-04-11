@@ -279,6 +279,54 @@ describe("evaluation routes", () => {
     }
   });
 
+  it("lists benchmark set summaries through the evaluation route", async () => {
+    const pool = {
+      async query(_text: string) {
+        return {
+          rows: [
+            {
+              benchmark_set_id: "custom-benchmark-set",
+              market_count: 2,
+              earliest_resolved_at: new Date("2026-12-01T00:00:00Z"),
+              latest_resolved_at: new Date("2026-12-31T23:59:59Z"),
+              themes: ["crypto", "technology"],
+            },
+          ],
+        };
+      },
+    } as never;
+
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/evaluation/benchmark-sets",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual([
+        {
+          benchmarkSetId: "custom-benchmark-set",
+          marketCount: 2,
+          earliestResolvedAt: "2026-12-01T00:00:00.000Z",
+          latestResolvedAt: "2026-12-31T23:59:59.000Z",
+          themes: ["crypto", "technology"],
+        },
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("creates evaluation runs through the evaluation route", async () => {
     const createdRun: EvaluationRun = {
       id: "run-1",
