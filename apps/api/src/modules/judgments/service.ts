@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  type EvidenceItem,
   VerdictTraceSchema,
   type CalibrationSnapshot,
   type JudgeOpinion,
@@ -115,6 +116,16 @@ export interface JudgmentServiceDeps {
 export interface CreateJudgmentInput {
   eventId: string;
   evaluationTime?: string;
+}
+
+export interface EvaluateEventForecastArgs {
+  env: AppEnv;
+  event: EventRecord;
+  evaluationTime: string;
+  evidence: EvidenceItem[];
+  calibrationSnapshot: CalibrationSnapshot;
+  judgeCacheStore?: JudgeCacheStore;
+  judgeClient?: JudgeClient;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -545,6 +556,44 @@ async function loadJudgmentDetails(
   };
 }
 
+export async function evaluateEventForecast(
+  args: EvaluateEventForecastArgs,
+): Promise<VerdictTrace> {
+  const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
+  const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
+  const evidenceForJudge: JudgmentEvidenceItem[] = args.evidence.map((item) => ({
+    id: item.id,
+    title: item.title,
+    url: item.url,
+    summary: item.summary,
+    publishedAt: item.publishedAt,
+    sourceFamily: item.sourceFamily,
+    stance: item.stance,
+  }));
+
+  return getOrCreateCachedJudgeResult({
+    cacheStore: judgeCacheStore,
+    mode: args.env.CASSANDRA_ADAPTER_MODE,
+    cacheKeyParts: {
+      judgeName: "panel",
+      eventId: args.event.id,
+      evaluationTime: args.evaluationTime,
+      evidenceIds: evidenceForJudge.map((item) => item.id),
+      judgeModelVersion: JUDGE_MODEL_VERSION,
+      promptVersion: PROMPT_VERSION,
+      snapshotId: args.calibrationSnapshot.id,
+    },
+    load: async () =>
+      judgeClient.judge({
+        event: args.event,
+        evaluationTime: args.evaluationTime,
+        evidence: evidenceForJudge,
+        calibrationSnapshot: args.calibrationSnapshot,
+        mode: args.env.CASSANDRA_ADAPTER_MODE,
+      }),
+  });
+}
+
 export async function runJudgment(args: JudgmentServiceDeps & {
   input: CreateJudgmentInput;
 }): Promise<JudgmentRecordDetails> {
@@ -570,33 +619,14 @@ export async function runJudgment(args: JudgmentServiceDeps & {
     cacheStore: evidenceCacheStore,
   });
   const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
-  const evidenceForJudge: JudgmentEvidenceItem[] = collected.items.map((item) => ({
-    id: item.id,
-    title: item.title,
-    url: item.url,
-    summary: item.summary,
-    publishedAt: item.publishedAt,
-    sourceFamily: item.sourceFamily,
-    stance: item.stance,
-  }));
-  const verdictTrace = await getOrCreateCachedJudgeResult({
-    cacheStore: judgeCacheStore,
-    mode: args.env.CASSANDRA_ADAPTER_MODE,
-    cacheKeyParts: {
-      judgeName: "panel",
-      evidenceIds: evidenceForJudge.map((item) => item.id),
-      judgeModelVersion: JUDGE_MODEL_VERSION,
-      promptVersion: PROMPT_VERSION,
-      snapshotId: calibrationSnapshot.id,
-    },
-    load: async () =>
-      judgeClient.judge({
-        event,
-        evaluationTime,
-        evidence: evidenceForJudge,
-        calibrationSnapshot,
-        mode: args.env.CASSANDRA_ADAPTER_MODE,
-      }),
+  const verdictTrace = await evaluateEventForecast({
+    env: args.env,
+    event,
+    evaluationTime,
+    evidence: collected.items,
+    calibrationSnapshot,
+    judgeCacheStore,
+    judgeClient,
   });
 
   await appendJudgmentTrace(args.pool, judgment.id, verdictTrace);

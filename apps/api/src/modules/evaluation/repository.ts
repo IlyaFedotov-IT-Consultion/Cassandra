@@ -8,6 +8,40 @@ import {
 } from "@cassandra/shared";
 import type { Pool } from "pg";
 
+type Queryable = Pick<Pool, "query">;
+
+export interface BenchmarkPriceSnapshotInput {
+  benchmarkMarketId: string;
+  cutoffAt: string;
+  probability: number;
+  volume: number;
+  liquidity: number;
+  source: string;
+}
+
+export interface BenchmarkPriceSnapshotRecord extends BenchmarkPriceSnapshotInput {
+  id: string;
+  createdAt: string;
+}
+
+export interface EvaluationPredictionInput {
+  benchmarkMarketId: string;
+  baseline: EvaluationRun["baselines"][number];
+  cutoffAt: string;
+  predictedProbability: number;
+  outcome: boolean | null;
+  theme?: string;
+  horizon?: string;
+  sourceConfiguration?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface EvaluationPredictionRecord extends EvaluationPredictionInput {
+  id: string;
+  evaluationRunId: string;
+  createdAt: string;
+}
+
 function toIsoString(value: unknown): string {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
 }
@@ -60,6 +94,47 @@ function mapSliceMetricRow(
         ? undefined
         : Number(row.win_rate_vs_polymarket),
     sampleSize: Number(row.sample_size),
+  };
+}
+
+function mapBenchmarkPriceSnapshotRow(
+  row: Record<string, unknown>,
+): BenchmarkPriceSnapshotRecord {
+  return {
+    id: String(row.id),
+    benchmarkMarketId: String(row.benchmark_market_id),
+    cutoffAt: toIsoString(row.cutoff_at),
+    probability: Number(row.probability),
+    volume: Number(row.volume),
+    liquidity: Number(row.liquidity),
+    source: String(row.source),
+    createdAt: toIsoString(row.created_at),
+  };
+}
+
+function mapEvaluationPredictionRow(
+  row: Record<string, unknown>,
+): EvaluationPredictionRecord {
+  return {
+    id: String(row.id),
+    evaluationRunId: String(row.evaluation_run_id),
+    benchmarkMarketId: String(row.benchmark_market_id),
+    baseline: String(row.baseline) as EvaluationRun["baselines"][number],
+    cutoffAt: toIsoString(row.cutoff_at),
+    predictedProbability: Number(row.predicted_probability),
+    outcome:
+      row.outcome === null || row.outcome === undefined ? null : Boolean(row.outcome),
+    theme: row.theme === null || row.theme === undefined ? undefined : String(row.theme),
+    horizon: row.horizon === null || row.horizon === undefined ? undefined : String(row.horizon),
+    sourceConfiguration:
+      row.source_configuration === null || row.source_configuration === undefined
+        ? undefined
+        : String(row.source_configuration),
+    metadata:
+      row.metadata && typeof row.metadata === "object"
+        ? (row.metadata as Record<string, unknown>)
+        : {},
+    createdAt: toIsoString(row.created_at),
   };
 }
 
@@ -126,78 +201,230 @@ export async function listBenchmarkMarkets(pool: Pool): Promise<BenchmarkMarket[
   return result.rows.map((row) => mapBenchmarkMarketRow(row as Record<string, unknown>));
 }
 
+export async function upsertBenchmarkPriceSnapshots(
+  pool: Pool,
+  snapshots: BenchmarkPriceSnapshotInput[],
+): Promise<BenchmarkPriceSnapshotRecord[]> {
+  const inserted: BenchmarkPriceSnapshotRecord[] = [];
+
+  for (const snapshot of snapshots) {
+    const result = await pool.query(
+      `
+        INSERT INTO benchmark_price_snapshots (
+          benchmark_market_id,
+          cutoff_at,
+          probability,
+          volume,
+          liquidity,
+          source
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (benchmark_market_id, cutoff_at, source)
+        DO UPDATE SET
+          probability = EXCLUDED.probability,
+          volume = EXCLUDED.volume,
+          liquidity = EXCLUDED.liquidity
+        RETURNING *
+      `,
+      [
+        snapshot.benchmarkMarketId,
+        snapshot.cutoffAt,
+        snapshot.probability,
+        snapshot.volume,
+        snapshot.liquidity,
+        snapshot.source,
+      ],
+    );
+
+    inserted.push(mapBenchmarkPriceSnapshotRow(result.rows[0] as Record<string, unknown>));
+  }
+
+  return inserted;
+}
+
+export async function listPriceSnapshotsForBenchmark(
+  pool: Pool,
+  benchmarkMarketId: string,
+): Promise<BenchmarkPriceSnapshotRecord[]> {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM benchmark_price_snapshots
+      WHERE benchmark_market_id = $1
+      ORDER BY cutoff_at ASC, created_at ASC
+    `,
+    [benchmarkMarketId],
+  );
+
+  return result.rows.map((row) => mapBenchmarkPriceSnapshotRow(row as Record<string, unknown>));
+}
+
+export async function insertEvaluationPredictions(
+  queryable: Queryable,
+  evaluationRunId: string,
+  predictions: EvaluationPredictionInput[],
+): Promise<EvaluationPredictionRecord[]> {
+  const inserted: EvaluationPredictionRecord[] = [];
+
+  for (const prediction of predictions) {
+    const result = await queryable.query(
+      `
+        INSERT INTO evaluation_predictions (
+          evaluation_run_id,
+          benchmark_market_id,
+          baseline,
+          cutoff_at,
+          predicted_probability,
+          outcome,
+          theme,
+          horizon,
+          source_configuration,
+          metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+        RETURNING *
+      `,
+      [
+        evaluationRunId,
+        prediction.benchmarkMarketId,
+        prediction.baseline,
+        prediction.cutoffAt,
+        prediction.predictedProbability,
+        prediction.outcome,
+        prediction.theme ?? null,
+        prediction.horizon ?? null,
+        prediction.sourceConfiguration ?? null,
+        JSON.stringify(prediction.metadata ?? {}),
+      ],
+    );
+
+    inserted.push(mapEvaluationPredictionRow(result.rows[0] as Record<string, unknown>));
+  }
+
+  return inserted;
+}
+export async function listEvaluationPredictionsForRun(
+  pool: Pool,
+  evaluationRunId: string,
+): Promise<EvaluationPredictionRecord[]> {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM evaluation_predictions
+      WHERE evaluation_run_id = $1
+      ORDER BY cutoff_at ASC, benchmark_market_id ASC, baseline ASC, created_at ASC
+    `,
+    [evaluationRunId],
+  );
+
+  return result.rows.map((row) => mapEvaluationPredictionRow(row as Record<string, unknown>));
+}
+
+async function insertEvaluationRun(
+  queryable: Queryable,
+  input: Omit<EvaluationRun, "id" | "createdAt">,
+): Promise<EvaluationRun> {
+  const runId = randomUUID();
+  const runResult = await queryable.query(
+    `
+      INSERT INTO evaluation_runs (
+        id,
+        benchmark_set_id,
+        cutoffs,
+        baselines,
+        overall_metrics,
+        replay_fidelity,
+        leakage_warnings
+      )
+      VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7::jsonb)
+      RETURNING *
+    `,
+    [
+      runId,
+      input.benchmarkSetId,
+      JSON.stringify(input.cutoffs),
+      JSON.stringify(input.baselines),
+      JSON.stringify(input.overallMetrics),
+      input.replayFidelity,
+      JSON.stringify(input.leakageWarnings),
+    ],
+  );
+
+  for (const slice of input.sliceResults) {
+    await queryable.query(
+      `
+        INSERT INTO evaluation_slice_metrics (
+          id,
+          evaluation_run_id,
+          slice_key,
+          baseline,
+          brier_score,
+          log_loss,
+          average_absolute_error,
+          win_rate_vs_polymarket,
+          sample_size
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `,
+      [
+        randomUUID(),
+        runId,
+        slice.sliceKey,
+        slice.baseline,
+        slice.brierScore,
+        slice.logLoss,
+        slice.averageAbsoluteError,
+        slice.winRateVsPolymarket ?? null,
+        slice.sampleSize,
+      ],
+    );
+  }
+
+  return mapEvaluationRunRow(
+    runResult.rows[0] as Record<string, unknown>,
+    input.sliceResults,
+  );
+}
+
 export async function createEvaluationRun(
   pool: Pool,
   input: Omit<EvaluationRun, "id" | "createdAt">,
 ): Promise<EvaluationRun> {
-  await pool.query("BEGIN");
+  const client = await pool.connect();
 
   try {
-    const runId = randomUUID();
-    const runResult = await pool.query(
-      `
-        INSERT INTO evaluation_runs (
-          id,
-          benchmark_set_id,
-          cutoffs,
-          baselines,
-          overall_metrics,
-          replay_fidelity,
-          leakage_warnings
-        )
-        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7::jsonb)
-        RETURNING *
-      `,
-      [
-        runId,
-        input.benchmarkSetId,
-        JSON.stringify(input.cutoffs),
-        JSON.stringify(input.baselines),
-        JSON.stringify(input.overallMetrics),
-        input.replayFidelity,
-        JSON.stringify(input.leakageWarnings),
-      ],
-    );
-
-    for (const slice of input.sliceResults) {
-      await pool.query(
-        `
-          INSERT INTO evaluation_slice_metrics (
-            id,
-            evaluation_run_id,
-            slice_key,
-            baseline,
-            brier_score,
-            log_loss,
-            average_absolute_error,
-            win_rate_vs_polymarket,
-            sample_size
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `,
-        [
-          randomUUID(),
-          runId,
-          slice.sliceKey,
-          slice.baseline,
-          slice.brierScore,
-          slice.logLoss,
-          slice.averageAbsoluteError,
-          slice.winRateVsPolymarket ?? null,
-          slice.sampleSize,
-        ],
-      );
-    }
-
-    await pool.query("COMMIT");
-
-    return mapEvaluationRunRow(
-      runResult.rows[0] as Record<string, unknown>,
-      input.sliceResults,
-    );
+    await client.query("BEGIN");
+    const run = await insertEvaluationRun(client, input);
+    await client.query("COMMIT");
+    return run;
   } catch (error) {
-    await pool.query("ROLLBACK");
+    await client.query("ROLLBACK");
     throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function createEvaluationRunWithPredictions(
+  pool: Pool,
+  input: {
+    run: Omit<EvaluationRun, "id" | "createdAt">;
+    predictions: EvaluationPredictionInput[];
+  },
+): Promise<EvaluationRun> {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const run = await insertEvaluationRun(client, input.run);
+    await insertEvaluationPredictions(client, run.id, input.predictions);
+    await client.query("COMMIT");
+    return run;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 

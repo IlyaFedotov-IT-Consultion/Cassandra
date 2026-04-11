@@ -1,4 +1,7 @@
 import { BenchmarkMarketSchema, type BenchmarkMarket } from "@cassandra/shared";
+import type { Pool } from "pg";
+
+import { upsertBenchmarkMarkets } from "./repository.js";
 
 interface PolymarketTag {
   slug?: string;
@@ -96,4 +99,17 @@ export async function importResolvedPolymarketBenchmarks(args: {
 
   const payload = (await response.json()) as PolymarketMarketPayload[];
   return normalizePolymarketBenchmarkMarkets(payload);
+}
+
+export async function importAndStoreResolvedPolymarketBenchmarks(args: {
+  pool: Pool;
+  baseUrl: string;
+  fetchImpl?: typeof fetch;
+}): Promise<BenchmarkMarket[]> {
+  const markets = await importResolvedPolymarketBenchmarks({
+    baseUrl: args.baseUrl,
+    fetchImpl: args.fetchImpl,
+  });
+
+  return upsertBenchmarkMarkets(args.pool, markets);
 }

@@ -13,6 +13,8 @@ export interface JudgeCacheStore {
 
 export interface JudgeCacheKeyParts {
   judgeName: string;
+  eventId: string;
+  evaluationTime: string;
   evidenceIds: string[];
   judgeModelVersion: string;
   promptVersion: string;
@@ -50,6 +52,8 @@ export function buildJudgeCacheKey(parts: JudgeCacheKeyParts): string {
   return [
     "judge",
     parts.judgeName,
+    parts.eventId,
+    parts.evaluationTime,
     parts.judgeModelVersion,
     parts.promptVersion,
     parts.snapshotId,
