@@ -15,6 +15,8 @@ export interface WatchlistRecord {
   updatedAt: string;
 }
 
+export interface CandidateEventRecord extends CandidateEvent {}
+
 function toIsoString(value: unknown): string {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
 }
@@ -114,4 +116,71 @@ export async function listCandidateEventsForWatchlist(
   );
 
   return result.rows.map((row) => mapCandidateEventRow(row as Record<string, unknown>));
+}
+
+export async function upsertCandidateEvent(
+  pool: Pool,
+  input: Omit<CandidateEvent, "id" | "promotionStatus"> & {
+    promotionStatus?: CandidateEvent["promotionStatus"];
+  },
+): Promise<CandidateEventRecord> {
+  const existing = await pool.query(
+    `
+      SELECT *
+      FROM candidate_events
+      WHERE watchlist_id = $1 AND cluster_key = $2
+      LIMIT 1
+    `,
+    [input.watchlistId, input.clusterKey],
+  );
+
+  if (existing.rowCount && existing.rows[0]) {
+    const result = await pool.query(
+      `
+        UPDATE candidate_events
+        SET
+          title = $2,
+          description = $3,
+          supporting_evidence_ids = $4::jsonb,
+          updated_at = NOW()
+        WHERE id = $1
+        RETURNING *
+      `,
+      [
+        existing.rows[0].id,
+        input.title,
+        input.description,
+        JSON.stringify(input.supportingEvidenceIds),
+      ],
+    );
+
+    return mapCandidateEventRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  const result = await pool.query(
+    `
+      INSERT INTO candidate_events (
+        id,
+        watchlist_id,
+        title,
+        description,
+        supporting_evidence_ids,
+        cluster_key,
+        promotion_status
+      )
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+      RETURNING *
+    `,
+    [
+      randomUUID(),
+      input.watchlistId,
+      input.title,
+      input.description,
+      JSON.stringify(input.supportingEvidenceIds),
+      input.clusterKey,
+      input.promotionStatus ?? "pending",
+    ],
+  );
+
+  return mapCandidateEventRow(result.rows[0] as Record<string, unknown>);
 }
