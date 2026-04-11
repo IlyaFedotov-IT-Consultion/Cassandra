@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@cassandra/shared':
+        specifier: workspace:*
+        version: link:packages/shared
       '@types/node':
         specifier: ^24.5.2
         version: 24.12.2

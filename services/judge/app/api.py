@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from hashlib import sha1
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.llm import LLMClient, get_llm_client
 from app.models import CalibrationRequest, CalibrationSnapshot, JudgeRequest, VerdictTrace
 from app.scoring.aggregate import aggregate_posterior
 from app.scoring.calibration import fit_calibration_snapshot
@@ -18,6 +19,10 @@ from app.scoring.weights import default_judge_weights, select_regime
 
 
 router = APIRouter()
+
+
+def _llm_dependency() -> LLMClient:
+    return get_llm_client()
 
 
 def _utc_now() -> str:
@@ -82,7 +87,7 @@ def _cluster_groups(request: JudgeRequest, judge_probabilities: list[float]) -> 
     return list(by_family.values())
 
 
-def _build_judge_trace(request: JudgeRequest) -> VerdictTrace:
+def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     citations = [
         {
             "title": item.title,
@@ -98,11 +103,11 @@ def _build_judge_trace(request: JudgeRequest) -> VerdictTrace:
         }
     ]
     raw_opinions = [
-        evaluate_official_records(request.event, request.evidence),
-        evaluate_community_signal(request.event, request.evidence),
-        evaluate_open_web_research(request.event, request.evidence),
+        evaluate_official_records(request.event, request.evidence, llm=llm),
+        evaluate_community_signal(request.event, request.evidence, llm=llm),
+        evaluate_open_web_research(request.event, request.evidence, llm=llm),
     ]
-    cross_examiner = evaluate_cross_examiner(raw_opinions)
+    cross_examiner = evaluate_cross_examiner(raw_opinions, llm=llm)
     judge_names = [opinion.judge_name for opinion in raw_opinions]
     base_weights = default_judge_weights(judge_names)
     base_weights.update(
@@ -185,8 +190,11 @@ def health() -> dict[str, str]:
 
 
 @router.post("/judge", response_model=VerdictTrace)
-def judge(request: JudgeRequest) -> VerdictTrace:
-    return _build_judge_trace(request)
+def judge(
+    request: JudgeRequest,
+    llm: LLMClient = Depends(_llm_dependency),
+) -> VerdictTrace:
+    return _build_judge_trace(request, llm)
 
 
 @router.post("/calibrate", response_model=CalibrationSnapshot)

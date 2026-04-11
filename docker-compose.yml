@@ -108,6 +108,11 @@ services:
       REDIS_URL: redis://redis:6379
       JUDGE_PORT: ${JUDGE_PORT:-8000}
       CASSANDRA_ADAPTER_MODE: ${CASSANDRA_ADAPTER_MODE:-fixture}
+      CASSANDRA_JUDGE_LLM: ${CASSANDRA_JUDGE_LLM:-fake}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_JUDGE_MODEL: ${OPENROUTER_JUDGE_MODEL:-openai/gpt-5}
+      OPENROUTER_CROSS_EXAMINER_MODEL: ${OPENROUTER_CROSS_EXAMINER_MODEL:-openai/gpt-5}
+      OPENROUTER_SEARCH_MODEL: ${OPENROUTER_SEARCH_MODEL:-perplexity/sonar}
     depends_on:
       postgres:
         condition: service_healthy

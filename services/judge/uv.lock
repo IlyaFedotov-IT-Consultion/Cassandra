@@ -84,6 +84,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "uvicorn" },
 ]
@@ -98,6 +99,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.116.1,<1.0.0" },
+    { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "pydantic", specifier = ">=2.11.0,<3.0.0" },
     { name = "uvicorn", specifier = ">=0.35.0,<1.0.0" },
 ]

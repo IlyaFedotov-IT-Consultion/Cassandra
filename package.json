@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.26.2",
   "devDependencies": {
+    "@cassandra/shared": "workspace:*",
     "@types/node": "^24.5.2",
     "@types/pg": "^8.15.5",
     "tsx": "^4.20.5",
@@ -15,6 +16,7 @@
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present test",
     "lint": "pnpm -r --if-present lint",
-    "db:migrate": "sh ./scripts/db-migrate.sh"
+    "db:migrate": "sh ./scripts/db-migrate.sh",
+    "harness:real": "tsx scripts/harness/real-e2e.mts"
   }
 }

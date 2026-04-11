@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+from app.llm.client import LLMClient
+from app.llm.fake import FakeLLMClient
 from app.models_generated import EventInput, EvidenceItem
-from app.scoring.judges._fake_llm import FakeLLM
 from app.scoring.types import RawJudgeOpinion
 
 
-def evaluate(event: EventInput, evidence: list[EvidenceItem], *, llm: FakeLLM | None = None) -> RawJudgeOpinion:
+def evaluate(
+    event: EventInput,
+    evidence: list[EvidenceItem],
+    *,
+    llm: LLMClient | None = None,
+) -> RawJudgeOpinion:
     relevant = [item for item in evidence if item.sourceFamily in {"official", "government"}]
-    generator = llm or FakeLLM({})
-    response = generator.generate(
-        "official_records",
+    client = llm or FakeLLMClient()
+    response = client.judge_panel(
+        judge_name="official_records",
+        event=event,
         evidence=relevant,
         default_rationale=f"Official-records judge evaluated {event.question}",
     )
