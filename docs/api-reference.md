@@ -234,6 +234,16 @@ Errors:
 - `400` if `id` is missing
 - `404` if the judgment does not exist
 
+### `GET /judgments`
+
+Lists stored judgment runs in reverse chronological order.
+
+Response shape:
+
+- array of judgment records
+- each record includes `id`, `eventId`, `status`, `verdictTrace`, `createdAt`, and `updatedAt`
+- `verdictTrace` is `null` for queued or failed runs that do not have a stored trace yet
+
 ### `POST /judgments`
 
 Creates and runs a judgment.

@@ -42,6 +42,7 @@ import {
   getJudgmentById,
   listJudgeOpinionsForJudgment,
   type JudgmentRecord,
+  updateJudgmentStatus,
 } from "./repository.js";
 
 const DEFAULT_EVALUATION_TIME = () => new Date().toISOString();
@@ -79,6 +80,7 @@ type CitationRecord = VerdictTrace["citations"][number];
 type SourceFamily = CitationRecord["sourceFamily"];
 type ConflictRecord = VerdictTrace["conflicts"][number];
 type MissingEvidenceRecord = VerdictTrace["missingEvidence"][number];
+type CacheTraceRecord = VerdictTrace["cacheEvents"][number];
 
 export interface JudgmentRecordDetails extends JudgmentRecord {
   judgeOpinions: JudgeOpinion[];
@@ -116,6 +118,10 @@ export interface JudgmentServiceDeps {
 export interface CreateJudgmentInput {
   eventId: string;
   evaluationTime?: string;
+}
+
+export interface RunJudgmentInput extends CreateJudgmentInput {
+  judgmentId: string;
 }
 
 export interface EvaluateEventForecastArgs {
@@ -359,6 +365,31 @@ function buildCitations(evidence: JudgmentEvidenceItem[]): CitationRecord[] {
   return citations;
 }
 
+function buildFallbackCitation(event: EventRecord): CitationRecord {
+  return {
+    title: event.question,
+    url: "https://example.invalid/no-evidence",
+    sourceFamily: "web",
+  };
+}
+
+function appendJudgeCacheEvent(
+  trace: VerdictTrace,
+  cacheStatus: CacheTraceRecord["status"],
+): VerdictTrace {
+  return VerdictTraceSchema.parse({
+    ...trace,
+    cacheEvents: [
+      ...(trace.cacheEvents ?? []),
+      {
+        layer: "judge_output",
+        target: "panel",
+        status: cacheStatus,
+      },
+    ],
+  });
+}
+
 function buildJudgeOpinion(args: {
   judgeName: string;
   evidence: JudgmentEvidenceItem[];
@@ -443,8 +474,13 @@ function buildFixtureVerdictTrace(args: {
   const rawPosteriorProbability = logOddsToProbability(rawPosteriorLogOdds);
   const disagreementShrinkage = clamp(variance(judgeOpinions.map((opinion) => opinion.probability)) * 0.25, 0, 0.6);
   const finalProbability = logOddsToProbability(rawPosteriorLogOdds * (1 - disagreementShrinkage));
-  const confidenceHalfWidth = clamp(0.08 + disagreementShrinkage * 0.2, 0.08, 0.2);
-  const citations = buildCitations(args.evidence);
+  const noEvidence = args.evidence.length === 0;
+  const confidenceHalfWidth = noEvidence
+    ? 0.15
+    : clamp(0.08 + disagreementShrinkage * 0.2, 0.08, 0.2);
+  const citations = noEvidence
+    ? [buildFallbackCitation(args.event)]
+    : buildCitations(args.evidence);
   const verdictTrace = {
     id: randomUUID(),
     eventId: args.event.id,
@@ -464,14 +500,15 @@ function buildFixtureVerdictTrace(args: {
     calibrationMethod: selectCalibrationMethod(args.calibrationSnapshot),
     uncertaintyMethod: "bootstrap" as const,
     weightRegime: args.calibrationSnapshot.weightRegime,
-    replayFidelity: args.evidence.length > 0 ? "exact" as const : "approximate" as const,
+    replayFidelity: noEvidence ? "approximate" as const : "exact" as const,
     conflicts: buildConflicts(judgeOpinions),
     missingEvidence: buildMissingEvidence(args.event, args.evidence),
     citations,
+    cacheEvents: [],
     modelVersion: JUDGE_MODEL_VERSION,
     weightVersion: args.calibrationSnapshot.id,
     calibrationVersion: args.calibrationSnapshot.id,
-    status: "completed" as const,
+    status: noEvidence ? "insufficient_evidence" as const : "completed" as const,
   };
 
   return VerdictTraceSchema.parse(verdictTrace);
@@ -571,13 +608,11 @@ export async function evaluateEventForecast(
     stance: item.stance,
   }));
 
-  return getOrCreateCachedJudgeResult({
+  const cached = await getOrCreateCachedJudgeResult({
     cacheStore: judgeCacheStore,
     mode: args.env.CASSANDRA_ADAPTER_MODE,
     cacheKeyParts: {
       judgeName: "panel",
-      eventId: args.event.id,
-      evaluationTime: args.evaluationTime,
       evidenceIds: evidenceForJudge.map((item) => item.id),
       judgeModelVersion: JUDGE_MODEL_VERSION,
       promptVersion: PROMPT_VERSION,
@@ -592,14 +627,23 @@ export async function evaluateEventForecast(
         mode: args.env.CASSANDRA_ADAPTER_MODE,
       }),
   });
+
+  return appendJudgeCacheEvent(cached.value, cached.cacheStatus);
 }
 
 export async function runJudgment(args: JudgmentServiceDeps & {
-  input: CreateJudgmentInput;
+  input: RunJudgmentInput;
 }): Promise<JudgmentRecordDetails> {
-  const event = await getEventById(args.pool, args.input.eventId);
+  const judgment = await getJudgmentById(args.pool, args.input.judgmentId);
 
-  if (!event) {
+  if (!judgment) {
+    throw new Error(`Judgment not found: ${args.input.judgmentId}`);
+  }
+
+  const event = await getEventById(args.pool, judgment.eventId);
+
+  if (!event || event.id !== args.input.eventId) {
+    await updateJudgmentStatus(args.pool, args.input.judgmentId, "failed");
     throw new Error(`Event not found: ${args.input.eventId}`);
   }
 
@@ -609,35 +653,41 @@ export async function runJudgment(args: JudgmentServiceDeps & {
     args.evidenceCacheStore ?? new InMemoryEvidenceCacheStore();
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
   const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
-  const judgment = await createJudgmentRun(args.pool, event.id);
-  const collected = await collectEvidenceForEventWithCache({
-    pool: args.pool,
-    event,
-    evaluationTime,
-    mode: args.env.CASSANDRA_ADAPTER_MODE,
-    providers: evidenceProviders,
-    cacheStore: evidenceCacheStore,
-  });
-  const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
-  const verdictTrace = await evaluateEventForecast({
-    env: args.env,
-    event,
-    evaluationTime,
-    evidence: collected.items,
-    calibrationSnapshot,
-    judgeCacheStore,
-    judgeClient,
-  });
+  await updateJudgmentStatus(args.pool, judgment.id, "running");
 
-  await appendJudgmentTrace(args.pool, judgment.id, verdictTrace);
+  try {
+    const collected = await collectEvidenceForEventWithCache({
+      pool: args.pool,
+      event,
+      evaluationTime,
+      mode: args.env.CASSANDRA_ADAPTER_MODE,
+      providers: evidenceProviders,
+      cacheStore: evidenceCacheStore,
+    });
+    const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
+    const verdictTrace = await evaluateEventForecast({
+      env: args.env,
+      event,
+      evaluationTime,
+      evidence: collected.items,
+      calibrationSnapshot,
+      judgeCacheStore,
+      judgeClient,
+    });
 
-  const stored = await loadJudgmentDetails(args.pool, judgment.id);
+    await appendJudgmentTrace(args.pool, judgment.id, verdictTrace);
 
-  if (!stored) {
-    throw new Error(`Stored judgment not found after persistence: ${judgment.id}`);
+    const stored = await loadJudgmentDetails(args.pool, judgment.id);
+
+    if (!stored) {
+      throw new Error(`Stored judgment not found after persistence: ${judgment.id}`);
+    }
+
+    return stored;
+  } catch (error) {
+    await updateJudgmentStatus(args.pool, judgment.id, "failed");
+    throw error;
   }
-
-  return stored;
 }
 
 export async function getJudgmentDetails(
@@ -645,6 +695,19 @@ export async function getJudgmentDetails(
   judgmentId: string,
 ): Promise<JudgmentRecordDetails | null> {
   return loadJudgmentDetails(pool, judgmentId);
+}
+
+export async function enqueueJudgmentRun(
+  pool: Pool,
+  eventId: string,
+): Promise<JudgmentRecord> {
+  const event = await getEventById(pool, eventId);
+
+  if (!event) {
+    throw new Error(`Event not found: ${eventId}`);
+  }
+
+  return createJudgmentRun(pool, eventId);
 }
 
 export function createEvidenceCacheStore(

@@ -13,6 +13,8 @@ const redisConnection = createRedisConnection(env.REDIS_URL);
 
 const app = buildApp({
   dbPool,
+  env,
+  redisConnection,
   checkDb: async () => checkDbReady(dbPool),
   checkRedis: async () => checkRedisReady(redisConnection),
 });

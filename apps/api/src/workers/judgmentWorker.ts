@@ -1,9 +1,9 @@
-import type { JudgmentServiceDeps, CreateJudgmentInput } from "../modules/judgments/service.js";
+import type { JudgmentServiceDeps, RunJudgmentInput } from "../modules/judgments/service.js";
 import { runJudgment } from "../modules/judgments/service.js";
 
 export async function runJudgmentWorker(
   args: JudgmentServiceDeps & {
-    input: CreateJudgmentInput;
+    input: RunJudgmentInput;
   },
 ) {
   return runJudgment(args);

@@ -13,13 +13,13 @@ export interface JudgeCacheStore {
 
 export interface JudgeCacheKeyParts {
   judgeName: string;
-  eventId: string;
-  evaluationTime: string;
   evidenceIds: string[];
   judgeModelVersion: string;
   promptVersion: string;
   snapshotId: string;
 }
+
+export type JudgeCacheStatus = "hit" | "miss" | "bypass";
 
 export class InMemoryJudgeCacheStore implements JudgeCacheStore {
   private readonly store = new Map<string, string>();
@@ -52,8 +52,6 @@ export function buildJudgeCacheKey(parts: JudgeCacheKeyParts): string {
   return [
     "judge",
     parts.judgeName,
-    parts.eventId,
-    parts.evaluationTime,
     parts.judgeModelVersion,
     parts.promptVersion,
     parts.snapshotId,
@@ -67,16 +65,29 @@ export async function getOrCreateCachedJudgeResult<T>(args: {
   cacheKeyParts: JudgeCacheKeyParts;
   ttlSeconds?: number;
   load: () => Promise<T>;
-}): Promise<T> {
+}): Promise<{
+  cacheKey: string;
+  cacheStatus: JudgeCacheStatus;
+  value: T;
+}> {
+  const cacheKey = buildJudgeCacheKey(args.cacheKeyParts);
+
   if (args.mode === "fixture") {
-    return args.load();
+    return {
+      cacheKey,
+      cacheStatus: "bypass",
+      value: await args.load(),
+    };
   }
 
-  const cacheKey = buildJudgeCacheKey(args.cacheKeyParts);
   const cached = await args.cacheStore.get(cacheKey);
 
   if (cached) {
-    return JSON.parse(cached) as T;
+    return {
+      cacheKey,
+      cacheStatus: "hit",
+      value: JSON.parse(cached) as T,
+    };
   }
 
   const value = await args.load();
@@ -87,5 +98,9 @@ export async function getOrCreateCachedJudgeResult<T>(args: {
     args.ttlSeconds ?? DEFAULT_TTL_SECONDS,
   );
 
-  return value;
+  return {
+    cacheKey,
+    cacheStatus: "miss",
+    value,
+  };
 }

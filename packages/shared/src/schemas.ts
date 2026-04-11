@@ -188,6 +188,14 @@ export const WeightBreakdownEntrySchema = z
   })
   .strict();
 
+export const CacheTraceEntrySchema = z
+  .object({
+    layer: z.enum(["judge_output"]),
+    target: z.string().min(1),
+    status: z.enum(["hit", "miss", "bypass"]),
+  })
+  .strict();
+
 export const CitationSchema = z
   .object({
     title: z.string().min(1),
@@ -245,6 +253,7 @@ export const VerdictTraceSchema = z
     conflicts: z.array(ConflictSchema).default([]),
     missingEvidence: z.array(MissingEvidenceRecordSchema).default([]),
     citations: z.array(CitationSchema).min(1),
+    cacheEvents: z.array(CacheTraceEntrySchema).default([]),
     modelVersion: z.string().min(1),
     weightVersion: z.string().min(1),
     calibrationVersion: z.string().min(1),

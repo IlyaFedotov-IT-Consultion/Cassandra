@@ -5,9 +5,11 @@ import { z } from "zod";
 
 import type { AppEnv } from "../../config/env.js";
 import { runJudgmentWorker } from "../../workers/judgmentWorker.js";
+import { listJudgments } from "./repository.js";
 import {
   createEvidenceCacheStore,
   createJudgeCacheStore,
+  enqueueJudgmentRun,
   getJudgmentDetails,
 } from "./service.js";
 
@@ -28,6 +30,8 @@ export function registerJudgmentRoutes(
 ) {
   const evidenceCacheStore = createEvidenceCacheStore(args.redisConnection);
   const judgeCacheStore = createJudgeCacheStore(args.redisConnection);
+
+  app.get("/judgments", async () => listJudgments(args.pool));
 
   app.get("/judgments/:id", async (request, reply) => {
     const params = request.params as { id?: string };
@@ -64,16 +68,28 @@ export function registerJudgmentRoutes(
     }
 
     try {
-      const judgment = await runJudgmentWorker({
-        pool: args.pool,
-        env: args.env,
-        evidenceCacheStore,
-        judgeCacheStore,
-        input: parsed.data,
-      });
+      const judgment = await enqueueJudgmentRun(args.pool, parsed.data.eventId);
 
-      reply.code(201);
-      return judgment;
+      setTimeout(() => {
+        void runJudgmentWorker({
+          pool: args.pool,
+          env: args.env,
+          evidenceCacheStore,
+          judgeCacheStore,
+          input: {
+            ...parsed.data,
+            judgmentId: judgment.id,
+          },
+        }).catch((error) => {
+          app.log.error(error);
+        });
+      }, 0);
+
+      reply.code(202);
+      return {
+        ...judgment,
+        judgeOpinions: [],
+      };
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("Event not found:")) {
         reply.code(404);

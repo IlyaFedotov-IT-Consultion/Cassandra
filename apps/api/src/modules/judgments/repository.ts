@@ -68,6 +68,21 @@ export async function createJudgmentRun(
   return mapJudgmentRow(result.rows[0] as Record<string, unknown>);
 }
 
+export async function updateJudgmentStatus(
+  pool: Pool,
+  judgmentId: string,
+  status: JudgmentRecord["status"],
+): Promise<void> {
+  await pool.query(
+    `
+      UPDATE judgments
+      SET status = $2, updated_at = NOW()
+      WHERE id = $1
+    `,
+    [judgmentId, status],
+  );
+}
+
 export async function appendJudgmentTrace(
   pool: Pool,
   judgmentId: string,
@@ -150,6 +165,12 @@ export async function getJudgmentById(
   }
 
   return mapJudgmentRow(result.rows[0] as Record<string, unknown>);
+}
+
+export async function listJudgments(pool: Pool): Promise<JudgmentRecord[]> {
+  const result = await pool.query(`SELECT * FROM judgments ORDER BY created_at DESC`);
+
+  return result.rows.map((row) => mapJudgmentRow(row as Record<string, unknown>));
 }
 
 export async function listJudgeOpinionsForJudgment(
