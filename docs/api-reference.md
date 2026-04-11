@@ -282,6 +282,19 @@ Success:
 
 Imports resolved Polymarket benchmark markets into Postgres.
 
+Request body:
+
+```json
+{
+  "benchmarkSetId": "custom-benchmark-set"
+}
+```
+
+Fields:
+
+- `benchmarkSetId` is optional
+- when omitted, imports use the default benchmark set `polymarket_recent_resolved`
+
 Success response:
 
 ```json
@@ -295,6 +308,37 @@ Notes:
 
 - data is fetched from `POLYMARKET_GAMMA_URL`
 - imported rows are stored in `benchmark_markets`
+- imported markets carry their `benchmarkSetId`
+
+Errors:
+
+- `400` with `error: "Invalid benchmark import input"`
+- `409` with `error: "Benchmark market ... already belongs to benchmark set ..."`
+
+### `GET /evaluation/benchmark-sets`
+
+Lists available benchmark sets that can be used with evaluation runs.
+
+Success response:
+
+```json
+[
+  {
+    "benchmarkSetId": "polymarket_recent_resolved",
+    "marketCount": 42,
+    "earliestResolvedAt": "2026-11-15T00:00:00.000Z",
+    "latestResolvedAt": "2026-12-31T23:59:59.000Z",
+    "themes": ["crypto", "politics", "technology"]
+  }
+]
+```
+
+Response fields:
+
+- `benchmarkSetId` is the identifier accepted by `POST /evaluation/runs`
+- `marketCount` is the number of imported markets in the set
+- `earliestResolvedAt` and `latestResolvedAt` bound the resolved-market window in the set
+- `themes` is the deduplicated sorted list of themes represented in the set
 
 ### `POST /evaluation/runs`
 
@@ -452,6 +496,16 @@ Evaluation run responses include:
 - `replayFidelity`
 - `leakageWarnings`
 - `createdAt`
+
+### `BenchmarkSetSummary`
+
+Benchmark set summary responses include:
+
+- `benchmarkSetId`
+- `marketCount`
+- `earliestResolvedAt`
+- `latestResolvedAt`
+- `themes`
 
 ### `CalibrationSnapshot`
 
