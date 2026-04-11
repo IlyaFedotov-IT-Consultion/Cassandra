@@ -50,6 +50,7 @@ The judging core is not a generic score blender. The implementation must explici
 |   |   |   |   |-- judgments/
 |   |   |   |   |-- outcomes/
 |   |   |   |   |-- backtests/
+|   |   |   |   |-- evaluation/
 |   |   |   |   `-- evidence/
 |   |   |   `-- workers/
 |   |   `-- test/
@@ -161,6 +162,9 @@ Implement Zod schemas and exported types for:
 - `VerdictTrace`
 - `OutcomeInput`
 - `CalibrationSnapshot`
+- `BenchmarkMarket`
+- `EvaluationRun`
+- `EvaluationSliceResult`
 
 Use exact enum values for source families and judgment statuses so API and UI cannot drift.
 
@@ -778,6 +782,124 @@ git add services/judge apps/api/src/modules/backtests
 git commit -m "feat: add calibration and backtesting"
 ```
 
+## Task 10A: Build historical benchmark and evaluation harness
+
+**Files:**
+- Create: `apps/api/src/modules/evaluation/routes.ts`
+- Create: `apps/api/src/modules/evaluation/repository.ts`
+- Create: `apps/api/src/modules/evaluation/polymarketImport.ts`
+- Create: `apps/api/src/modules/evaluation/replay.ts`
+- Create: `apps/api/src/modules/evaluation/metrics.ts`
+- Create: `apps/api/src/modules/evaluation/baselines.ts`
+- Modify: `apps/api/src/app.ts`
+- Test: `apps/api/test/evaluation.test.ts`
+
+**Step 1: Implement benchmark persistence**
+
+Create tables and repository functions for:
+
+- imported benchmark markets
+- historical price snapshots by cutoff
+- evaluation runs
+- per-market predictions
+- aggregated slice metrics
+
+Imported Polymarket records must preserve:
+
+- original question text
+- exact resolution criteria
+- resolution URL if available
+- theme or tag metadata
+- liquidity and volume metadata
+- resolution timestamp
+
+**Step 2: Implement Polymarket benchmark import**
+
+`polymarketImport.ts` should:
+
+- fetch recently resolved binary markets
+- normalize them into `BenchmarkMarket`
+- exclude canceled or structurally ambiguous markets
+- stratify by theme and retain the import audit trail
+
+**Step 3: Implement historical replay**
+
+`replay.ts` should:
+
+- create cutoffs at `T-30d`, `T-7d`, `T-1d`, and `T-6h`
+- reconstruct event inputs from benchmark markets
+- filter evidence to timestamps at or before each cutoff
+- capture the Polymarket implied probability at each cutoff
+- run the configured baselines against the same benchmark item
+
+**Step 4: Implement evaluation baselines**
+
+`baselines.ts` must support:
+
+- `base_rate_only`
+- `polymarket_only`
+- `model_without_polymarket`
+- `model_with_polymarket`
+
+The orchestration must ensure the `model_without_polymarket` run does not accidentally read Polymarket-derived evidence.
+
+**Step 5: Implement evaluation metrics**
+
+`metrics.ts` should compute:
+
+- Brier score
+- log loss
+- calibration bins and expected calibration error
+- average absolute error
+- win rate versus `polymarket_only`
+- slice metrics by theme, horizon, and source configuration
+
+**Step 6: Expose evaluation routes**
+
+Add:
+
+- `POST /evaluation/benchmarks/import/polymarket`
+- `POST /evaluation/runs`
+- `GET /evaluation/runs/:id`
+
+`GET /evaluation/runs/:id` must return:
+
+- overall metrics
+- per-baseline metrics
+- per-theme and per-horizon slices
+- leakage and replay-fidelity flags
+
+**Step 7: Add evaluation tests**
+
+Cover:
+
+- imports excluding canceled or incompatible markets
+- replay using only pre-cutoff evidence
+- `model_without_polymarket` not ingesting market-derived evidence
+- metric calculations on a fixed fixture set
+- per-slice reporting shape remaining stable
+
+**Step 8: Run evaluation tests**
+
+Run:
+
+```bash
+pnpm --filter @cassandra/api test -- evaluation
+```
+
+Expected:
+
+- evaluation import, replay, and metrics tests pass
+
+**Step 9: Commit evaluation harness**
+
+Run:
+
+```bash
+git add apps/api/src/modules/evaluation apps/api/src/app.ts apps/api/test/evaluation.test.ts
+git commit -m "feat: add historical evaluation harness"
+```
+
 ## Task 11: Wire API orchestration to the judge service
 
 **Files:**
@@ -944,6 +1066,8 @@ Document a manual validation flow:
 4. inspect trace in UI
 5. record outcome
 6. retrain calibration
+7. import resolved Polymarket benchmarks
+8. run historical evaluation and inspect baseline comparisons
 
 **Step 4: Run the full verification suite**
 
@@ -976,6 +1100,7 @@ git commit -m "docs: add runbook and verification checklist"
 - At least four evidence families can contribute to a single judgment in test fixtures.
 - A watchlist run can emit candidate events and preserve manual promotion state.
 - `POST /outcomes` records a resolution and `POST /backtests/retrain` creates a calibration snapshot.
+- `POST /evaluation/runs` can replay historical benchmarks at fixed cutoffs and produce baseline comparisons.
 - The web UI can display a trace with judge breakdown and citations.
 
 ## Defaults And Assumptions
@@ -985,6 +1110,7 @@ git commit -m "docs: add runbook and verification checklist"
 - Live external API calls are wrapped behind adapters and excluded from default test runs.
 - Postgres schema can begin as raw SQL; ORM adoption is unnecessary for the first prototype.
 - UI styling should stay utilitarian and trace-focused rather than product-polished.
+- The first evaluation benchmark uses recently resolved binary Polymarket markets stratified by theme, not only the highest-volume markets.
 
 ## Execution Notes
 
@@ -992,6 +1118,7 @@ git commit -m "docs: add runbook and verification checklist"
 - Keep commits scoped to one task.
 - Do not skip fixture-backed tests; they are the boundary against API drift.
 - Prefer deterministic math tests in Python before tuning live prompts or models.
+- Treat replay-fidelity flags as first-class outputs because historical retrieval is never perfectly clean.
 
 Plan complete and saved to `docs/plans/2026-04-11-multisource-forecast-judge-implementation-plan.md`. Two execution options:
 

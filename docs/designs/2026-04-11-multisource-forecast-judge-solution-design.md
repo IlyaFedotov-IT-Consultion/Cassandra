@@ -551,6 +551,20 @@ Returns the full `VerdictTrace`.
 
 Triggers recalibration from stored outcomes.
 
+### 10.5 Evaluation
+
+`POST /evaluation/benchmarks/import/polymarket`
+
+Imports resolved Polymarket markets into the benchmark dataset, including theme, resolution metadata, volume, and historical price snapshots.
+
+`POST /evaluation/runs`
+
+Runs a historical replay evaluation over a selected benchmark set and cutoff schedule.
+
+`GET /evaluation/runs/:id`
+
+Returns aggregate metrics, slice metrics, baseline comparisons, and leakage checks for the evaluation run.
+
 ## 11. UI Design
 
 The web UI is operator-facing and intentionally thin.
@@ -643,7 +657,105 @@ historical weights become stale as source behavior changes.
 Mitigation:
 versioned calibration snapshots and periodic retraining from recent outcomes.
 
-## 15. Success Criteria
+## 15. Backtesting And Evaluation
+
+The primary way to validate that the system works as expected is not by inspecting a few hand-picked examples. It is by running historical replay evaluations against resolved markets with known outcomes.
+
+### 15.1 Benchmark dataset
+
+The initial benchmark set should be built from resolved binary Polymarket markets over a recent rolling window, starting with the last 6 to 8 weeks. The benchmark should:
+
+- include only markets with clear binary resolution criteria
+- preserve the original market question and resolution rules
+- record theme, market volume, liquidity signals, and resolution timestamp
+- exclude markets that are ambiguous, administratively canceled, or structurally incompatible with the system's binary event model
+- be stratified by theme so the test is not dominated by one news cycle
+
+Themes should include at least:
+
+- politics and elections
+- macro and economic releases
+- company and product events
+- crypto and regulation
+- geopolitics or public-policy events
+
+### 15.2 Historical replay protocol
+
+Each evaluation run should reconstruct what the system would have known at multiple historical cutoffs before resolution. The default cutoffs for v1 are:
+
+- `T-30d`
+- `T-7d`
+- `T-1d`
+- `T-6h`
+
+For each market and cutoff:
+
+1. map the market question into a canonical `Event`
+2. retrieve only evidence with timestamps at or before the cutoff
+3. capture the Polymarket implied probability at that same cutoff
+4. run the system in one or more baseline configurations
+5. compare the resulting forecast with the resolved outcome
+
+This turns the evaluation into a hindcasting problem rather than a retrospective storytelling exercise.
+
+### 15.3 Baselines
+
+Every evaluation run must include four baselines:
+
+- `base_rate_only`
+  - empirical-Bayes prior with no live evidence
+- `polymarket_only`
+  - market-implied probability from the historical cutoff
+- `model_without_polymarket`
+  - all enabled sources except Polymarket-derived inputs
+- `model_with_polymarket`
+  - full production-style ensemble including Polymarket
+
+This separation is required. Otherwise the system can appear strong simply because it copied the market.
+
+### 15.4 Metrics
+
+The evaluation output must report:
+
+- Brier score
+- log loss
+- calibration curve and expected calibration error
+- win rate versus the `polymarket_only` baseline
+- average absolute error by time horizon
+- metrics sliced by theme, horizon, and source-family configuration
+
+Secondary reporting can include:
+
+- confidence-band width versus realized error
+- source-family ablation impact
+- judge-level contribution stability
+
+### 15.5 Leakage controls
+
+The evaluation system must guard against false optimism:
+
+- evidence published after the cutoff must be excluded
+- duplicate rewritten articles should not count as independent evidence
+- evaluation markets must not be chosen only from the most memorable stories
+- event wording must preserve Polymarket resolution semantics
+- the benchmark import should store raw timestamps and resolution URLs for auditability
+
+Because historical web search is imperfect, the system should label replay fidelity explicitly. When a source was discovered through present-day search rather than archived retrieval, the run should be marked as approximate.
+
+### 15.6 Interpretation of results
+
+The objective is not only to beat Polymarket. The objective is to understand whether the multi-source judge adds value.
+
+The first evaluation questions are:
+
+- does the full model outperform `base_rate_only` consistently?
+- is `model_without_polymarket` competitive with the market on any slices?
+- does `model_with_polymarket` improve over `polymarket_only` on at least some themes or horizons?
+- are confidence bands directionally honest, meaning wider bands coincide with larger realized uncertainty?
+
+If these answers are negative, the weighting and retrieval design should be revised before expanding the system.
+
+## 16. Success Criteria
 
 The v1 prototype is successful when:
 
@@ -651,9 +763,10 @@ The v1 prototype is successful when:
 - a watchlist can discover candidate events and support manual promotion
 - the judge service combines multiple evidence families into one reproducible probability
 - resolved outcomes can be recorded and used to generate a new calibration snapshot
+- a historical evaluation run can compare the model against Polymarket and base-rate baselines
 - the trace clearly shows why the system believed what it believed
 
-## 16. Assumptions
+## 17. Assumptions
 
 - English-first only.
 - Local Docker is the primary deployment target.
@@ -661,3 +774,4 @@ The v1 prototype is successful when:
 - OpenRouter is the default LLM gateway for judge and cross-examiner models.
 - Polymarket public APIs are used only for public market information, not trading.
 - Traditional market data comes from an existing provider already available to the operator.
+- Historical replay quality is approximate unless archived retrieval or stored historical evidence snapshots are available.
