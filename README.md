@@ -23,14 +23,14 @@ Today the repository includes working implementations for:
 - the shared schema package in `packages/shared`
 - the Fastify API in `apps/api`
 - the Python judge service in `services/judge`
+- the operator web console in `apps/web`
 - Postgres and Redis local infrastructure
 - database migrations for operational and evaluation tables
 - route and scoring tests across the TypeScript and Python services
 
 Still planned or partial:
 
-- `apps/web` does not exist yet
-- `docker-compose.yml` includes placeholder `api`, `judge`, and `web` profile commands rather than production-ready service startup
+- the web app is currently a lightweight static operator console rather than the fuller inspection UI described in the design docs
 - there is no generated OpenAPI or Swagger document yet; the human-written reference lives in [docs/api-reference.md](docs/api-reference.md)
 
 A fuller implementation snapshot lives in [docs/current-status.md](docs/current-status.md).
@@ -82,6 +82,12 @@ A fuller implementation snapshot lives in [docs/current-status.md](docs/current-
    uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
+7. Run the web console.
+
+   ```bash
+   pnpm --filter @cassandra/web dev
+   ```
+
 The default local mode is `CASSANDRA_ADAPTER_MODE=fixture`, which is intended for offline iteration without live third-party API calls. Switch to `live` only when the required upstream credentials are intentionally configured.
 
 ## Environment Variables
@@ -118,6 +124,8 @@ Useful package-level commands:
 ```bash
 pnpm --filter @cassandra/api dev
 pnpm --filter @cassandra/api test
+pnpm --filter @cassandra/web dev
+pnpm --filter @cassandra/web test
 pnpm --filter @cassandra/shared build
 pnpm --filter @cassandra/shared test
 cd services/judge && uv run pytest

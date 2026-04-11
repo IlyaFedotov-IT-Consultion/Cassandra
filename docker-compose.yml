@@ -33,8 +33,13 @@ services:
   api:
     image: node:22-alpine
     profiles: ["app"]
-    working_dir: /workspace/apps/api
-    command: ["sh", "-lc", "echo 'API app scaffold not created yet.' && sleep infinity"]
+    working_dir: /workspace
+    command:
+      [
+        "sh",
+        "-lc",
+        "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @cassandra/api dev",
+      ]
     env_file:
       - .env.example
     environment:
@@ -57,7 +62,12 @@ services:
     image: python:3.12-slim
     profiles: ["app"]
     working_dir: /workspace/services/judge
-    command: ["sh", "-lc", "echo 'Judge service scaffold not created yet.' && sleep infinity"]
+    command:
+      [
+        "sh",
+        "-lc",
+        "python -m pip install --no-cache-dir uv && uv sync --frozen && uv run uvicorn app.main:app --host 0.0.0.0 --port ${JUDGE_PORT:-8000} --reload",
+      ]
     env_file:
       - .env.example
     environment:
@@ -76,8 +86,13 @@ services:
   web:
     image: node:22-alpine
     profiles: ["app"]
-    working_dir: /workspace/apps/web
-    command: ["sh", "-lc", "echo 'Web app scaffold not created yet.' && sleep infinity"]
+    working_dir: /workspace
+    command:
+      [
+        "sh",
+        "-lc",
+        "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @cassandra/web dev",
+      ]
     env_file:
       - .env.example
     environment:

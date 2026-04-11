@@ -1,0 +1,11 @@
+{
+  "name": "@cassandra/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run"
+  }
+}

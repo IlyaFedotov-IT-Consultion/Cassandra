@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cassandra Operator Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero__copy">
+          <p class="eyebrow">Research Operations</p>
+          <h1>Cassandra Operator Console</h1>
+          <p class="lede">
+            A lightweight control room for the forecasting prototype: check service
+            health, seed events, manage watchlists, and trigger judgment runs
+            against the current backend.
+          </p>
+        </div>
+        <div class="hero__status">
+          <div class="status-card">
+            <p class="status-card__label">API Base</p>
+            <p class="status-card__value" id="api-base-url">Loading…</p>
+          </div>
+          <div class="status-card">
+            <p class="status-card__label">Health</p>
+            <p class="status-card__value" id="api-health">Checking…</p>
+          </div>
+          <div class="status-card">
+            <p class="status-card__label">Readiness</p>
+            <p class="status-card__value" id="api-ready">Checking…</p>
+          </div>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel panel--form">
+          <div class="panel__header">
+            <h2>Create Event</h2>
+            <p>Seed a new forecast target for the API.</p>
+          </div>
+          <form id="event-form" class="form-grid">
+            <label>
+              <span>Question</span>
+              <input name="question" required />
+            </label>
+            <label>
+              <span>Deadline</span>
+              <input name="deadline" type="datetime-local" required />
+            </label>
+            <label class="full-width">
+              <span>Resolution Criteria</span>
+              <textarea name="resolutionCriteria" rows="4" required></textarea>
+            </label>
+            <label>
+              <span>Entities</span>
+              <input name="entities" placeholder="Comma-separated" required />
+            </label>
+            <label>
+              <span>Reference Class</span>
+              <select name="referenceClass">
+                <option value="">None</option>
+                <option value="regulatory_approval">Regulatory approval</option>
+                <option value="election">Election</option>
+                <option value="product_launch">Product launch</option>
+                <option value="court_decision">Court decision</option>
+                <option value="macro_release">Macro release</option>
+                <option value="policy_decision">Policy decision</option>
+                <option value="geopolitical_event">Geopolitical event</option>
+              </select>
+            </label>
+            <label>
+              <span>Market Symbols</span>
+              <input name="marketSymbols" placeholder="Comma-separated" />
+            </label>
+            <label>
+              <span>Polymarket Market ID</span>
+              <input name="polymarketMarketId" />
+            </label>
+            <div class="form-actions full-width">
+              <button type="submit">Create Event</button>
+              <p class="form-feedback" id="event-form-feedback"></p>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel panel--form">
+          <div class="panel__header">
+            <h2>Create Watchlist</h2>
+            <p>Define a candidate discovery stream for topics or jurisdictions.</p>
+          </div>
+          <form id="watchlist-form" class="form-grid">
+            <label>
+              <span>Name</span>
+              <input name="name" required />
+            </label>
+            <label>
+              <span>Cadence</span>
+              <input name="cadence" placeholder="daily" required />
+            </label>
+            <label>
+              <span>Keywords</span>
+              <input name="keywords" placeholder="Comma-separated" required />
+            </label>
+            <label>
+              <span>Jurisdictions</span>
+              <input name="jurisdictions" placeholder="Comma-separated" />
+            </label>
+            <label class="checkbox">
+              <input name="official" type="checkbox" checked />
+              <span>Official sources</span>
+            </label>
+            <label class="checkbox">
+              <input name="government" type="checkbox" checked />
+              <span>Government sources</span>
+            </label>
+            <label class="checkbox">
+              <input name="community" type="checkbox" />
+              <span>Community sources</span>
+            </label>
+            <label class="checkbox">
+              <input name="markets" type="checkbox" />
+              <span>Market sources</span>
+            </label>
+            <label class="checkbox">
+              <input name="predictionMarkets" type="checkbox" />
+              <span>Prediction markets</span>
+            </label>
+            <div class="form-actions full-width">
+              <button type="submit">Create Watchlist</button>
+              <p class="form-feedback" id="watchlist-form-feedback"></p>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel panel--list">
+          <div class="panel__header">
+            <h2>Events</h2>
+            <p>Live data from `GET /events`, with one-click fixture judgments.</p>
+          </div>
+          <div id="events-empty" class="empty-state">Loading events…</div>
+          <div id="events-list" class="card-list"></div>
+        </section>
+
+        <section class="panel panel--list">
+          <div class="panel__header">
+            <h2>Watchlists</h2>
+            <p>Live data from `GET /watchlists` and candidate lookups.</p>
+          </div>
+          <div id="watchlists-empty" class="empty-state">Loading watchlists…</div>
+          <div id="watchlists-list" class="card-list"></div>
+        </section>
+
+        <section class="panel panel--detail">
+          <div class="panel__header">
+            <h2>Judgment Lookup</h2>
+            <p>Inspect a stored trace by judgment id.</p>
+          </div>
+          <form id="judgment-lookup-form" class="lookup-row">
+            <input name="judgmentId" placeholder="Enter judgment id" required />
+            <button type="submit">Fetch</button>
+          </form>
+          <pre id="judgment-output" class="json-output">No judgment loaded yet.</pre>
+        </section>
+      </main>
+    </div>
+
+    <script src="/config.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
