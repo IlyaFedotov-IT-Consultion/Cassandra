@@ -366,9 +366,19 @@ export async function runHistoricalEvaluation(
     args.persistEvaluationRunResult ?? persistEvaluationRunWithPredictions;
   const baselines = args.input.baselines ?? [...DEFAULT_BASELINES];
   const benchmarkMarkets = await listBenchmarks(args.pool);
-  const selectedMarkets = args.input.benchmarkMarketIds?.length
-    ? benchmarkMarkets.filter((market) => args.input.benchmarkMarketIds?.includes(market.id))
+  const requestedMarketIds = args.input.benchmarkMarketIds;
+  const selectedMarkets = requestedMarketIds?.length
+    ? benchmarkMarkets.filter((market) => requestedMarketIds.includes(market.id))
     : benchmarkMarkets;
+
+  if (requestedMarketIds?.length) {
+    const selectedMarketIds = new Set(selectedMarkets.map((market) => market.id));
+    const missingMarketIds = requestedMarketIds.filter((marketId) => !selectedMarketIds.has(marketId));
+
+    if (missingMarketIds.length > 0) {
+      throw new Error(`Benchmark markets not found: ${missingMarketIds.join(", ")}`);
+    }
+  }
 
   if (selectedMarkets.length === 0) {
     throw new Error("No benchmark markets available for evaluation");

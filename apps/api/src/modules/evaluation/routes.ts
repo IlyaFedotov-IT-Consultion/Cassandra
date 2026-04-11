@@ -86,7 +86,8 @@ export function registerEvaluationRoutes(
     } catch (error) {
       if (
         error instanceof Error &&
-        error.message === "No benchmark markets available for evaluation"
+        (error.message === "No benchmark markets available for evaluation" ||
+          error.message.startsWith("Benchmark markets not found: "))
       ) {
         reply.code(404);
         return {

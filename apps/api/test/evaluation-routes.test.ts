@@ -211,6 +211,41 @@ describe("evaluation routes", () => {
     }
   });
 
+  it("returns 404 when requested benchmark market ids are missing", async () => {
+    const app = buildApp({
+      dbPool: {
+        query: async () => ({ rows: [] }),
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+      runEvaluation: async () => {
+        throw new Error("Benchmark markets not found: missing-market");
+      },
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/runs",
+        payload: {
+          benchmarkSetId: "benchmark-set-1",
+          benchmarkMarketIds: ["missing-market"],
+        },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        error: "Benchmark markets not found: missing-market",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("fetches persisted evaluation runs through the evaluation route", async () => {
     const createdRun: EvaluationRun = {
       id: "run-1",

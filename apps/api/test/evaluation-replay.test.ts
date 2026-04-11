@@ -405,4 +405,26 @@ describe("evaluation replay", () => {
       },
     ]);
   });
+
+  it("fails when requested benchmark market ids are missing", async () => {
+    await expect(
+      runHistoricalEvaluation({
+        pool: {
+          async query(text: string) {
+            throw new Error(`Unexpected query during missing benchmark test: ${text}`);
+          },
+        } as never,
+        env: getEnv({
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+          REDIS_URL: "redis://localhost:6379",
+          CASSANDRA_ADAPTER_MODE: "fixture",
+        }),
+        input: {
+          benchmarkSetId: "benchmark-set-1",
+          benchmarkMarketIds: ["market-1", "missing-market"],
+        },
+        listBenchmarkMarkets: async () => [benchmarkMarket],
+      }),
+    ).rejects.toThrow("Benchmark markets not found: missing-market");
+  });
 });
