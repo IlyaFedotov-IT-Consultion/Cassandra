@@ -267,7 +267,7 @@ function summarizePairs(pairs: EvaluationPair[]) {
   };
 }
 
-async function collectReplayEvidence(args: {
+export async function collectReplayEvidence(args: {
   env: AppEnv;
   event: EventRecord;
   cutoffAt: string;

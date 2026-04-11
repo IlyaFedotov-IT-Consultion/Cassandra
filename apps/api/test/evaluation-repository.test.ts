@@ -278,6 +278,86 @@ describe("evaluation repository", () => {
     ]);
   });
 
+  it("rolls back and releases the client when prediction persistence fails", async () => {
+    const runInput: Omit<EvaluationRun, "id" | "createdAt"> = {
+      benchmarkSetId: "benchmark-set-1",
+      cutoffs: ["30d"],
+      baselines: ["model_with_polymarket"],
+      overallMetrics: {
+        benchmarkCount: 1,
+      },
+      sliceResults: [
+        {
+          sliceKey: "technology",
+          baseline: "model_with_polymarket",
+          brierScore: 0.12,
+          logLoss: 0.31,
+          averageAbsoluteError: 0.22,
+          winRateVsPolymarket: 0.6,
+          sampleSize: 5,
+        },
+      ],
+      replayFidelity: "approximate",
+      leakageWarnings: [],
+    };
+
+    const clientQuery = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: "run-1",
+            benchmark_set_id: runInput.benchmarkSetId,
+            cutoffs: runInput.cutoffs,
+            baselines: runInput.baselines,
+            overall_metrics: runInput.overallMetrics,
+            replay_fidelity: runInput.replayFidelity,
+            leakage_warnings: runInput.leakageWarnings,
+            created_at: new Date("2026-01-01T00:00:00Z"),
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockRejectedValueOnce(new Error("prediction insert failed"))
+      .mockResolvedValueOnce({ rows: [] });
+    const release = vi.fn();
+    const connect = vi.fn(async () => ({
+      query: clientQuery,
+      release,
+    }));
+
+    const pool = { connect } as never;
+
+    await expect(
+      createEvaluationRunWithPredictions(pool, {
+        run: runInput,
+        predictions: [
+          {
+            benchmarkMarketId: "market-1",
+            baseline: "model_with_polymarket",
+            cutoffAt: "2026-12-01T00:00:00Z",
+            predictedProbability: 0.67,
+            outcome: true,
+            theme: "technology",
+            horizon: "30d",
+            sourceConfiguration: "full_pipeline",
+            metadata: {},
+          },
+        ],
+      }),
+    ).rejects.toThrow("prediction insert failed");
+
+    expect(clientQuery.mock.calls.map((call) => call[0])).toEqual([
+      "BEGIN",
+      expect.stringContaining("INSERT INTO evaluation_runs"),
+      expect.stringContaining("INSERT INTO evaluation_slice_metrics"),
+      expect.stringContaining("INSERT INTO evaluation_predictions"),
+      "ROLLBACK",
+    ]);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   it("upserts and lists benchmark price snapshots", async () => {
     const query = vi
       .fn()
@@ -421,5 +501,6 @@ describe("evaluation repository", () => {
       },
     ]);
     expect(listed).toEqual(inserted);
+    expect(query.mock.calls[0]?.[0]).toContain("ON CONFLICT");
   });
 });

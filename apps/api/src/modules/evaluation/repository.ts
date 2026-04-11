@@ -282,6 +282,14 @@ export async function insertEvaluationPredictions(
           metadata
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+        ON CONFLICT (evaluation_run_id, benchmark_market_id, baseline, cutoff_at)
+        DO UPDATE SET
+          predicted_probability = EXCLUDED.predicted_probability,
+          outcome = EXCLUDED.outcome,
+          theme = EXCLUDED.theme,
+          horizon = EXCLUDED.horizon,
+          source_configuration = EXCLUDED.source_configuration,
+          metadata = EXCLUDED.metadata
         RETURNING *
       `,
       [

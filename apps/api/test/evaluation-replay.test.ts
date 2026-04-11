@@ -6,11 +6,14 @@ import type { BenchmarkPriceSnapshotRecord } from "../src/modules/evaluation/rep
 import {
   buildReplayEvidenceCacheKey,
   buildReplayCutoffs,
+  buildReplayEventRecord,
   buildReplayEventInput,
+  collectReplayEvidence,
   filterEvidenceForCutoff,
   inferReplayFidelity,
   runHistoricalEvaluation,
 } from "../src/modules/evaluation/replay.js";
+import { InMemoryEvidenceCacheStore } from "../src/modules/evidence/cache.js";
 
 const benchmarkMarket: BenchmarkMarket = {
   id: "market-1",
@@ -74,6 +77,70 @@ describe("evaluation replay", () => {
         providerName: "perplexity",
       }),
     );
+  });
+
+  it("does not reuse cached provider payloads across duplicate-title replay events", async () => {
+    const eventOne = buildReplayEventRecord(benchmarkMarket);
+    const eventTwo = buildReplayEventRecord({
+      ...benchmarkMarket,
+      id: "market-2",
+    });
+    const cacheStore = new InMemoryEvidenceCacheStore();
+    let calls = 0;
+    const provider = {
+      name: "perplexity",
+      async collect(input: { event: { id: string } }) {
+        calls += 1;
+        return [
+          {
+            id: `evidence-${input.event.id}`,
+            eventId: input.event.id,
+            sourceFamily: "llm_research" as const,
+            sourceType: "perplexity_search_result" as const,
+            title: `Evidence for ${input.event.id}`,
+            url: `https://example.com/${input.event.id}`,
+            publisher: "Example",
+            publishedAt: "2026-12-20T00:00:00Z",
+            retrievedAt: "2026-12-20T00:05:00Z",
+            summary: `Summary for ${input.event.id}`,
+            rawText: null,
+            entities: [],
+            claims: [],
+            stance: "supports" as const,
+            qualitySignals: {},
+            metadata: {},
+          },
+        ];
+      },
+    };
+
+    const first = await collectReplayEvidence({
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      event: eventOne,
+      cutoffAt: "2026-12-24T12:00:00Z",
+      providers: [provider],
+      evidenceCacheStore: cacheStore,
+    });
+    const second = await collectReplayEvidence({
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      event: eventTwo,
+      cutoffAt: "2026-12-24T12:00:00Z",
+      providers: [provider],
+      evidenceCacheStore: cacheStore,
+    });
+
+    expect(calls).toBe(2);
+    expect(first[0]?.eventId).toBe("replay-market-1");
+    expect(second[0]?.eventId).toBe("replay-market-2");
+    expect(second[0]?.url).toContain("replay-market-2");
   });
 
   it("filters evidence using publishedAt rather than retrievedAt", () => {

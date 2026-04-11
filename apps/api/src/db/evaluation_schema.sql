@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS evaluation_predictions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS evaluation_predictions_run_market_baseline_cutoff_key
+  ON evaluation_predictions (
+    evaluation_run_id,
+    benchmark_market_id,
+    baseline,
+    cutoff_at
+  );
+
 CREATE TABLE IF NOT EXISTS evaluation_slice_metrics (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   evaluation_run_id UUID NOT NULL REFERENCES evaluation_runs(id) ON DELETE CASCADE,
