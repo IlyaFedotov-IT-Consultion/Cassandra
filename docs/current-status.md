@@ -60,6 +60,7 @@ The web package currently provides:
 - event and watchlist listing
 - one-click judgment triggering for existing events
 - judgment lookup by id
+- newest-first judgment run listing for quick operator inspection
 
 ### Persistence
 
@@ -102,15 +103,20 @@ The following checks were run during this review.
   Result: passed
 - `cd services/judge && uv run pytest`
   Result: 31 tests passed
-
-### Not Fully Passing
-
 - `pnpm test`
-  Result: blocked before API tests could run
-  Reason: the API package `pretest` migration step could not connect to Postgres on `localhost:5432`
-- `docker compose ps`
-  Result: unavailable
-  Reason: Docker daemon was not running in the review environment
+  Result: passed, including API integration-style tests against local Postgres
+- `docker compose --profile app up -d postgres redis api judge web`
+  Result: passed
+- `docker compose --profile app ps`
+  Result: all five services healthy
+- `curl -fsS http://localhost:3000/health`
+  Result: `{"status":"ok"}`
+- `curl -fsS http://localhost:3000/ready`
+  Result: `{"status":"ready"}`
+- `curl -fsS http://localhost:8000/health`
+  Result: `{"status":"ok"}`
+- `curl -fsS http://localhost:5173/health`
+  Result: `{"status":"ok"}`
 
 ## Practical Read On Project Health
 
@@ -118,10 +124,10 @@ The repository is in a solid prototype state for backend and judge-service work:
 
 - schema contracts are defined and tested
 - the API surface is meaningful and persists real records
-- the judge service has broad test coverage and mostly passes
+- the judge service has broad test coverage and currently passes its full suite
 
 The highest-signal risks right now are:
 
-- infrastructure readiness for API integration tests
 - depth and breadth of the operator UI
-- end-to-end local workflow validation with real Docker-backed app startup
+- future drift between the design docs and the lighter-weight v1 UI surface
+- keeping Docker and host dependency workflows isolated as the repo grows

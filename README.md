@@ -69,11 +69,16 @@ A fuller implementation snapshot lives in [docs/current-status.md](docs/current-
    pnpm db:migrate
    ```
 
+   This now prefers a reachable local `DATABASE_URL`, then falls back to starting the
+   Docker Compose `postgres` service and applying the schema there.
+
 5. Run the API watcher.
 
    ```bash
    pnpm --filter @cassandra/api dev
    ```
+
+   The Compose `api` service also runs `pnpm db:migrate` before starting the dev server.
 
 6. Run the judge service.
 
@@ -87,6 +92,15 @@ A fuller implementation snapshot lives in [docs/current-status.md](docs/current-
    ```bash
    pnpm --filter @cassandra/web dev
    ```
+
+For the full Docker-backed stack, you can also run:
+
+```bash
+docker compose --profile app up -d postgres redis api judge web
+```
+
+The app containers use isolated dependency volumes for `node_modules` and the judge
+virtual environment so container-side installs do not overwrite the host workspace.
 
 The default local mode is `CASSANDRA_ADAPTER_MODE=fixture`, which is intended for offline iteration without live third-party API calls. Switch to `live` only when the required upstream credentials are intentionally configured.
 

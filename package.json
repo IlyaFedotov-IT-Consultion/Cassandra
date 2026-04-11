@@ -15,6 +15,6 @@
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present test",
     "lint": "pnpm -r --if-present lint",
-    "db:migrate": "bash ./scripts/db-migrate.sh"
+    "db:migrate": "sh ./scripts/db-migrate.sh"
   }
 }
