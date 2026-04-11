@@ -49,6 +49,7 @@ function toIsoString(value: unknown): string {
 function mapBenchmarkMarketRow(row: Record<string, unknown>): BenchmarkMarket {
   return BenchmarkMarketSchema.parse({
     id: String(row.id),
+    benchmarkSetId: row.benchmark_set_id,
     title: String(row.title),
     resolutionCriteria: String(row.resolution_criteria),
     theme: String(row.theme),
@@ -149,6 +150,7 @@ export async function upsertBenchmarkMarkets(
       `
         INSERT INTO benchmark_markets (
           id,
+          benchmark_set_id,
           title,
           resolution_criteria,
           theme,
@@ -158,7 +160,7 @@ export async function upsertBenchmarkMarkets(
           resolved_value,
           market_url
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (id)
         DO UPDATE SET
           title = EXCLUDED.title,
@@ -170,10 +172,12 @@ export async function upsertBenchmarkMarkets(
           resolved_value = EXCLUDED.resolved_value,
           market_url = EXCLUDED.market_url,
           updated_at = NOW()
+        WHERE benchmark_markets.benchmark_set_id = EXCLUDED.benchmark_set_id
         RETURNING *
       `,
       [
         market.id,
+        market.benchmarkSetId,
         market.title,
         market.resolutionCriteria,
         market.theme,
@@ -185,18 +189,52 @@ export async function upsertBenchmarkMarkets(
       ],
     );
 
+    if (result.rows.length === 0) {
+      const existing = await pool.query(
+        `
+          SELECT benchmark_set_id
+          FROM benchmark_markets
+          WHERE id = $1
+        `,
+        [market.id],
+      );
+
+      const existingBenchmarkSetId = existing.rows[0]?.benchmark_set_id;
+
+      if (typeof existingBenchmarkSetId === "string" && existingBenchmarkSetId.length > 0) {
+        throw new Error(
+          `Benchmark market ${market.id} already belongs to benchmark set ${existingBenchmarkSetId}`,
+        );
+      }
+
+      throw new Error(`Failed to upsert benchmark market ${market.id}`);
+    }
+
     inserted.push(mapBenchmarkMarketRow(result.rows[0] as Record<string, unknown>));
   }
 
   return inserted;
 }
 
-export async function listBenchmarkMarkets(pool: Pool): Promise<BenchmarkMarket[]> {
-  const result = await pool.query(`
-    SELECT *
-    FROM benchmark_markets
-    ORDER BY resolved_at DESC, id ASC
-  `);
+export async function listBenchmarkMarkets(
+  pool: Pool,
+  benchmarkSetId?: string,
+): Promise<BenchmarkMarket[]> {
+  const result = benchmarkSetId
+    ? await pool.query(
+        `
+          SELECT *
+          FROM benchmark_markets
+          WHERE benchmark_set_id = $1
+          ORDER BY resolved_at DESC, id ASC
+        `,
+        [benchmarkSetId],
+      )
+    : await pool.query(`
+        SELECT *
+        FROM benchmark_markets
+        ORDER BY resolved_at DESC, id ASC
+      `);
 
   return result.rows.map((row) => mapBenchmarkMarketRow(row as Record<string, unknown>));
 }

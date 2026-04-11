@@ -289,6 +289,7 @@ export const CalibrationSnapshotSchema = z
 export const BenchmarkMarketSchema = z
   .object({
     id: IdSchema,
+    benchmarkSetId: IdSchema,
     title: z.string().min(1),
     resolutionCriteria: z.string().min(1),
     theme: z.string().min(1),

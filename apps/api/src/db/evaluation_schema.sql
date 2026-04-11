@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS benchmark_markets (
   id TEXT PRIMARY KEY,
+  benchmark_set_id TEXT NOT NULL DEFAULT 'polymarket_recent_resolved',
   title TEXT NOT NULL,
   resolution_criteria TEXT NOT NULL,
   theme TEXT NOT NULL,
@@ -12,6 +13,12 @@ CREATE TABLE IF NOT EXISTS benchmark_markets (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE benchmark_markets
+  ADD COLUMN IF NOT EXISTS benchmark_set_id TEXT NOT NULL DEFAULT 'polymarket_recent_resolved';
+
+CREATE INDEX IF NOT EXISTS benchmark_markets_benchmark_set_id_resolved_at_idx
+  ON benchmark_markets (benchmark_set_id, resolved_at DESC, id ASC);
 
 CREATE TABLE IF NOT EXISTS benchmark_price_snapshots (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

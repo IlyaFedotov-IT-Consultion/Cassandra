@@ -17,6 +17,7 @@ import { InMemoryEvidenceCacheStore } from "../src/modules/evidence/cache.js";
 
 const benchmarkMarket: BenchmarkMarket = {
   id: "market-1",
+  benchmarkSetId: "benchmark-set-1",
   title: "Will Example Corp launch Product X by 2026-12-31?",
   resolutionCriteria: "Official launch announcement by deadline.",
   theme: "technology",
@@ -404,6 +405,40 @@ describe("evaluation replay", () => {
         predictedProbability: 0.61,
       },
     ]);
+  });
+
+  it("loads benchmark markets for the requested benchmark set", async () => {
+    let requestedBenchmarkSetId: string | undefined;
+
+    await runHistoricalEvaluation({
+      pool: {
+        async query(text: string) {
+          throw new Error(`Unexpected query during benchmark set selection test: ${text}`);
+        },
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+      input: {
+        benchmarkSetId: "benchmark-set-1",
+        baselines: ["polymarket_only"],
+      },
+      listBenchmarkMarkets: (async (_pool: unknown, benchmarkSetId: string) => {
+        requestedBenchmarkSetId = benchmarkSetId;
+        return [benchmarkMarket];
+      }) as never,
+      listPriceSnapshotsForBenchmark: async () => [],
+      getCalibrationSnapshot: async () => null,
+      persistEvaluationRunResult: async (_pool, input) => ({
+        id: "run-1",
+        ...input.run,
+        createdAt: "2026-01-02T00:00:00Z",
+      }),
+    });
+
+    expect(requestedBenchmarkSetId).toBe("benchmark-set-1");
   });
 
   it("fails when requested benchmark market ids are missing", async () => {

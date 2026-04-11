@@ -109,7 +109,7 @@ export interface RunHistoricalEvaluationArgs {
   evidenceProviders?: EvidenceProvider[];
   evidenceCacheStore?: EvidenceCacheStore;
   judgeCacheStore?: JudgeCacheStore;
-  listBenchmarkMarkets?: (pool: Pool) => Promise<BenchmarkMarket[]>;
+  listBenchmarkMarkets?: (pool: Pool, benchmarkSetId: string) => Promise<BenchmarkMarket[]>;
   listPriceSnapshotsForBenchmark?: (
     pool: Pool,
     benchmarkMarketId: string,
@@ -365,7 +365,7 @@ export async function runHistoricalEvaluation(
   const persistEvaluationResult =
     args.persistEvaluationRunResult ?? persistEvaluationRunWithPredictions;
   const baselines = args.input.baselines ?? [...DEFAULT_BASELINES];
-  const benchmarkMarkets = await listBenchmarks(args.pool);
+  const benchmarkMarkets = await listBenchmarks(args.pool, args.input.benchmarkSetId);
   const requestedMarketIds = args.input.benchmarkMarketIds;
   const selectedMarkets = requestedMarketIds?.length
     ? benchmarkMarkets.filter((market) => requestedMarketIds.includes(market.id))

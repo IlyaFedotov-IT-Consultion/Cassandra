@@ -345,6 +345,7 @@ class BenchmarkMarket(BaseModel):
         extra='forbid',
     )
     id: constr(min_length=1)
+    benchmarkSetId: constr(min_length=1)
     title: constr(min_length=1)
     resolutionCriteria: constr(min_length=1)
     theme: constr(min_length=1)

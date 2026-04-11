@@ -56,6 +56,7 @@ describe("evaluation import", () => {
     expect(markets).toHaveLength(1);
     expect(markets[0]).toMatchObject({
       id: "market-1",
+      benchmarkSetId: "polymarket_recent_resolved",
       theme: "technology",
       resolvedValue: true,
     });
@@ -93,9 +94,49 @@ describe("evaluation import", () => {
 
     expect(markets).toEqual([
       expect.objectContaining({
+        benchmarkSetId: "polymarket_recent_resolved",
         id: "market-1",
         title: "Will Example Corp launch Product X by 2026-12-31?",
         theme: "technology",
+      }),
+    ]);
+  });
+
+  it("honors an explicit benchmark set override during import", async () => {
+    const markets = await importResolvedPolymarketBenchmarks({
+      baseUrl: "https://gamma-api.polymarket.com",
+      benchmarkSetId: "custom-benchmark-set",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify([
+            {
+              id: "market-1",
+              question: "Will Example Corp launch Product X by 2026-12-31?",
+              resolution_criteria: "Official launch announcement by deadline.",
+              end_date_iso: "2026-12-31T23:59:59Z",
+              closed: true,
+              archived: false,
+              market_slug: "example-product-x",
+              volume_num: 100000,
+              liquidity_num: 25000,
+              outcomes: ["Yes", "No"],
+              outcome_prices: [1, 0],
+              tags: [{ slug: "technology" }],
+            },
+          ]),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        ),
+    });
+
+    expect(markets).toEqual([
+      expect.objectContaining({
+        benchmarkSetId: "custom-benchmark-set",
+        id: "market-1",
       }),
     ]);
   });
@@ -110,6 +151,7 @@ describe("evaluation import", () => {
           rows: [
             {
               id: "market-1",
+              benchmark_set_id: "polymarket_recent_resolved",
               title: "Will Example Corp launch Product X by 2026-12-31?",
               resolution_criteria: "Official launch announcement by deadline.",
               theme: "technology",
@@ -156,10 +198,12 @@ describe("evaluation import", () => {
 
     expect(markets).toEqual([
       expect.objectContaining({
+        benchmarkSetId: "polymarket_recent_resolved",
         id: "market-1",
         theme: "technology",
       }),
     ]);
     expect(captured).toHaveLength(1);
+    expect(captured[0]).toContain("polymarket_recent_resolved");
   });
 });

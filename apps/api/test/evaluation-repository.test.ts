@@ -15,7 +15,8 @@ import {
 
 describe("evaluation repository", () => {
   it("upserts and lists benchmark markets", async () => {
-    const benchmark: BenchmarkMarket = {
+    const benchmark: BenchmarkMarket & { benchmarkSetId: string } = {
+      benchmarkSetId: "polymarket_recent_resolved",
       id: "market-1",
       title: "Will Example Corp launch Product X by 2026-12-31?",
       resolutionCriteria: "Official launch announcement by deadline.",
@@ -33,6 +34,7 @@ describe("evaluation repository", () => {
         rows: [
           {
             id: benchmark.id,
+            benchmark_set_id: benchmark.benchmarkSetId,
             title: benchmark.title,
             resolution_criteria: benchmark.resolutionCriteria,
             theme: benchmark.theme,
@@ -48,6 +50,7 @@ describe("evaluation repository", () => {
         rows: [
           {
             id: benchmark.id,
+            benchmark_set_id: benchmark.benchmarkSetId,
             title: benchmark.title,
             resolution_criteria: benchmark.resolutionCriteria,
             theme: benchmark.theme,
@@ -63,7 +66,12 @@ describe("evaluation repository", () => {
     const pool = { query } as never;
 
     const inserted = await upsertBenchmarkMarkets(pool, [benchmark]);
-    const listed = await listBenchmarkMarkets(pool);
+    const listed = await (
+      listBenchmarkMarkets as unknown as (
+        pool: typeof pool,
+        benchmarkSetId: string,
+      ) => ReturnType<typeof listBenchmarkMarkets>
+    )(pool, benchmark.benchmarkSetId);
 
     expect(inserted).toEqual([
       {
@@ -78,6 +86,38 @@ describe("evaluation repository", () => {
       },
     ]);
     expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[0]?.[0]).toContain("benchmark_set_id");
+    expect(query.mock.calls[0]?.[1]).toContain(benchmark.benchmarkSetId);
+    expect(query.mock.calls[1]?.[0]).toContain("WHERE benchmark_set_id = $1");
+    expect(query.mock.calls[1]?.[1]).toEqual([benchmark.benchmarkSetId]);
+  });
+
+  it("rejects reassigning a benchmark market to a different benchmark set", async () => {
+    const benchmark: BenchmarkMarket = {
+      benchmarkSetId: "benchmark-set-2",
+      id: "market-1",
+      title: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Official launch announcement by deadline.",
+      theme: "technology",
+      volume: 100000,
+      liquidity: 25000,
+      resolvedAt: "2026-12-31T23:59:59Z",
+      resolvedValue: true,
+      marketUrl: "https://polymarket.com/event/example-product-x",
+    };
+
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ benchmark_set_id: "benchmark-set-1" }],
+      });
+
+    const pool = { query } as never;
+
+    await expect(upsertBenchmarkMarkets(pool, [benchmark])).rejects.toThrow(
+      "Benchmark market market-1 already belongs to benchmark set benchmark-set-1",
+    );
   });
 
   it("creates and hydrates evaluation runs with slice metrics", async () => {

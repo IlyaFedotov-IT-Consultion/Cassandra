@@ -19,6 +19,7 @@ describe("evaluation routes", () => {
           rows: [
             {
               id: "market-1",
+              benchmark_set_id: "polymarket_recent_resolved",
               title: "Will Example Corp launch Product X by 2026-12-31?",
               resolution_criteria: "Official launch announcement by deadline.",
               theme: "technology",
@@ -79,6 +80,7 @@ describe("evaluation routes", () => {
         imported: 1,
         markets: [
           expect.objectContaining({
+            benchmarkSetId: "polymarket_recent_resolved",
             id: "market-1",
             theme: "technology",
           }),

@@ -3,6 +3,8 @@ import type { Pool } from "pg";
 
 import { upsertBenchmarkMarkets } from "./repository.js";
 
+export const DEFAULT_BENCHMARK_SET_ID = "polymarket_recent_resolved";
+
 interface PolymarketTag {
   slug?: string;
   label?: string;
@@ -52,6 +54,7 @@ function normalizeResolvedValue(outcomes: string[], prices: number[]): boolean |
 
 export function normalizePolymarketBenchmarkMarkets(
   markets: PolymarketMarketPayload[],
+  benchmarkSetId = DEFAULT_BENCHMARK_SET_ID,
 ): BenchmarkMarket[] {
   return markets.flatMap((market) => {
     const title = market.question ?? market.title;
@@ -73,6 +76,7 @@ export function normalizePolymarketBenchmarkMarkets(
     return [
       BenchmarkMarketSchema.parse({
         id: market.id,
+        benchmarkSetId,
         title,
         resolutionCriteria,
         theme,
@@ -89,6 +93,7 @@ export function normalizePolymarketBenchmarkMarkets(
 export async function importResolvedPolymarketBenchmarks(args: {
   baseUrl: string;
   fetchImpl?: typeof fetch;
+  benchmarkSetId?: string;
 }): Promise<BenchmarkMarket[]> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const response = await fetchImpl(`${args.baseUrl}/markets?closed=true`);
@@ -98,17 +103,19 @@ export async function importResolvedPolymarketBenchmarks(args: {
   }
 
   const payload = (await response.json()) as PolymarketMarketPayload[];
-  return normalizePolymarketBenchmarkMarkets(payload);
+  return normalizePolymarketBenchmarkMarkets(payload, args.benchmarkSetId);
 }
 
 export async function importAndStoreResolvedPolymarketBenchmarks(args: {
   pool: Pool;
   baseUrl: string;
   fetchImpl?: typeof fetch;
+  benchmarkSetId?: string;
 }): Promise<BenchmarkMarket[]> {
   const markets = await importResolvedPolymarketBenchmarks({
     baseUrl: args.baseUrl,
     fetchImpl: args.fetchImpl,
+    benchmarkSetId: args.benchmarkSetId,
   });
 
   return upsertBenchmarkMarkets(args.pool, markets);
