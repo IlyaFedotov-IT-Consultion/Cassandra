@@ -1,87 +1,109 @@
 # Cassandra
 
-Cassandra is a research prototype for multi-source event forecasting. The repository is organized as a hybrid monorepo with TypeScript services for orchestration and UI plus a Python judging service for probabilistic inference, calibration, and evaluation.
+Cassandra is a research prototype for multi-source event forecasting. The repo combines a TypeScript orchestration API, a shared schema package, and a Python judge service that produces probabilistic verdict traces and calibration snapshots.
 
-## Current Status
-
-The repository currently contains:
-
-- `pnpm` workspace metadata
-- shared TypeScript compiler settings
-- local Docker Compose infrastructure
-- root migration script scaffolding
-- environment variable template
-- the shared schema package
-- the API service skeleton
-- planning and design documents
-
-## Planned Layout
+## Repository Layout
 
 ```text
 apps/
-  api/       Fastify orchestration API
-  web/       Operator-facing inspection UI
+  api/       Fastify orchestration API and persistence layer
 packages/
-  shared/    Shared schemas and TypeScript types
+  shared/    Shared Zod schemas and generated JSON schema artifacts
 services/
-  judge/     Python FastAPI judge service
+  judge/     FastAPI judge and calibration service
 docs/
   designs/   Solution design documents
   plans/     Implementation plans
 ```
+
+## Current State
+
+Today the repository includes working implementations for:
+
+- the shared schema package in `packages/shared`
+- the Fastify API in `apps/api`
+- the Python judge service in `services/judge`
+- Postgres and Redis local infrastructure
+- database migrations for operational and evaluation tables
+- route and scoring tests across the TypeScript and Python services
+
+Still planned or partial:
+
+- `apps/web` does not exist yet
+- `docker-compose.yml` includes placeholder `api`, `judge`, and `web` profile commands rather than production-ready service startup
+- there is no generated OpenAPI or Swagger document yet; the human-written reference lives in [docs/api-reference.md](docs/api-reference.md)
+
+A fuller implementation snapshot lives in [docs/current-status.md](docs/current-status.md).
 
 ## Prerequisites
 
 - Node.js 22+
 - `pnpm` 10+
 - Python 3.12+
-- Docker with Docker Compose
+- Docker with Docker Compose for Postgres and Redis
+- `psql` is optional but useful for running migrations without Docker exec
 
 ## Local Setup
 
-1. Copy the example environment file:
+1. Copy the example environment file.
 
    ```bash
    cp .env.example .env
    ```
 
-   The default local mode is `CASSANDRA_ADAPTER_MODE=fixture`, which is intended for offline iteration without live third-party API calls. Switch to `live` only when you want real judgments or historical replay against external providers.
-
-2. Install workspace metadata and create the lockfile:
+2. Install workspace dependencies.
 
    ```bash
    pnpm install
    ```
 
-3. Start local infrastructure:
+3. Start the local data services.
 
    ```bash
    docker compose up -d postgres redis
    ```
 
-4. Stop local infrastructure when finished:
+4. Apply the database schema.
 
    ```bash
-   docker compose down
+   pnpm db:migrate
    ```
+
+5. Run the API watcher.
+
+   ```bash
+   pnpm --filter @cassandra/api dev
+   ```
+
+6. Run the judge service.
+
+   ```bash
+   cd services/judge
+   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+The default local mode is `CASSANDRA_ADAPTER_MODE=fixture`, which is intended for offline iteration without live third-party API calls. Switch to `live` only when the required upstream credentials are intentionally configured.
 
 ## Environment Variables
 
-The root `.env.example` contains the shared configuration used by the API, judge service, and web app. The most important values are:
+The shared environment template is in `.env.example`. The most important values are:
 
 - `DATABASE_URL`
 - `REDIS_URL`
+- `API_PORT`
 - `JUDGE_BASE_URL`
-- `VITE_API_BASE_URL`
+- `JUDGE_PORT`
 - `CASSANDRA_ADAPTER_MODE`
 - `PERPLEXITY_API_KEY`
 - `OPENROUTER_API_KEY`
 - `POLYMARKET_GAMMA_URL`
 - `POLYMARKET_CLOB_URL`
+- `CUSTOM_MARKET_API_BASE_URL`
+- `CUSTOM_MARKET_API_KEY`
 
 ## Commands
 
-The root package exposes workspace-wide scripts for future packages:
+Workspace-level commands:
 
 ```bash
 pnpm dev
@@ -91,4 +113,19 @@ pnpm lint
 pnpm db:migrate
 ```
 
-`pnpm db:migrate` is the root entrypoint for applying the API schema once `apps/api/src/db/schema.sql` exists in Task 4.
+Useful package-level commands:
+
+```bash
+pnpm --filter @cassandra/api dev
+pnpm --filter @cassandra/api test
+pnpm --filter @cassandra/shared build
+pnpm --filter @cassandra/shared test
+cd services/judge && uv run pytest
+```
+
+## Documentation
+
+- [Current project status](docs/current-status.md)
+- [API reference](docs/api-reference.md)
+- [Solution design](docs/designs/2026-04-11-multisource-forecast-judge-solution-design.md)
+- [Implementation plan](docs/plans/2026-04-11-multisource-forecast-judge-implementation-plan.md)
