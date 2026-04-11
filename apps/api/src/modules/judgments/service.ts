@@ -98,12 +98,21 @@ export interface JudgeClient {
 
 interface JudgmentEvidenceItem {
   id: string;
+  eventId?: string;
   title: string;
   url: string;
   summary: string;
   publishedAt: string;
   sourceFamily: SourceFamily;
+  sourceType: string;
+  publisher: string;
+  retrievedAt: string;
+  rawText: string | null;
+  entities: string[];
+  claims: string[];
   stance: "supports" | "contradicts" | "neutral" | "unknown";
+  qualitySignals: Record<string, unknown>;
+  metadata: Record<string, unknown>;
 }
 
 export interface JudgmentServiceDeps {
@@ -534,7 +543,15 @@ class DefaultJudgeClient implements JudgeClient {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        event: input.event,
+        event: {
+          question: input.event.question,
+          resolutionCriteria: input.event.resolutionCriteria,
+          deadline: input.event.deadline,
+          entities: input.event.entities,
+          referenceClass: input.event.referenceClass,
+          marketSymbols: input.event.marketSymbols,
+          polymarketMarketId: input.event.polymarketMarketId,
+        },
         evaluationTime: input.evaluationTime,
         evidence: input.evidence,
         calibrationSnapshot: input.calibrationSnapshot,
@@ -600,12 +617,21 @@ export async function evaluateEventForecast(
   const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
   const evidenceForJudge: JudgmentEvidenceItem[] = args.evidence.map((item) => ({
     id: item.id,
+    eventId: item.eventId,
     title: item.title,
     url: item.url,
     summary: item.summary,
     publishedAt: item.publishedAt,
     sourceFamily: item.sourceFamily,
+    sourceType: item.sourceType,
+    publisher: item.publisher,
+    retrievedAt: item.retrievedAt,
+    rawText: item.rawText,
+    entities: item.entities,
+    claims: item.claims,
     stance: item.stance,
+    qualitySignals: item.qualitySignals,
+    metadata: item.metadata,
   }));
 
   const cached = await getOrCreateCachedJudgeResult({
