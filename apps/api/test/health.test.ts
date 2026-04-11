@@ -28,4 +28,20 @@ describe("GET /health", () => {
       status: "ok",
     });
   });
+
+  it("allows browser-origin requests for the local web app", async () => {
+    const app = buildApp();
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/health",
+      headers: {
+        origin: "http://localhost:4173",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:4173");
+  });
 });

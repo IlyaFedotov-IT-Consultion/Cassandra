@@ -31,6 +31,21 @@ export function buildApp(checks: ReadinessChecks = {}) {
     logger: false,
   });
 
+  app.addHook("onRequest", async (request, reply) => {
+    const origin = request.headers.origin;
+
+    if (origin) {
+      reply.header("access-control-allow-origin", origin);
+      reply.header("access-control-allow-methods", "GET,POST,OPTIONS");
+      reply.header("access-control-allow-headers", "content-type");
+      reply.header("vary", "origin");
+    }
+
+    if (request.method === "OPTIONS") {
+      reply.code(204).send();
+    }
+  });
+
   app.get("/health", async () => ({
     status: "ok",
   }));
