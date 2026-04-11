@@ -65,7 +65,7 @@ describe("backtest retrain route", () => {
     vi.restoreAllMocks();
   });
 
-  it("loads traces and outcomes, calls the judge service calibrate endpoint, and persists the returned snapshot", async () => {
+  it("loads traces and outcomes, calls the judge service calibrate endpoint in live mode, and persists the returned snapshot", async () => {
     const capturedQueries: Array<{ text: string; params?: unknown[] }> = [];
     const pool = {
       async query(text: string, params?: unknown[]) {
@@ -165,7 +165,7 @@ describe("backtest retrain route", () => {
         DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://judge.local",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
     });
 
@@ -205,6 +205,233 @@ describe("backtest retrain route", () => {
       expect(capturedQueries.some((entry) => entry.text.includes("INSERT INTO calibration_snapshots"))).toBe(
         true,
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("retries calibration locally in fixture mode without calling the judge service", async () => {
+    const capturedQueries: Array<{ text: string; params?: unknown[] }> = [];
+    const pool = {
+      async query(text: string, params?: unknown[]) {
+        capturedQueries.push({ text, params });
+
+        if (text.includes("FROM outcomes") && !text.includes("verdict_trace")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                event_id: "event-1",
+                resolved_value: true,
+                resolved_at: new Date("2026-12-31T23:59:59Z"),
+                resolution_source_url: "https://example.com/resolution",
+              },
+            ],
+          };
+        }
+
+        if (text.includes("FROM outcomes") && text.includes("verdict_trace")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                event_id: "event-1",
+                resolved_value: true,
+                resolved_at: new Date("2026-12-31T23:59:59Z"),
+                resolution_source_url: "https://example.com/resolution",
+                verdict_trace: verdictTrace,
+              },
+            ],
+          };
+        }
+
+        if (text.includes("INSERT INTO calibration_snapshots")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                id: "db-snapshot-2",
+                created_at: new Date("2026-01-02T00:00:00Z"),
+                training_window: "all_time",
+                judge_weights: {
+                  official_records: 1 / 3,
+                  community_signal: 1 / 3,
+                  open_web_research: 1 / 3,
+                },
+                base_rate_params: {},
+                market_prior_params: {},
+                calibration_params: { method: "identity" },
+                online_learning_params: { enabled: false, stepSizeScale: 0 },
+                metrics: {},
+                weight_regime: "cold_start",
+                resolved_outcome_count: 1,
+                approved: false,
+              },
+            ],
+          };
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      },
+    } as never;
+
+    const fetchMock = vi.fn(async () => {
+      throw new Error("fixture mode should not call the judge service");
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://judge.local",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/backtests/retrain",
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({
+        id: "db-snapshot-2",
+        weightRegime: "cold_start",
+        resolvedOutcomeCount: 1,
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(capturedQueries.some((entry) => entry.text.includes("INSERT INTO calibration_snapshots"))).toBe(
+        true,
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lists calibration snapshots and fetches a snapshot by id", async () => {
+    const pool = {
+      async query(text: string, params?: unknown[]) {
+        if (text.includes("FROM calibration_snapshots") && text.includes("ORDER BY created_at DESC")) {
+          return {
+            rowCount: 2,
+            rows: [
+              {
+                id: "snapshot-2",
+                created_at: new Date("2026-01-03T00:00:00Z"),
+                training_window: "rolling_90d",
+                judge_weights: { official_records: 0.6 },
+                base_rate_params: {},
+                market_prior_params: {},
+                calibration_params: { method: "isotonic" },
+                online_learning_params: { enabled: true },
+                metrics: { ece: 0.04 },
+                weight_regime: "steady",
+                resolved_outcome_count: 120,
+                approved: true,
+              },
+              {
+                id: "snapshot-1",
+                created_at: new Date("2026-01-02T00:00:00Z"),
+                training_window: "all_time",
+                judge_weights: { official_records: 0.5 },
+                base_rate_params: {},
+                market_prior_params: {},
+                calibration_params: { method: "logistic" },
+                online_learning_params: { enabled: true },
+                metrics: { ece: 0.08 },
+                weight_regime: "warming",
+                resolved_outcome_count: 25,
+                approved: false,
+              },
+            ],
+          };
+        }
+
+        if (text.includes("FROM calibration_snapshots") && Array.isArray(params) && params[0] === "snapshot-1") {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                id: "snapshot-1",
+                created_at: new Date("2026-01-02T00:00:00Z"),
+                training_window: "all_time",
+                judge_weights: { official_records: 0.5 },
+                base_rate_params: {},
+                market_prior_params: {},
+                calibration_params: { method: "logistic" },
+                online_learning_params: { enabled: true },
+                metrics: { ece: 0.08 },
+                weight_regime: "warming",
+                resolved_outcome_count: 25,
+                approved: false,
+              },
+            ],
+          };
+        }
+
+        if (text.includes("FROM calibration_snapshots") && Array.isArray(params) && params[0] === "missing") {
+          return {
+            rowCount: 0,
+            rows: [],
+          };
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      },
+    } as never;
+
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://judge.local",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+    });
+
+    try {
+      const listResponse = await app.inject({
+        method: "GET",
+        url: "/backtests/calibration-snapshots",
+      });
+
+      expect(listResponse.statusCode).toBe(200);
+      expect(listResponse.json()).toEqual([
+        expect.objectContaining({
+          id: "snapshot-2",
+          weightRegime: "steady",
+        }),
+        expect.objectContaining({
+          id: "snapshot-1",
+          weightRegime: "warming",
+        }),
+      ]);
+
+      const detailResponse = await app.inject({
+        method: "GET",
+        url: "/backtests/calibration-snapshots/snapshot-1",
+      });
+
+      expect(detailResponse.statusCode).toBe(200);
+      expect(detailResponse.json()).toMatchObject({
+        id: "snapshot-1",
+        resolvedOutcomeCount: 25,
+      });
+
+      const missingResponse = await app.inject({
+        method: "GET",
+        url: "/backtests/calibration-snapshots/missing",
+      });
+
+      expect(missingResponse.statusCode).toBe(404);
+      expect(missingResponse.json()).toEqual({
+        error: "Calibration snapshot not found",
+      });
     } finally {
       await app.close();
     }

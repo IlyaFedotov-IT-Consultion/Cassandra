@@ -2,9 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import {
   BenchmarkMarketSchema,
+  EvaluationPredictionSchema,
   EvaluationRunSchema,
+  EvaluationRunSummarySchema,
   type BenchmarkMarket,
+  type EvaluationPrediction,
   type EvaluationRun,
+  type EvaluationRunSummary,
 } from "@cassandra/shared";
 import type { Pool } from "pg";
 
@@ -39,6 +43,7 @@ export interface EvaluationPredictionInput {
 export interface EvaluationPredictionRecord extends EvaluationPredictionInput {
   id: string;
   evaluationRunId: string;
+  metadata: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -89,6 +94,22 @@ function mapEvaluationRunRow(
   });
 }
 
+function mapEvaluationRunSummaryRow(row: Record<string, unknown>): EvaluationRunSummary {
+  return EvaluationRunSummarySchema.parse({
+    id: String(row.id),
+    benchmarkSetId: String(row.benchmark_set_id),
+    cutoffs: Array.isArray(row.cutoffs) ? row.cutoffs : [],
+    baselines: Array.isArray(row.baselines) ? row.baselines : [],
+    overallMetrics:
+      row.overall_metrics && typeof row.overall_metrics === "object"
+        ? (row.overall_metrics as Record<string, unknown>)
+        : {},
+    replayFidelity: String(row.replay_fidelity),
+    leakageWarnings: Array.isArray(row.leakage_warnings) ? row.leakage_warnings : [],
+    createdAt: toIsoString(row.created_at),
+  });
+}
+
 function mapSliceMetricRow(
   row: Record<string, unknown>,
 ): EvaluationRun["sliceResults"][number] {
@@ -124,7 +145,7 @@ function mapBenchmarkPriceSnapshotRow(
 function mapEvaluationPredictionRow(
   row: Record<string, unknown>,
 ): EvaluationPredictionRecord {
-  return {
+  return EvaluationPredictionSchema.parse({
     id: String(row.id),
     evaluationRunId: String(row.evaluation_run_id),
     benchmarkMarketId: String(row.benchmark_market_id),
@@ -144,7 +165,7 @@ function mapEvaluationPredictionRow(
         ? (row.metadata as Record<string, unknown>)
         : {},
     createdAt: toIsoString(row.created_at),
-  };
+  });
 }
 
 function mapBenchmarkSetSummaryRow(row: Record<string, unknown>): BenchmarkSetSummary {
@@ -273,6 +294,16 @@ export async function listBenchmarkSets(pool: Pool): Promise<BenchmarkSetSummary
   return result.rows.map((row) => mapBenchmarkSetSummaryRow(row as Record<string, unknown>));
 }
 
+export async function listEvaluationRuns(pool: Pool): Promise<EvaluationRunSummary[]> {
+  const result = await pool.query(`
+    SELECT *
+    FROM evaluation_runs
+    ORDER BY created_at DESC
+  `);
+
+  return result.rows.map((row) => mapEvaluationRunSummaryRow(row as Record<string, unknown>));
+}
+
 export async function upsertBenchmarkPriceSnapshots(
   pool: Pool,
   snapshots: BenchmarkPriceSnapshotInput[],
@@ -386,7 +417,7 @@ export async function insertEvaluationPredictions(
 export async function listEvaluationPredictionsForRun(
   pool: Pool,
   evaluationRunId: string,
-): Promise<EvaluationPredictionRecord[]> {
+): Promise<EvaluationPrediction[]> {
   const result = await pool.query(
     `
       SELECT *

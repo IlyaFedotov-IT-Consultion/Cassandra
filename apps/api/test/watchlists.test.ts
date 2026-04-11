@@ -69,6 +69,17 @@ describe("watchlist routes", () => {
       expect(listResponse.statusCode).toBe(200);
       expect(listResponse.json()).toHaveLength(1);
 
+      const detailResponse = await app.inject({
+        method: "GET",
+        url: `/watchlists/${created.id}`,
+      });
+
+      expect(detailResponse.statusCode).toBe(200);
+      expect(detailResponse.json()).toMatchObject({
+        id: created.id,
+        name: "Biotech approvals",
+      });
+
       const candidatesResponse = await app.inject({
         method: "GET",
         url: `/watchlists/${created.id}/candidates`,
@@ -76,6 +87,26 @@ describe("watchlist routes", () => {
 
       expect(candidatesResponse.statusCode).toBe(200);
       expect(candidatesResponse.json()).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 404 when a requested watchlist does not exist", async () => {
+    const app = buildApp({
+      dbPool: pool,
+    });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/watchlists/00000000-0000-0000-0000-000000000000",
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        error: "Watchlist not found",
+      });
     } finally {
       await app.close();
     }

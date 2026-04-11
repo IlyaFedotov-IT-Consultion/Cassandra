@@ -96,6 +96,14 @@ export const EventInputSchema = z
   })
   .strict();
 
+export const EventRecordSchema = EventInputSchema.extend({
+  id: IdSchema,
+  status: z.string().min(1),
+  polymarketMarketId: z.string().min(1).nullable(),
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema,
+}).strict();
+
 export const WatchlistInputSchema = z
   .object({
     name: z.string().min(1),
@@ -115,6 +123,13 @@ export const WatchlistInputSchema = z
   })
   .strict();
 
+export const WatchlistRecordSchema = WatchlistInputSchema.extend({
+  id: IdSchema,
+  status: z.string().min(1),
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema,
+}).strict();
+
 export const CandidateEventSchema = z
   .object({
     id: IdSchema,
@@ -126,6 +141,10 @@ export const CandidateEventSchema = z
     promotionStatus: CandidatePromotionStatusSchema,
   })
   .strict();
+
+export const CandidateEventRecordSchema = CandidateEventSchema.extend({
+  candidateSignature: JsonMapSchema.nullable().default(null),
+}).strict();
 
 export const EvidenceItemSchema = z
   .object({
@@ -295,6 +314,18 @@ export const CalibrationSnapshotSchema = z
   })
   .strict();
 
+export const CalibrationSnapshotSummarySchema = z
+  .object({
+    id: IdSchema,
+    createdAt: TimestampSchema,
+    trainingWindow: z.string().min(1),
+    metrics: JsonMapSchema,
+    weightRegime: WeightRegimeSchema,
+    resolvedOutcomeCount: z.number().int().min(0),
+    approved: z.boolean(),
+  })
+  .strict();
+
 export const BenchmarkMarketSchema = z
   .object({
     id: IdSchema,
@@ -307,6 +338,16 @@ export const BenchmarkMarketSchema = z
     resolvedAt: TimestampSchema,
     resolvedValue: z.boolean(),
     marketUrl: z.string().url(),
+  })
+  .strict();
+
+export const BenchmarkSetSummarySchema = z
+  .object({
+    benchmarkSetId: IdSchema,
+    marketCount: z.number().int().min(0),
+    earliestResolvedAt: TimestampSchema,
+    latestResolvedAt: TimestampSchema,
+    themes: z.array(z.string().min(1)),
   })
   .strict();
 
@@ -336,30 +377,93 @@ export const EvaluationRunSchema = z
   })
   .strict();
 
+export const EvaluationRunSummarySchema = z
+  .object({
+    id: IdSchema,
+    benchmarkSetId: IdSchema,
+    cutoffs: z.array(z.string().min(1)).min(1),
+    baselines: z.array(BaselineNameSchema).min(1),
+    overallMetrics: JsonMapSchema,
+    replayFidelity: ReplayFidelitySchema,
+    leakageWarnings: z.array(z.string().min(1)).default([]),
+    createdAt: TimestampSchema,
+  })
+  .strict();
+
+export const EvaluationPredictionSchema = z
+  .object({
+    id: IdSchema,
+    evaluationRunId: IdSchema,
+    benchmarkMarketId: IdSchema,
+    baseline: BaselineNameSchema,
+    cutoffAt: TimestampSchema,
+    predictedProbability: ProbabilitySchema,
+    outcome: z.boolean().nullable(),
+    theme: z.string().min(1).optional(),
+    horizon: z.string().min(1).optional(),
+    sourceConfiguration: z.string().min(1).optional(),
+    metadata: JsonMapSchema.default({}),
+    createdAt: TimestampSchema,
+  })
+  .strict();
+
+export const JudgmentRecordSummarySchema = z
+  .object({
+    id: IdSchema,
+    eventId: IdSchema,
+    status: JudgmentStatusSchema,
+    verdictTrace: VerdictTraceSchema.nullable(),
+    createdAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+  })
+  .strict();
+
+export const JudgmentRecordDetailsSchema = JudgmentRecordSummarySchema.extend({
+  judgeOpinions: z.array(JudgeOpinionSchema),
+}).strict();
+
 export const CassandraSchemaBundleSchema = z
   .object({
     EventInput: EventInputSchema,
+    EventRecord: EventRecordSchema,
     WatchlistInput: WatchlistInputSchema,
+    WatchlistRecord: WatchlistRecordSchema,
     CandidateEvent: CandidateEventSchema,
+    CandidateEventRecord: CandidateEventRecordSchema,
     EvidenceItem: EvidenceItemSchema,
     JudgeOpinion: JudgeOpinionSchema,
     VerdictTrace: VerdictTraceSchema,
+    JudgmentRecordSummary: JudgmentRecordSummarySchema,
+    JudgmentRecordDetails: JudgmentRecordDetailsSchema,
     OutcomeInput: OutcomeInputSchema,
     CalibrationSnapshot: CalibrationSnapshotSchema,
+    CalibrationSnapshotSummary: CalibrationSnapshotSummarySchema,
     BenchmarkMarket: BenchmarkMarketSchema,
+    BenchmarkSetSummary: BenchmarkSetSummarySchema,
     EvaluationRun: EvaluationRunSchema,
+    EvaluationRunSummary: EvaluationRunSummarySchema,
+    EvaluationPrediction: EvaluationPredictionSchema,
     EvaluationSliceResult: EvaluationSliceResultSchema,
   })
   .strict();
 
 export type EventInput = z.infer<typeof EventInputSchema>;
+export type EventRecord = z.infer<typeof EventRecordSchema>;
 export type WatchlistInput = z.infer<typeof WatchlistInputSchema>;
+export type WatchlistRecord = z.infer<typeof WatchlistRecordSchema>;
 export type CandidateEvent = z.infer<typeof CandidateEventSchema>;
+export type CandidateEventRecord = z.infer<typeof CandidateEventRecordSchema>;
 export type EvidenceItem = z.infer<typeof EvidenceItemSchema>;
 export type JudgeOpinion = z.infer<typeof JudgeOpinionSchema>;
 export type VerdictTrace = z.infer<typeof VerdictTraceSchema>;
+export type JudgmentRecordSummary = z.infer<typeof JudgmentRecordSummarySchema>;
+export type JudgmentRecordDetails = z.infer<typeof JudgmentRecordDetailsSchema>;
 export type OutcomeInput = z.infer<typeof OutcomeInputSchema>;
 export type CalibrationSnapshot = z.infer<typeof CalibrationSnapshotSchema>;
+export type CalibrationSnapshotSummary = z.infer<typeof CalibrationSnapshotSummarySchema>;
 export type BenchmarkMarket = z.infer<typeof BenchmarkMarketSchema>;
+export type BenchmarkSetSummary = z.infer<typeof BenchmarkSetSummarySchema>;
 export type EvaluationSliceResult = z.infer<typeof EvaluationSliceResultSchema>;
 export type EvaluationRun = z.infer<typeof EvaluationRunSchema>;
+export type EvaluationRunSummary = z.infer<typeof EvaluationRunSummarySchema>;
+export type EvaluationPrediction = z.infer<typeof EvaluationPredictionSchema>;

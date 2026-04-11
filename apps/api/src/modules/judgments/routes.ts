@@ -31,7 +31,10 @@ export function registerJudgmentRoutes(
   const evidenceCacheStore = createEvidenceCacheStore(args.redisConnection);
   const judgeCacheStore = createJudgeCacheStore(args.redisConnection);
 
-  app.get("/judgments", async () => listJudgments(args.pool));
+  app.get("/judgments", async (request) => {
+    const query = request.query as { eventId?: string };
+    return listJudgments(args.pool, query.eventId);
+  });
 
   app.get("/judgments/:id", async (request, reply) => {
     const params = request.params as { id?: string };

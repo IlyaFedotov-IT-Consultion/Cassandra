@@ -339,6 +339,49 @@ describe("judgment routes and service", () => {
     }
   });
 
+  it("filters the collection route by event id", async () => {
+    const firstEvent = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const secondEvent = await createEvent(pool, {
+      question: "Will Example Corp secure approval by 2026-12-31?",
+      resolutionCriteria: "Approval must be announced by the regulator.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp"],
+      referenceClass: "regulatory_approval",
+      marketSymbols: [],
+    });
+    const firstJudgment = await createJudgmentRun(pool, firstEvent.id);
+    await createJudgmentRun(pool, secondEvent.id);
+
+    const app = buildApp({
+      dbPool: pool,
+      env: createFixtureEnv(),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/judgments?eventId=${encodeURIComponent(firstEvent.id)}`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual([
+        expect.objectContaining({
+          id: firstJudgment.id,
+          eventId: firstEvent.id,
+        }),
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("reuses the cached judge output in live mode without re-invoking the judge service", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",

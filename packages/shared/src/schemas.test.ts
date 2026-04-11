@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CalibrationSnapshotSchema,
   EvidenceStrengthSchema,
+  EvaluationPredictionSchema,
+  EvaluationRunSummarySchema,
   EventInputSchema,
+  EventRecordSchema,
+  JudgmentRecordDetailsSchema,
+  JudgmentRecordSummarySchema,
+  BenchmarkSetSummarySchema,
   SourceFamilySchema,
   VerdictTraceSchema,
+  WatchlistRecordSchema,
   WeightRegimeSchema,
 } from "./schemas.js";
 
@@ -96,5 +104,269 @@ describe("WeightRegimeSchema", () => {
   it("only accepts the supported regimes", () => {
     expect(WeightRegimeSchema.parse("steady")).toBe("steady");
     expect(() => WeightRegimeSchema.parse("hot")).toThrow();
+  });
+});
+
+describe("workspace response schemas", () => {
+  it("parses event, watchlist, and judgment response records", () => {
+    expect(
+      EventRecordSchema.parse({
+        id: "event-1",
+        question: "Will Example Corp launch Product X by 2026-12-31?",
+        resolutionCriteria: "Launch must be publicly announced.",
+        deadline: "2026-12-31T23:59:59Z",
+        status: "open",
+        entities: ["Example Corp", "Product X"],
+        referenceClass: "product_launch",
+        marketSymbols: ["EXMPL"],
+        polymarketMarketId: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }),
+    ).toMatchObject({
+      id: "event-1",
+      referenceClass: "product_launch",
+    });
+
+    expect(
+      WatchlistRecordSchema.parse({
+        id: "watchlist-1",
+        name: "Biotech approvals",
+        keywords: ["FDA", "approval"],
+        jurisdictions: ["US"],
+        cadence: "daily",
+        sourceToggles: {
+          official: true,
+        },
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }),
+    ).toMatchObject({
+      id: "watchlist-1",
+      status: "active",
+    });
+
+    expect(
+      JudgmentRecordSummarySchema.parse({
+        id: "judgment-1",
+        eventId: "event-1",
+        status: "completed",
+        verdictTrace: {
+          id: "trace-1",
+          eventId: "event-1",
+          evaluationTime: "2026-01-01T12:00:00Z",
+          referenceClass: "product_launch",
+          referenceClassFallback: null,
+          priorProbability: 0.4,
+          rawPosteriorProbability: 0.5,
+          finalProbability: 0.55,
+          confidenceLow: 0.48,
+          confidenceHigh: 0.61,
+          dependencyMatrix: [],
+          disagreementShrinkage: 0.1,
+          judgeOpinions: [
+            {
+              judgeName: "official_records",
+              probability: 0.6,
+              confidence: 0.7,
+              evidenceStrength: "weak_for",
+              rationale: "Mildly supportive evidence.",
+              evidenceIds: ["evidence-1"],
+              warnings: [],
+              logBayesFactor: 0.5,
+              baseWeight: 0.33,
+              dependencyDiscount: 1,
+              freshnessDecay: 1,
+              effectiveLogOddsContribution: 0.16,
+              missingEvidence: [],
+            },
+          ],
+          weightBreakdown: [{ source: "official_records", weight: 0.33, details: {} }],
+          ensembleMethod: "logarithmic_opinion_pool",
+          calibrationMethod: "identity",
+          uncertaintyMethod: "bootstrap",
+          weightRegime: "cold_start",
+          replayFidelity: "exact",
+          conflicts: [],
+          missingEvidence: [],
+          citations: [
+            {
+              title: "Example report",
+              url: "https://example.com/report",
+              sourceFamily: "web",
+            },
+          ],
+          cacheEvents: [],
+          modelVersion: "judge-v1",
+          weightVersion: "weights-v1",
+          calibrationVersion: "cal-v1",
+          status: "completed",
+        },
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }),
+    ).toMatchObject({
+      id: "judgment-1",
+      verdictTrace: expect.objectContaining({
+        finalProbability: 0.55,
+      }),
+    });
+  });
+
+  it("parses detailed judgment, evaluation, and calibration payloads", () => {
+    expect(
+      JudgmentRecordDetailsSchema.parse({
+        id: "judgment-1",
+        eventId: "event-1",
+        status: "completed",
+        verdictTrace: {
+          id: "trace-1",
+          eventId: "event-1",
+          evaluationTime: "2026-01-01T12:00:00Z",
+          referenceClass: "product_launch",
+          referenceClassFallback: null,
+          priorProbability: 0.4,
+          rawPosteriorProbability: 0.5,
+          finalProbability: 0.55,
+          confidenceLow: 0.48,
+          confidenceHigh: 0.61,
+          dependencyMatrix: [],
+          disagreementShrinkage: 0.1,
+          judgeOpinions: [
+            {
+              judgeName: "official_records",
+              probability: 0.6,
+              confidence: 0.7,
+              evidenceStrength: "weak_for",
+              rationale: "Mildly supportive evidence.",
+              evidenceIds: ["evidence-1"],
+              warnings: [],
+              logBayesFactor: 0.5,
+              baseWeight: 0.33,
+              dependencyDiscount: 1,
+              freshnessDecay: 1,
+              effectiveLogOddsContribution: 0.16,
+              missingEvidence: [],
+            },
+          ],
+          weightBreakdown: [{ source: "official_records", weight: 0.33, details: {} }],
+          ensembleMethod: "logarithmic_opinion_pool",
+          calibrationMethod: "identity",
+          uncertaintyMethod: "bootstrap",
+          weightRegime: "cold_start",
+          replayFidelity: "exact",
+          conflicts: [],
+          missingEvidence: [],
+          citations: [
+            {
+              title: "Example report",
+              url: "https://example.com/report",
+              sourceFamily: "web",
+            },
+          ],
+          cacheEvents: [],
+          modelVersion: "judge-v1",
+          weightVersion: "weights-v1",
+          calibrationVersion: "cal-v1",
+          status: "completed",
+        },
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        judgeOpinions: [
+          {
+            id: "opinion-1",
+            judgmentId: "judgment-1",
+            judgeName: "official_records",
+            probability: 0.6,
+            confidence: 0.7,
+            evidenceStrength: "weak_for",
+            rationale: "Mildly supportive evidence.",
+            evidenceIds: ["evidence-1"],
+            warnings: [],
+            logBayesFactor: 0.5,
+            baseWeight: 0.33,
+            dependencyDiscount: 1,
+            freshnessDecay: 1,
+            effectiveLogOddsContribution: 0.16,
+            missingEvidence: [],
+          },
+        ],
+      }),
+    ).toMatchObject({
+      judgeOpinions: expect.arrayContaining([
+        expect.objectContaining({
+          judgmentId: "judgment-1",
+        }),
+      ]),
+    });
+
+    expect(
+      BenchmarkSetSummarySchema.parse({
+        benchmarkSetId: "polymarket_recent_resolved",
+        marketCount: 42,
+        earliestResolvedAt: "2026-01-01T00:00:00Z",
+        latestResolvedAt: "2026-12-31T23:59:59Z",
+        themes: ["technology"],
+      }),
+    ).toMatchObject({
+      marketCount: 42,
+    });
+
+    expect(
+      EvaluationRunSummarySchema.parse({
+        id: "run-1",
+        benchmarkSetId: "polymarket_recent_resolved",
+        cutoffs: ["2026-01-01T00:00:00Z"],
+        baselines: ["model_with_polymarket"],
+        overallMetrics: {
+          brierScore: 0.19,
+        },
+        replayFidelity: "exact",
+        leakageWarnings: [],
+        createdAt: "2026-01-02T00:00:00Z",
+      }),
+    ).toMatchObject({
+      id: "run-1",
+      replayFidelity: "exact",
+    });
+
+    expect(
+      EvaluationPredictionSchema.parse({
+        id: "prediction-1",
+        evaluationRunId: "run-1",
+        benchmarkMarketId: "market-1",
+        baseline: "model_with_polymarket",
+        cutoffAt: "2026-01-01T00:00:00Z",
+        predictedProbability: 0.62,
+        outcome: true,
+        theme: "technology",
+        horizon: "30d",
+        sourceConfiguration: "default",
+        metadata: {},
+        createdAt: "2026-01-02T00:00:00Z",
+      }),
+    ).toMatchObject({
+      benchmarkMarketId: "market-1",
+    });
+
+    expect(
+      CalibrationSnapshotSchema.parse({
+        id: "snapshot-1",
+        createdAt: "2026-01-02T00:00:00Z",
+        trainingWindow: "all_time",
+        judgeWeights: {},
+        baseRateParams: {},
+        marketPriorParams: {},
+        calibrationParams: {},
+        onlineLearningParams: {},
+        metrics: {},
+        weightRegime: "warming",
+        resolvedOutcomeCount: 12,
+        approved: false,
+      }),
+    ).toMatchObject({
+      weightRegime: "warming",
+    });
   });
 });

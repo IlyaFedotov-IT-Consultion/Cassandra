@@ -539,4 +539,139 @@ describe("evaluation routes", () => {
       await app.close();
     }
   });
+
+  it("lists evaluation runs, predictions, and benchmark-set markets", async () => {
+    const captured: Array<{ text: string; params?: unknown[] }> = [];
+    const pool = {
+      async query(text: string, params?: unknown[]) {
+        captured.push({ text, params });
+
+        if (text.includes("FROM evaluation_runs") && text.includes("ORDER BY created_at DESC")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                id: "run-1",
+                benchmark_set_id: "benchmark-set-1",
+                cutoffs: ["30d"],
+                baselines: ["model_with_polymarket"],
+                overall_metrics: { brierScore: 0.19 },
+                replay_fidelity: "exact",
+                leakage_warnings: [],
+                created_at: new Date("2026-01-02T00:00:00Z"),
+              },
+            ],
+          };
+        }
+
+        if (text.includes("FROM evaluation_predictions")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                id: "prediction-1",
+                evaluation_run_id: "run-1",
+                benchmark_market_id: "market-1",
+                baseline: "model_with_polymarket",
+                cutoff_at: new Date("2026-01-01T00:00:00Z"),
+                predicted_probability: 0.62,
+                outcome: true,
+                theme: "technology",
+                horizon: "30d",
+                source_configuration: "default",
+                metadata: {},
+                created_at: new Date("2026-01-02T00:00:00Z"),
+              },
+            ],
+          };
+        }
+
+        if (text.includes("FROM benchmark_markets") && Array.isArray(params) && params[0] === "benchmark-set-1") {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                id: "market-1",
+                benchmark_set_id: "benchmark-set-1",
+                title: "Will Example Corp launch Product X by 2026-12-31?",
+                resolution_criteria: "Official launch announcement by deadline.",
+                theme: "technology",
+                volume: 100000,
+                liquidity: 25000,
+                resolved_at: new Date("2026-12-31T23:59:59Z"),
+                resolved_value: true,
+                market_url: "https://polymarket.com/event/example-product-x",
+              },
+            ],
+          };
+        }
+
+        if (text.includes("FROM evaluation_runs WHERE id")) {
+          return {
+            rowCount: 0,
+            rows: [],
+          };
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      },
+    } as never;
+
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+    });
+
+    try {
+      const runsResponse = await app.inject({
+        method: "GET",
+        url: "/evaluation/runs",
+      });
+
+      expect(runsResponse.statusCode).toBe(200);
+      expect(runsResponse.json()).toEqual([
+        expect.objectContaining({
+          id: "run-1",
+          benchmarkSetId: "benchmark-set-1",
+        }),
+      ]);
+
+      const predictionsResponse = await app.inject({
+        method: "GET",
+        url: "/evaluation/runs/run-1/predictions",
+      });
+
+      expect(predictionsResponse.statusCode).toBe(200);
+      expect(predictionsResponse.json()).toEqual([
+        expect.objectContaining({
+          id: "prediction-1",
+          evaluationRunId: "run-1",
+        }),
+      ]);
+
+      const marketsResponse = await app.inject({
+        method: "GET",
+        url: "/evaluation/benchmark-sets/benchmark-set-1/markets",
+      });
+
+      expect(marketsResponse.statusCode).toBe(200);
+      expect(marketsResponse.json()).toEqual([
+        expect.objectContaining({
+          id: "market-1",
+          benchmarkSetId: "benchmark-set-1",
+        }),
+      ]);
+
+      expect(captured.some((entry) => entry.text.includes("FROM evaluation_runs"))).toBe(true);
+      expect(captured.some((entry) => entry.text.includes("FROM evaluation_predictions"))).toBe(true);
+      expect(captured.some((entry) => entry.text.includes("FROM benchmark_markets"))).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
 });

@@ -167,8 +167,15 @@ export async function getJudgmentById(
   return mapJudgmentRow(result.rows[0] as Record<string, unknown>);
 }
 
-export async function listJudgments(pool: Pool): Promise<JudgmentRecord[]> {
-  const result = await pool.query(`SELECT * FROM judgments ORDER BY created_at DESC`);
+export async function listJudgments(
+  pool: Pool,
+  eventId?: string,
+): Promise<JudgmentRecord[]> {
+  const result = eventId
+    ? await pool.query(`SELECT * FROM judgments WHERE event_id = $1 ORDER BY created_at DESC`, [
+        eventId,
+      ])
+    : await pool.query(`SELECT * FROM judgments ORDER BY created_at DESC`);
 
   return result.rows.map((row) => mapJudgmentRow(row as Record<string, unknown>));
 }

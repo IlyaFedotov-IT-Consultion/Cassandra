@@ -8,7 +8,14 @@ import type { EvaluationRun } from "@cassandra/shared";
 import type { AppEnv } from "../../config/env.js";
 import { createEvidenceCacheStore, createJudgeCacheStore } from "../judgments/service.js";
 import { importAndStoreResolvedPolymarketBenchmarks } from "./polymarketImport.js";
-import { getEvaluationRunById, listBenchmarkSets, type BenchmarkSetSummary } from "./repository.js";
+import {
+  getEvaluationRunById,
+  listBenchmarkMarkets,
+  listBenchmarkSets,
+  listEvaluationPredictionsForRun,
+  listEvaluationRuns,
+  type BenchmarkSetSummary,
+} from "./repository.js";
 import { runHistoricalEvaluation, type RunHistoricalEvaluationInput } from "./replay.js";
 
 const BaselineNameSchema = z.enum([
@@ -135,6 +142,22 @@ export function registerEvaluationRoutes(
 
   app.get("/evaluation/benchmark-sets", async () => getBenchmarkSets());
 
+  app.get("/evaluation/benchmark-sets/:benchmarkSetId/markets", async (request, reply) => {
+    const params = request.params as { benchmarkSetId?: string };
+    const benchmarkSetId = params.benchmarkSetId;
+
+    if (!benchmarkSetId) {
+      reply.code(400);
+      return {
+        error: "Missing benchmark set id",
+      };
+    }
+
+    return listBenchmarkMarkets(args.pool, benchmarkSetId);
+  });
+
+  app.get("/evaluation/runs", async () => listEvaluationRuns(args.pool));
+
   app.get("/evaluation/runs/:id", async (request, reply) => {
     const params = request.params as { id?: string };
     const runId = params.id;
@@ -156,5 +179,19 @@ export function registerEvaluationRoutes(
     }
 
     return run;
+  });
+
+  app.get("/evaluation/runs/:id/predictions", async (request, reply) => {
+    const params = request.params as { id?: string };
+    const runId = params.id;
+
+    if (!runId) {
+      reply.code(400);
+      return {
+        error: "Missing evaluation run id",
+      };
+    }
+
+    return listEvaluationPredictionsForRun(args.pool, runId);
   });
 }

@@ -13,6 +13,29 @@ import {
 export function registerWatchlistRoutes(app: FastifyInstance, pool: Pool) {
   app.get("/watchlists", async () => listWatchlists(pool));
 
+  app.get("/watchlists/:id", async (request, reply) => {
+    const params = request.params as { id?: string };
+    const watchlistId = params.id;
+
+    if (!watchlistId) {
+      reply.code(400);
+      return {
+        error: "Missing watchlist id",
+      };
+    }
+
+    const watchlist = await getWatchlistById(pool, watchlistId);
+
+    if (!watchlist) {
+      reply.code(404);
+      return {
+        error: "Watchlist not found",
+      };
+    }
+
+    return watchlist;
+  });
+
   app.get("/watchlists/:id/candidates", async (request, reply) => {
     const params = request.params as { id?: string };
     const watchlistId = params.id;

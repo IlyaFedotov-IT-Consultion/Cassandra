@@ -129,6 +129,31 @@ export async function getLatestCalibrationSnapshot(
   return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
 }
 
+export async function getCalibrationSnapshotById(
+  pool: Pool,
+  snapshotId: string,
+): Promise<CalibrationSnapshot | null> {
+  const result = await pool.query(`SELECT * FROM calibration_snapshots WHERE id = $1`, [
+    snapshotId,
+  ]);
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
+}
+
+export async function listCalibrationSnapshots(pool: Pool): Promise<CalibrationSnapshot[]> {
+  const result = await pool.query(`
+    SELECT *
+    FROM calibration_snapshots
+    ORDER BY created_at DESC
+  `);
+
+  return result.rows.map((row) => mapCalibrationSnapshotRow(row as Record<string, unknown>));
+}
+
 export async function loadCalibrationTrainingData(
   pool: Pool,
 ): Promise<{

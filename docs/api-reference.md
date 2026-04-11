@@ -165,6 +165,15 @@ Response items include:
 - `createdAt`
 - `updatedAt`
 
+### `GET /watchlists/:id`
+
+Returns a single persisted watchlist.
+
+Errors:
+
+- `400` if `id` is missing
+- `404` if the watchlist does not exist
+
 ### `GET /watchlists/:id/candidates`
 
 Returns candidate events linked to a watchlist.
@@ -238,6 +247,10 @@ Errors:
 
 Lists stored judgment runs in reverse chronological order.
 
+Query parameters:
+
+- `eventId` optional; when supplied, only judgments for that event are returned
+
 Response shape:
 
 - array of judgment records
@@ -287,6 +300,29 @@ Success:
 
 - status `201`
 - response body is the persisted `CalibrationSnapshot`
+
+### `GET /backtests/calibration-snapshots`
+
+Lists stored calibration snapshot summaries in reverse chronological order.
+
+Each item includes:
+
+- `id`
+- `createdAt`
+- `trainingWindow`
+- `metrics`
+- `weightRegime`
+- `resolvedOutcomeCount`
+- `approved`
+
+### `GET /backtests/calibration-snapshots/:id`
+
+Fetches a single stored calibration snapshot.
+
+Errors:
+
+- `400` if `id` is missing
+- `404` with `error: "Calibration snapshot not found"`
 
 ### `POST /evaluation/benchmarks/import/polymarket`
 
@@ -350,6 +386,15 @@ Response fields:
 - `earliestResolvedAt` and `latestResolvedAt` bound the resolved-market window in the set
 - `themes` is the deduplicated sorted list of themes represented in the set
 
+### `GET /evaluation/benchmark-sets/:benchmarkSetId/markets`
+
+Lists benchmark markets inside a benchmark set.
+
+Errors:
+
+- `400` if `benchmarkSetId` is missing
+- `404` with `error: "Benchmark set not found"`
+
 ### `POST /evaluation/runs`
 
 Creates and executes a historical evaluation run.
@@ -394,6 +439,27 @@ Success:
 
 - status `200`
 - response body is an `EvaluationRun`
+
+Errors:
+
+- `400` if `id` is missing
+- `404` with `error: "Evaluation run not found"`
+
+### `GET /evaluation/runs`
+
+Lists stored evaluation runs in reverse chronological order.
+
+Each item includes:
+
+- `id`
+- `benchmarkSetId`
+- `overallMetrics`
+- `replayFidelity`
+- `createdAt`
+
+### `GET /evaluation/runs/:id/predictions`
+
+Lists persisted prediction rows for an evaluation run.
 
 Errors:
 
