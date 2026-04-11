@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "title": "Example Corp product update",
+      "url": "https://news.example.com/product-x?utm_source=perplexity",
+      "publisher": "Example News",
+      "publishedAt": "2026-10-10T09:00:00Z",
+      "summary": "Research summary indicates Product X may launch this year.",
+      "claims": ["Product X may launch this year"],
+      "entities": ["Example Corp", "Product X"],
+      "stance": "supports"
+    }
+  ]
+}

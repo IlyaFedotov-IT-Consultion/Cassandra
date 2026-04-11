@@ -1,0 +1,15 @@
+{
+  "markets": [
+    {
+      "id": "poly-1",
+      "title": "Will Example Corp launch Product X by 2026-12-31?",
+      "url": "https://polymarket.com/event/example-product-x",
+      "publisher": "Polymarket",
+      "publishedAt": "2026-10-09T12:00:00Z",
+      "summary": "Market metadata for Product X launch.",
+      "claims": ["Prediction market exists for Product X launch"],
+      "entities": ["Example Corp", "Product X"],
+      "stance": "neutral"
+    }
+  ]
+}

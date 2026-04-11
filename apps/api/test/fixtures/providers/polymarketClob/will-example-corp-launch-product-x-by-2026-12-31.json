@@ -1,0 +1,14 @@
+{
+  "prices": [
+    {
+      "marketId": "poly-1",
+      "url": "https://clob.polymarket.com/market/poly-1",
+      "publisher": "Polymarket CLOB",
+      "publishedAt": "2026-10-09T12:30:00Z",
+      "summary": "Price history suggests 62% probability.",
+      "claims": ["Market-implied probability around 0.62"],
+      "entities": ["Example Corp", "Product X"],
+      "stance": "supports"
+    }
+  ]
+}

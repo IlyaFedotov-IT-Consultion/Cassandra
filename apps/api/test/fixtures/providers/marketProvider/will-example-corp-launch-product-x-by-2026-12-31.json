@@ -1,0 +1,15 @@
+{
+  "quotes": [
+    {
+      "symbol": "EXMPL",
+      "headline": "Analysts price in Product X launch",
+      "url": "https://markets.example.com/exmpl-launch?utm_campaign=feed",
+      "publisher": "Market Wire",
+      "publishedAt": "2026-10-11T09:30:00Z",
+      "summary": "Shares rose on launch expectations.",
+      "claims": ["Traders expect launch"],
+      "entities": ["Example Corp", "Product X"],
+      "stance": "supports"
+    }
+  ]
+}
