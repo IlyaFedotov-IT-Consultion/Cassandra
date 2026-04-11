@@ -161,7 +161,6 @@ Every adapter produces a normalized `EvidenceItem` with this conceptual shape:
   "entities": ["string"],
   "claims": ["string"],
   "stance": "supports|contradicts|neutral|unknown",
-  "freshnessHours": 12.5,
   "qualitySignals": {
     "officialDomain": true,
     "governmentDomain": false,
@@ -197,7 +196,7 @@ Every adapter produces a normalized `EvidenceItem` with this conceptual shape:
 - Deduplicate by canonical URL plus fuzzy title hash.
 - Cluster near-identical news rewrites into one group.
 - Preserve raw material but judge on normalized summaries and extracted claims.
-- Record freshness at retrieval time so late re-scoring does not lose temporal context.
+- Persist `publishedAt` verbatim and never pre-compute freshness at ingest time. Freshness is derived at aggregation time as `evaluationTime - publishedAt`, where `evaluationTime` is the wall clock in live mode and the replay cutoff in backtest mode. This keeps the same evidence row usable across historical replay cutoffs without mutation.
 - Apply source-family-specific quality signals rather than one global trust score.
 
 ## 8. Judging Pipeline
@@ -228,30 +227,58 @@ The API orchestrator collects evidence from:
 
 ### 8.3 Stage 3: Judge panel
 
-The judge service runs a fixed panel:
+The judge service runs a fixed panel. Market and prediction-market signals are intentionally excluded from the judge panel and routed through the prior step instead (§8.5). This prevents the same market information from being double-counted as both a prior and a likelihood update under log-opinion pooling.
 
-- `market_prior`
-  - converts market and prediction-market signals into a prior probability
+The three evidence-reading judges:
+
 - `official_records`
   - focuses on official, government, and regulatory evidence
 - `community_signal`
   - measures narrative momentum, rumor density, and contradiction patterns
 - `open_web_research`
   - synthesizes broad web reporting and corroboration patterns
+
+Plus one meta-judge:
+
 - `cross_examiner`
-  - attacks the other judges' conclusions, identifies unsupported leaps, and recommends penalties
+  - reads the other judges' opinions and flags unsupported leaps, missing corroboration, internal contradictions, and evidence over-reach
+  - produces a structured `conflicts` list and per-judge `warnings`; it does not emit a scalar penalty
+  - the aggregator converts judge dispersion into a quantitative contradiction penalty independently (§8.5); the cross-examiner provides the qualitative trace that explains *why* judges disagreed
 
-Each judge returns:
+Each evidence-reading judge returns a raw opinion (§8.3.1). The aggregator then derives the finalized `JudgeOpinion` object that ends up in the trace, including `logBayesFactor`, `reliabilityWeight`, `dependencyDiscount`, and `freshnessDecay`.
 
-- `probability`
-- `confidence`
-- `logBayesFactor`
-- `reliabilityWeight`
-- `dependencyDiscount`
-- `rationale`
-- `evidenceIds`
-- `warnings`
-- `missingEvidence`
+### 8.3.1 Judge output protocol
+
+LLM-backed judges produce poorly calibrated scalars when asked directly for log Bayes factors: the output distribution collapses to a few favored values. v1 uses an ordinal `evidenceStrength` Likert with a fixed monotonic mapping to bounded log BFs.
+
+Each evidence-reading judge returns:
+
+- `probability` — sanity-check value used for display and dispersion only
+- `evidenceStrength` — one of `strong_against`, `moderate_against`, `weak_against`, `neutral`, `weak_for`, `moderate_for`, `strong_for`
+- `rationale` — free text explaining the choice
+- `evidenceIds` — the evidence items actually used
+- `warnings` — free text list of caveats
+- `missingEvidence` — structured list of evidence the judge expected but could not find
+
+The aggregator maps `evidenceStrength` to a bounded log Bayes factor using a fixed table:
+
+```text
+strong_against    -> -3.0
+moderate_against  -> -1.5
+weak_against      -> -0.5
+neutral           ->  0.0
+weak_for          -> +0.5
+moderate_for      -> +1.5
+strong_for        -> +3.0
+```
+
+The table is intentionally coarse and symmetric. Mapping values can be tuned by calibration once enough resolved outcomes exist, but the v1 defaults above are used until the calibration regime allows learned overrides (§8.5).
+
+Benefits:
+
+- judge outputs are naturally bounded, so no single judge can dominate the pool
+- outputs are deterministic to test with fake LLMs
+- the Likert level is what a calibrated human forecaster can reliably produce — LLMs match that grain better than they match a continuous log-BF
 
 ### 8.4 Forecasting theories used in v1
 
@@ -260,6 +287,13 @@ The mathematical core is based on a small set of explicit forecasting theories r
 - **Reference-class forecasting**
   - Every event should start from a base-rate prior when a relevant historical class exists, such as regulatory approvals, election outcomes, product launches, or court decisions.
   - This reduces anchoring on the latest headlines and follows the forecasting principle that outside-view rates should constrain inside-view narratives.
+  - v1 does not attempt automatic reference-class discovery. Operators pick a `referenceClass` from a curated taxonomy at event-creation time, and the base-rate table is seeded from 3–5 classes covering the initial benchmark themes. The starting taxonomy is:
+    - `regulatory_approval_binary`
+    - `election_binary_uncontested`
+    - `product_launch_by_date`
+    - `macro_release_threshold`
+    - `geopolitical_event_binary`
+  - When `referenceClass` is null or the selected class has fewer than a minimum sample threshold of historical outcomes, the system falls back to a global `Beta(1, 1)` prior and sets a `referenceClassFallback` flag on the trace. Automated class discovery is left for a later iteration.
 - **Bayesian updating**
   - New evidence is treated as a likelihood update against a prior, not as a fresh forecast from scratch.
   - In implementation terms, each judge contributes a log Bayes factor or log-likelihood ratio rather than only a free-form probability.
@@ -288,12 +322,13 @@ The aggregation layer is explicit and reproducible:
 1. Construct a base-rate prior from the best available reference class.
 2. Blend the base-rate prior with liquidity-adjusted market and prediction-market priors.
 3. Convert each judge output into a log Bayes factor or log-odds contribution.
-4. Apply base judge weights from the latest calibration snapshot.
-5. Apply evidence-quality modifiers, freshness decay, and dependency discounts.
-6. Apply disagreement penalties when the cross-examiner identifies unsupported divergence.
-7. Pool the adjusted opinions with a regularized logarithmic opinion pool.
-8. Convert the pooled posterior log-odds back to raw probability.
-9. Pass the raw probability through the latest approved calibration model.
+4. Map each judge's `evidenceStrength` to a bounded `log_bayes_factor_j` via the fixed table in §8.3.1.
+5. Apply base judge weights from the latest calibration snapshot.
+6. Apply evidence-quality modifiers, freshness decay, and dependency discounts (see §8.5.1).
+7. Compute a disagreement shrinkage term from judge dispersion (see §8.5.2). The cross-examiner's structured output is attached to the trace but does not contribute a scalar.
+8. Pool the adjusted opinions with a regularized logarithmic opinion pool.
+9. Convert the pooled posterior log-odds back to raw probability.
+10. Pass the raw probability through the latest approved calibration model.
 
 Conceptual formula:
 
@@ -302,27 +337,68 @@ prior_log_odds =
   alpha * logit(base_rate_prior)
   + (1 - alpha) * logit(liquidity_adjusted_market_prior)
 
-posterior_log_odds =
+raw_posterior_log_odds =
   prior_log_odds
   + sum(
-      judge_weight_j
-      * reliability_j
+      base_weight_j
       * dependency_discount_j
       * evidence_quality_j
       * freshness_decay_j
       * log_bayes_factor_j
     )
-  - contradiction_penalty
+
+posterior_log_odds =
+  (1 - shrinkage) * raw_posterior_log_odds
 
 calibrated_probability = calibration_map(sigmoid(posterior_log_odds))
 ```
 
 Where:
 
-- `alpha` is the shrinkage term between outside-view and market-view priors
-- `dependency_discount_j` reduces overweighting when judges rely on overlapping evidence
-- `freshness_decay_j` follows an exponential forgetting curve
-- `calibration_map` is the learned monotonic post-processing function
+- `alpha` is the shrinkage term between outside-view and market-view priors. When the selected `referenceClass` has insufficient sample, `alpha` is set to 0 and the prior becomes market-only.
+- `base_weight_j` is the per-judge weight from the latest calibration snapshot. In the cold-start regime (§8.5.3) all weights are uniform.
+- `dependency_discount_j` reduces overweighting when judges rely on overlapping evidence (§8.5.1).
+- `freshness_decay_j` follows an exponential forgetting curve `exp(-age_hours / half_life_hours)`, where `age_hours` is computed at aggregation time from `evaluationTime - publishedAt`.
+- `evidence_quality_j` is a bounded multiplier aggregated from per-item quality signals (§7) and capped in `[0.5, 1.5]`.
+- `shrinkage` is the disagreement shrinkage in `[0, 1)` (§8.5.2); higher dispersion pulls the posterior toward the prior rather than toward 0.5 of a raw probability scale, preserving prior signal while damping disputed updates.
+- `calibration_map` is the learned monotonic post-processing function; in the cold-start regime it is the identity.
+
+### 8.5.1 Dependency discount
+
+Judges that read overlapping evidence should not count as independent votes. v1 computes the discount post-hoc from the evidence sets each judge actually cited:
+
+```text
+for each judge j:
+  overlap_j = sum over k ≠ j of jaccard(evidenceIds_j, evidenceIds_k)
+  n_eff_j   = 1 / (1 + overlap_j)
+  dependency_discount_j = n_eff_j
+```
+
+The discount is bounded in `(0, 1]`. Two judges citing identical evidence end up with `dependency_discount ≈ 0.5` each, so their combined contribution approximates one independent judge. The matrix of pairwise Jaccard overlaps is persisted in the debug trace.
+
+### 8.5.2 Disagreement shrinkage (contradiction handling)
+
+The disagreement term is deterministic and computed from judge dispersion, not from the cross-examiner:
+
+```text
+log_odds_j = base_weight_j * log_bayes_factor_j   # per-judge, unweighted by discounts
+dispersion = variance(log_odds_j across judges)
+shrinkage  = clip(k_disagree * dispersion, 0, shrinkage_max)
+```
+
+Defaults for v1: `k_disagree = 0.25`, `shrinkage_max = 0.6`. Shrinkage pulls the posterior toward the prior rather than toward 0.5, which preserves prior signal while damping contested updates. The cross-examiner's role becomes qualitative — its structured `conflicts` and `warnings` are attached to the trace so operators can see *why* the shrinkage activated, but it does not tune the scalar.
+
+### 8.5.3 Cold-start and data-volume regimes
+
+Online expert weighting and calibration both require resolved outcomes. v1 defines three regimes, switched automatically by the number of resolved outcomes `N` covered by the latest snapshot:
+
+| Regime | Condition | Judge weights | Calibration |
+|---|---|---|---|
+| `cold_start` | `N < 20` | uniform across judges, no online updates | identity (no remap) |
+| `warming` | `20 ≤ N < 100` | exponentially weighted updates with step size halved | logistic or beta calibration |
+| `steady` | `N ≥ 100` | full exponentially weighted updates | isotonic with logistic fallback |
+
+The active regime is persisted as `weightRegime` on every `VerdictTrace`, so traces from different periods remain self-describing. The Likert→BF mapping table (§8.3.1) is frozen at its defaults in `cold_start` and `warming`; only `steady` may use learned overrides.
 
 ### 8.6 Selected algorithms for v1
 
@@ -383,6 +459,7 @@ The band is not a separate forecast. It is an uncertainty envelope around the fi
 - `deadline`
 - `status`
 - `entities`
+- `referenceClass` (nullable; selected from the v1 taxonomy in §8.4)
 - `marketSymbols`
 - `polymarketMarketId`
 - `createdAt`
@@ -411,25 +488,39 @@ The band is not a separate forecast. It is an uncertainty envelope around the fi
 #### `EvidenceItem`
 
 - normalized content plus source metadata and quality signals
+- `publishedAt` is persisted verbatim; no pre-computed freshness field (see §7.2)
 
 #### `JudgeOpinion`
+
+The `JudgeOpinion` has two sets of fields: those produced by the LLM-backed judge, and those derived post-hoc by the aggregator. Both are persisted so the trace is self-explaining.
+
+Judge-produced:
 
 - `id`
 - `judgmentId`
 - `judgeName`
-- `probability`
-- `confidence`
-- `logBayesFactor`
-- `reliabilityWeight`
-- `dependencyDiscount`
+- `probability` (sanity-check display value)
+- `evidenceStrength` (Likert ordinal, §8.3.1)
 - `rationale`
 - `evidenceIds`
 - `warnings`
+- `missingEvidence`
+
+Aggregator-derived:
+
+- `logBayesFactor` (mapped from `evidenceStrength` via the §8.3.1 table)
+- `baseWeight` (from the active `CalibrationSnapshot`)
+- `dependencyDiscount` (Jaccard-based, §8.5.1)
+- `freshnessDecay` (aggregate of the judge's cited evidence ages at `evaluationTime`)
+- `effectiveLogOddsContribution` (final pre-shrinkage contribution, for trace inspection)
 
 #### `VerdictTrace`
 
 - `id`
 - `eventId`
+- `evaluationTime` (wall clock in live mode, replay cutoff in backtest mode)
+- `referenceClass` (snapshot of `Event.referenceClass` at evaluation time)
+- `referenceClassFallback` (boolean; true when the class was null or under-sampled and `Beta(1, 1)` was used)
 - `priorProbability`
 - `rawPosteriorProbability`
 - `finalProbability`
@@ -437,15 +528,19 @@ The band is not a separate forecast. It is an uncertainty envelope around the fi
 - `confidenceHigh`
 - `judgeOpinions`
 - `weightBreakdown`
+- `dependencyMatrix` (per-judge pairwise Jaccard overlaps)
+- `disagreementShrinkage` (computed scalar, §8.5.2)
 - `ensembleMethod`
 - `calibrationMethod`
 - `uncertaintyMethod`
-- `conflicts`
-- `missingEvidence`
+- `conflicts`: `Array<{ judgeA: string, judgeB: string, reason: string, severity: "low"|"medium"|"high" }>`
+- `missingEvidence`: `Array<{ claim: string, sourceFamily: string, reason: string }>`
 - `citations`
 - `modelVersion`
 - `weightVersion`
+- `weightRegime` (`cold_start` | `warming` | `steady`, §8.5.3)
 - `calibrationVersion`
+- `replayFidelity` (`live` | `approximate`, for historical replay traces)
 - `status`
 
 #### `Outcome`
@@ -609,12 +704,16 @@ Required environment variables:
 
 Optional:
 
+- `CASSANDRA_ADAPTER_MODE` (`live` | `fixture`; when `fixture`, all evidence providers and LLM judges return canned responses from fixture directories, allowing the full stack to run with no external API keys)
 - domain allowlists for official and government search
 - queue concurrency values
 - adapter timeouts
 - calibration retraining cadence
+- cache TTLs for evidence and judge-output layers (§13.2)
 
 ## 13. Reliability And Safety
+
+### 13.1 Input and execution safety
 
 - Treat all external content as untrusted input.
 - Record every citation used in a judgment.
@@ -622,6 +721,17 @@ Optional:
 - Prevent a single evidence family from dominating the score without corroboration.
 - Keep raw retrieval outputs for debugging, but only normalized evidence should influence the final aggregation.
 - Apply strict timeouts and retries around external adapters.
+
+### 13.2 Cost and caching budget
+
+A live judgment invokes Perplexity, multiple LLM judges via OpenRouter, Polymarket Gamma and CLOB, and the custom market provider. A full historical evaluation run (Task 10A) can trigger hundreds to low thousands of judgments. Without caching, a single eval run can cost hundreds of dollars of third-party API credits and still hit rate limits.
+
+v1 caches at two layers, both backed by Redis:
+
+- **Evidence cache.** Keyed on `(canonical_event_question_hash, evaluationTime_hour_bucket, providerName)`. Values are normalized `EvidenceItem[]`. TTL is long (days) because historical cutoffs do not change. The same event-cutoff combination is then hit once per eval run regardless of which baseline is active.
+- **Judge output cache.** Keyed on `(judgeName, sorted(evidenceIds)_hash, judgeModelVersion, promptVersion)`. Values are raw `JudgeOpinion` records. TTL is shorter (hours to a day). The `model_without_polymarket` and `model_with_polymarket` baselines share all non-market judge computations through this cache.
+
+Both caches are bypassed when `CASSANDRA_ADAPTER_MODE=fixture` (the fixtures are themselves the cache). The cache key must include a `promptVersion` so prompt changes invalidate cleanly, and cache reads must be logged in the debug trace so a reviewer can see whether a judgment was computed or replayed.
 
 ## 14. Risks And Mitigations
 

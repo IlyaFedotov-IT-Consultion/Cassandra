@@ -14,13 +14,16 @@
 
 The judging core is not a generic score blender. The implementation must explicitly include:
 
-- reference-class forecasting through empirical-Bayes base-rate priors
-- liquidity-adjusted market and prediction-market priors
-- Bayesian evidence updates expressed as bounded log Bayes factors
+- reference-class forecasting through empirical-Bayes base-rate priors, with explicit `referenceClass` tagging per design §8.4 (no automatic class discovery in v1)
+- liquidity-adjusted market and prediction-market priors (prior-only; markets never enter the judge panel — design §8.3)
+- Bayesian evidence updates expressed as bounded log Bayes factors mapped from a Likert `evidenceStrength` ordinal (design §8.3.1)
+- Jaccard-based dependency discount computed by the aggregator from judge `evidenceIds` overlap (design §8.5.1)
+- variance-based disagreement shrinkage toward the prior instead of a cross-examiner penalty scalar (design §8.5.2)
+- cold-start regimes (`cold_start` → `warming` → `steady`) switching weights and calibration by resolved-outcome count (design §8.5.3)
 - regularized logarithmic opinion pooling in log-odds space
 - proper scoring rules: Brier score and log score
-- online expert reweighting with exponentially weighted updates
-- isotonic calibration with logistic fallback
+- online expert reweighting with exponentially weighted updates (warming/steady regimes only)
+- isotonic calibration with logistic fallback (steady regime); logistic/beta in warming; identity in cold_start
 - bootstrap-based uncertainty estimation over evidence clusters and judge subsets
 
 ## Target File Layout
@@ -96,6 +99,7 @@ The judging core is not a generic score blender. The implementation must explici
 - Create: `.env.example`
 - Create: `docker-compose.yml`
 - Create: `README.md`
+- Create: `scripts/db-migrate.sh`
 
 **Step 1: Create the workspace root files**
 
@@ -103,9 +107,12 @@ Write root files defining:
 
 - workspace packages: `apps/*`, `packages/*`
 - common TypeScript compiler settings
-- root scripts: `dev`, `build`, `test`, `lint`
-- service environment variables
+- root scripts: `dev`, `build`, `test`, `lint`, `db:migrate`
+- service environment variables, including `CASSANDRA_ADAPTER_MODE` (default `live`, supported `live|fixture`)
 - Docker services for `postgres`, `redis`, `api`, `judge`, and `web`
+- `scripts/db-migrate.sh` that runs `psql "$DATABASE_URL" -f apps/api/src/db/schema.sql` so the schema can be applied to a cold Postgres container before tests. Wired into `pretest` on the API package in Task 4.
+
+Document `CASSANDRA_ADAPTER_MODE=fixture` in `.env.example` as the default mode for local iteration without external API keys. Live mode is only required for real judgments and historical replay.
 
 **Step 2: Verify the workspace metadata parses**
 
@@ -148,17 +155,18 @@ git commit -m "chore: scaffold workspace and local runtime"
 - Create: `packages/shared/tsconfig.json`
 - Create: `packages/shared/src/index.ts`
 - Create: `packages/shared/src/schemas.ts`
+- Create: `packages/shared/scripts/export-json-schema.ts`
 - Test: `packages/shared/src/schemas.ts`
 
 **Step 1: Define the canonical schemas**
 
 Implement Zod schemas and exported types for:
 
-- `EventInput`
+- `EventInput` (includes nullable `referenceClass` from the v1 taxonomy in design §8.4)
 - `WatchlistInput`
 - `CandidateEvent`
-- `EvidenceItem`
-- `JudgeOpinion`
+- `EvidenceItem` (persists `publishedAt` verbatim; no `freshnessHours` field — freshness is derived at aggregation time, see design §7.2)
+- `JudgeOpinion` (split into judge-produced fields and aggregator-derived fields, per design §9.1)
 - `VerdictTrace`
 - `OutcomeInput`
 - `CalibrationSnapshot`
@@ -166,31 +174,50 @@ Implement Zod schemas and exported types for:
 - `EvaluationRun`
 - `EvaluationSliceResult`
 
-Use exact enum values for source families and judgment statuses so API and UI cannot drift.
+Use exact enum values for source families, judgment statuses, `evidenceStrength` Likert levels (`strong_against`…`strong_for`), and `weightRegime` (`cold_start|warming|steady`) so API and UI cannot drift.
 
 Ensure the mathematical trace fields are part of the schema from day one:
 
-- `JudgeOpinion.logBayesFactor`
-- `JudgeOpinion.reliabilityWeight`
-- `JudgeOpinion.dependencyDiscount`
+- `JudgeOpinion.evidenceStrength` (Likert ordinal, judge-produced)
+- `JudgeOpinion.logBayesFactor` (aggregator-derived via §8.3.1 table)
+- `JudgeOpinion.baseWeight` (from calibration snapshot)
+- `JudgeOpinion.dependencyDiscount` (aggregator-computed from Jaccard of `evidenceIds`)
+- `JudgeOpinion.freshnessDecay`
+- `JudgeOpinion.effectiveLogOddsContribution`
+- `VerdictTrace.evaluationTime`
+- `VerdictTrace.referenceClass` / `VerdictTrace.referenceClassFallback`
 - `VerdictTrace.priorProbability`
 - `VerdictTrace.rawPosteriorProbability`
+- `VerdictTrace.dependencyMatrix`
+- `VerdictTrace.disagreementShrinkage`
 - `VerdictTrace.ensembleMethod`
 - `VerdictTrace.calibrationMethod`
 - `VerdictTrace.uncertaintyMethod`
+- `VerdictTrace.weightRegime`
+- `VerdictTrace.replayFidelity`
+- `VerdictTrace.conflicts` as `Array<{ judgeA: string, judgeB: string, reason: string, severity: "low"|"medium"|"high" }>`
+- `VerdictTrace.missingEvidence` as `Array<{ claim: string, sourceFamily: string, reason: string }>`
 - `CalibrationSnapshot.baseRateParams`
 - `CalibrationSnapshot.marketPriorParams`
 - `CalibrationSnapshot.onlineLearningParams`
+- `CalibrationSnapshot.weightRegime`
+- `CalibrationSnapshot.resolvedOutcomeCount` (the `N` that drives the regime)
 
 **Step 2: Add representative schema tests**
 
 Create tests or inline assertions validating:
 
-- valid event input parses
+- valid event input parses, including a known `referenceClass` and a null fallback
 - invalid source family rejects
 - verdict trace requires judge opinions and citations
+- `evidenceStrength` enum rejects out-of-range strings
+- `weightRegime` enum is respected
 
-**Step 3: Verify the package builds**
+**Step 3: Export JSON Schema for downstream consumers**
+
+Add `packages/shared/scripts/export-json-schema.ts` that uses `zod-to-json-schema` to emit `packages/shared/dist/schemas.json` during the package build. This file is the source of truth consumed by the Python judge service in Task 8 (via `datamodel-code-generator`) so Zod and Pydantic cannot silently drift.
+
+**Step 4: Verify the package builds**
 
 Run:
 
@@ -201,8 +228,9 @@ pnpm --filter @cassandra/shared build
 Expected:
 
 - TypeScript compilation succeeds
+- `packages/shared/dist/schemas.json` is produced
 
-**Step 4: Commit shared schemas**
+**Step 5: Commit shared schemas**
 
 Run:
 
@@ -284,14 +312,14 @@ git commit -m "feat: scaffold api service"
 
 Create tables:
 
-- `events`
+- `events` (with `reference_class` column)
 - `watchlists`
 - `candidate_events`
-- `evidence_items`
+- `evidence_items` (with `published_at` and no precomputed freshness column)
 - `judgments`
 - `judge_opinions`
 - `outcomes`
-- `calibration_snapshots`
+- `calibration_snapshots` (with `weight_regime`, `resolved_outcome_count`)
 
 Use:
 
@@ -300,7 +328,11 @@ Use:
 - explicit status columns
 - timestamps on every table
 
-**Step 2: Implement repository modules**
+**Step 2: Wire the migration runner**
+
+Ensure `scripts/db-migrate.sh` (created in Task 1) applies `apps/api/src/db/schema.sql` idempotently. Add a `pretest` hook in `apps/api/package.json` that runs the script against `DATABASE_URL` before the test suite so repository tests never face a cold container. Document the manual `pnpm run db:migrate` entrypoint in the README (updated in Task 13).
+
+**Step 3: Implement repository modules**
 
 Each module should expose focused functions, for example:
 
@@ -310,15 +342,15 @@ export async function insertEvidenceItems(db: Pool, items: EvidenceItem[]): Prom
 export async function createJudgmentRun(db: Pool, eventId: string): Promise<JudgmentRecord>
 ```
 
-**Step 3: Add repository tests against local Postgres**
+**Step 4: Add repository tests against local Postgres**
 
 Cover:
 
-- insert and fetch event
-- insert deduplicated evidence
+- insert and fetch event (including `referenceClass` roundtrip)
+- insert deduplicated evidence, preserving `publishedAt`
 - append judgment trace history
 
-**Step 4: Run repository tests**
+**Step 5: Run repository tests**
 
 Run:
 
@@ -328,9 +360,9 @@ pnpm --filter @cassandra/api test -- repositories
 
 Expected:
 
-- repository tests pass against local Postgres
+- repository tests pass against local Postgres (migration runs automatically via `pretest`)
 
-**Step 5: Commit persistence layer**
+**Step 6: Commit persistence layer**
 
 Run:
 
@@ -416,6 +448,7 @@ git commit -m "feat: add event watchlist and outcome routes"
 - Create: `apps/api/src/modules/evidence/types.ts`
 - Create: `apps/api/src/modules/evidence/normalize.ts`
 - Create: `apps/api/src/modules/evidence/collector.ts`
+- Create: `apps/api/src/modules/evidence/cache.ts`
 - Create: `apps/api/src/modules/evidence/providers/perplexity.ts`
 - Create: `apps/api/src/modules/evidence/providers/web.ts`
 - Create: `apps/api/src/modules/evidence/providers/communitySearch.ts`
@@ -424,8 +457,11 @@ git commit -m "feat: add event watchlist and outcome routes"
 - Create: `apps/api/src/modules/evidence/providers/polymarketGamma.ts`
 - Create: `apps/api/src/modules/evidence/providers/polymarketClob.ts`
 - Create: `apps/api/src/modules/evidence/providers/marketProvider.ts`
+- Create: `apps/api/src/modules/evidence/providers/fixtureLoader.ts`
+- Create: `apps/api/test/fixtures/providers/` (per-provider canned JSON)
 - Test: `apps/api/test/evidence-normalize.test.ts`
 - Test: `apps/api/test/evidence-collector.test.ts`
+- Test: `apps/api/test/evidence-cache.test.ts`
 
 **Step 1: Define provider interfaces**
 
@@ -445,7 +481,7 @@ Normalize:
 - canonical URL
 - publisher
 - source-family enum
-- freshness hours
+- `publishedAt` preserved verbatim (no `freshnessHours` field; freshness is derived at aggregation time, see design §7.2)
 - claim list
 - quality signals
 
@@ -459,12 +495,17 @@ Each provider should:
 - fetch external data
 - map results into `EvidenceItem`
 - never return provider-native payloads to the rest of the system
+- honor `CASSANDRA_ADAPTER_MODE` — when `fixture`, the provider loads a canned response via `providers/fixtureLoader.ts` from `apps/api/test/fixtures/providers/<providerName>/<eventSlug>.json` instead of calling the live API. This lets the full stack run locally without real API keys and backs the test suite with the same files.
 
 **Step 4: Implement the collector orchestration**
 
 `collectEvidenceForEvent()` should call enabled providers, combine results, normalize, deduplicate, and persist them.
 
-**Step 5: Add contract fixtures**
+**Step 5: Implement the evidence cache**
+
+`evidence/cache.ts` wraps the collector with a Redis-backed cache keyed on `(canonical_event_question_hash, evaluationTime_hour_bucket, providerName)`. The hour bucket makes cache hits align with historical-replay cutoffs. TTL is configurable (default 7 days). When `CASSANDRA_ADAPTER_MODE=fixture` the cache is bypassed (fixtures *are* the cache). Cache hits and misses must be recorded so the debug trace can show whether evidence was recomputed or replayed (see design §13.2).
+
+**Step 6: Add contract fixtures**
 
 Record fixture JSON responses for:
 
@@ -473,7 +514,7 @@ Record fixture JSON responses for:
 - Polymarket CLOB price history
 - custom market-provider quote response
 
-**Step 6: Run evidence tests**
+**Step 7: Run evidence tests**
 
 Run:
 
@@ -483,9 +524,9 @@ pnpm --filter @cassandra/api test -- evidence
 
 Expected:
 
-- normalization and collector tests pass
+- normalization, collector, and cache tests pass
 
-**Step 7: Commit evidence layer**
+**Step 8: Commit evidence layer**
 
 Run:
 
@@ -555,6 +596,8 @@ git commit -m "feat: add watchlist discovery worker"
 - Create: `services/judge/app/main.py`
 - Create: `services/judge/app/api.py`
 - Create: `services/judge/app/models.py`
+- Create: `services/judge/app/models_generated.py` (generated, checked in)
+- Create: `services/judge/scripts/generate-models.sh`
 - Create: `services/judge/tests/test_health.py`
 - Create: `services/judge/tests/test_models.py`
 
@@ -566,23 +609,25 @@ Add endpoints:
 - `POST /judge`
 - `POST /calibrate`
 
-**Step 2: Mirror the shared API contract in Pydantic**
+**Step 2: Generate Pydantic models from shared JSON Schema**
 
-Define models for:
+Do not hand-write Pydantic mirrors of the Zod schemas. Instead:
 
-- event payload
-- evidence items
-- judge opinions
-- verdict trace
-- calibration request and response
+1. Run the Task 2 exporter (`pnpm --filter @cassandra/shared build`) to produce `packages/shared/dist/schemas.json`.
+2. Add `services/judge/scripts/generate-models.sh` that invokes `uv run datamodel-codegen --input ../../packages/shared/dist/schemas.json --input-file-type jsonschema --output services/judge/app/models_generated.py`.
+3. `services/judge/app/models.py` re-exports the generated types and only adds Python-only helpers (e.g., converters used internally by the scoring modules).
+4. Add a CI/pretest guard: `test_models.py` re-runs the generator into a temp file and asserts it matches the checked-in `models_generated.py`. If someone changes Zod schemas without regenerating, the test fails.
+
+This makes Zod the single source of truth for both services and prevents silent drift of the `VerdictTrace` / `JudgeOpinion` / `CalibrationSnapshot` shapes across the HTTP boundary.
 
 **Step 3: Add service tests**
 
 Cover:
 
 - health endpoint
-- payload validation
+- payload validation against generated models
 - `judge` endpoint returning a structured trace shape
+- model-drift guard described in Step 2
 
 **Step 4: Run judge-service tests**
 
@@ -595,6 +640,7 @@ cd services/judge && uv run pytest -q
 Expected:
 
 - FastAPI tests pass
+- model-drift guard passes
 
 **Step 5: Commit judge service skeleton**
 
@@ -608,12 +654,13 @@ git commit -m "feat: scaffold judge service"
 ## Task 9: Implement specialized judges and aggregation math
 
 **Files:**
-- Create: `services/judge/app/scoring/judges/market_prior.py`
 - Create: `services/judge/app/scoring/judges/official_records.py`
 - Create: `services/judge/app/scoring/judges/community_signal.py`
 - Create: `services/judge/app/scoring/judges/open_web_research.py`
 - Create: `services/judge/app/scoring/judges/cross_examiner.py`
+- Create: `services/judge/app/scoring/judges/_fake_llm.py`
 - Create: `services/judge/app/scoring/priors.py`
+- Create: `services/judge/app/scoring/strength_map.py`
 - Create: `services/judge/app/scoring/aggregate.py`
 - Create: `services/judge/app/scoring/uncertainty.py`
 - Create: `services/judge/app/scoring/weights.py`
@@ -621,45 +668,66 @@ git commit -m "feat: scaffold judge service"
 - Create: `services/judge/tests/test_priors.py`
 - Create: `services/judge/tests/test_aggregate.py`
 - Create: `services/judge/tests/test_uncertainty.py`
+- Create: `services/judge/tests/test_strength_map.py`
+- Create: `services/judge/tests/test_weights.py`
 
-**Step 1: Implement judge functions**
+Note: `market_prior.py` is intentionally not listed. Market and prediction-market signals feed the prior, not the judge panel — see design §8.3 and §8.5. Their handling lives in `priors.py`.
 
-Each judge should expose a pure function:
+**Step 1: Implement evidence-reading judge functions**
+
+Each evidence-reading judge exposes a pure function:
 
 ```python
-def evaluate(event: EventPayload, evidence: list[EvidenceItem]) -> JudgeOpinion:
+def evaluate(event: EventPayload, evidence: list[EvidenceItem]) -> RawJudgeOpinion:
     ...
 ```
 
-At minimum, each judge must return:
+A `RawJudgeOpinion` carries only what the LLM produces:
 
-- probability
-- confidence
-- log Bayes factor
-- reliability weight
-- dependency discount
-- rationale
-- evidence ids
-- warnings
+- `probability` (sanity-check display value)
+- `evidenceStrength` (Likert ordinal from design §8.3.1)
+- `rationale`
+- `evidenceIds`
+- `warnings`
+- `missingEvidence`
 
-`market_prior.py` must produce both:
+It does **not** carry `logBayesFactor`, `baseWeight`, `dependencyDiscount`, or `freshnessDecay` — those are derived by the aggregator in Step 4.
 
-- a liquidity-adjusted market prior probability
-- a bounded market-derived log Bayes factor contribution
+The cross-examiner is qualitative: it reads the other judges' raw opinions and returns a structured `conflicts` list plus per-judge warnings. It does not produce any scalar penalty.
 
-**Step 2: Implement forecasting-theory modules**
+**Step 2: Implement the Likert → log Bayes factor mapping**
+
+`strength_map.py` contains the fixed table from design §8.3.1:
+
+```python
+STRENGTH_TO_LOG_BF: dict[str, float] = {
+    "strong_against":   -3.0,
+    "moderate_against": -1.5,
+    "weak_against":     -0.5,
+    "neutral":           0.0,
+    "weak_for":         +0.5,
+    "moderate_for":     +1.5,
+    "strong_for":       +3.0,
+}
+```
+
+Expose a `to_log_bf(strength)` helper and a `from_calibration(snapshot)` override hook used only in the `steady` regime.
+
+**Step 3: Implement forecasting-theory modules**
 
 Implement `priors.py` with:
 
-- empirical-Bayes base-rate prior estimation
-- shrinkage toward a global prior for sparse event classes
-- liquidity adjustment for market and Polymarket-derived priors
+- empirical-Bayes base-rate prior estimation by `referenceClass`
+- shrinkage toward a global `Beta(1, 1)` prior when a class has fewer than the minimum-sample threshold; set `referenceClassFallback=True` in that case
+- liquidity-adjusted market prior: convert market prices to log-odds, then discount by spread, depth, and recent volatility
+- `build_prior_log_odds(event, snapshot, market_signals) -> PriorResult` that produces the blended `alpha * logit(base_rate) + (1 - alpha) * logit(market)` term for the aggregator
 
 Implement `weights.py` with:
 
-- initial expert weights
-- exponentially weighted online updates from rolling proper-score regret
-- caps and floors to prevent one judge from collapsing to zero or one
+- initial expert weights in the `cold_start` regime (uniform across judges, no online updates)
+- exponentially weighted online updates from rolling proper-score regret in `warming` (halved step size) and `steady` regimes
+- caps and floors preventing any judge from collapsing to zero or dominating
+- a `select_regime(resolved_outcome_count) -> Literal["cold_start","warming","steady"]` helper used by the calibration pipeline (Task 10)
 
 Implement `uncertainty.py` with:
 
@@ -667,47 +735,53 @@ Implement `uncertainty.py` with:
 - judge-subset resampling
 - conversion of bootstrap spread into `confidenceLow` and `confidenceHigh`
 
-**Step 3: Implement aggregation math**
+**Step 4: Implement aggregation math**
 
-Implement:
+Implement in `aggregate.py`:
 
-- probability to log-odds conversion
-- Bayes-factor to posterior-log-odds updates
-- regularized logarithmic opinion pooling
-- freshness decay
-- quality modifiers
-- dependency discounts
-- contradiction penalty
-- isotonic-ready raw posterior output
-- confidence-band generation
+- probability ↔ log-odds conversion
+- `jaccard_overlap_matrix(judge_opinions)` and `dependency_discounts(matrix)` implementing the design §8.5.1 formula: `n_eff_j = 1 / (1 + sum_{k≠j} jaccard_{jk})`
+- `disagreement_shrinkage(weighted_log_odds)` implementing design §8.5.2: `shrinkage = clip(k_disagree * var(weighted_log_odds), 0, shrinkage_max)` with defaults `k_disagree=0.25, shrinkage_max=0.6`
+- per-judge freshness decay as `exp(-age_hours / half_life_hours)` where `age_hours = evaluationTime - publishedAt`
+- evidence-quality modifier aggregation capped in `[0.5, 1.5]`
+- the full posterior assembly: `raw_posterior_log_odds = prior_log_odds + Σ (base_weight · dependency_discount · evidence_quality · freshness_decay · log_bf)`, then `posterior_log_odds = (1 - shrinkage) * raw_posterior_log_odds`
+- calibration-ready raw probability output
+- `finalize_judge_opinion(raw, derived)` that merges a `RawJudgeOpinion` with aggregator-derived fields into the persisted `JudgeOpinion`
 
-**Step 4: Add deterministic tests**
+The cross-examiner's `conflicts` list is attached to the trace but never feeds the shrinkage scalar.
 
-Cover:
+**Step 5: Add deterministic tests**
 
-- probability edge cases near 0 and 1
-- empirical-Bayes priors shrinking sparse classes toward the global base rate
-- market priors being discounted when spread is high and liquidity is low
-- Bayes-factor contributions composing additively in log-odds space
-- dependency penalties reducing double-counting from overlapping judges
-- disagreement penalties lowering confidence
-- stale evidence contributing less than fresh evidence
-- bootstrap uncertainty widening when evidence clusters disagree
-- expert weights moving toward better-scoring judges over repeated resolved events
+Split tests into pure-math files (no LLM calls) and judge files that use `_fake_llm.py` to return canned Likert picks:
 
-**Step 5: Run judge and math tests**
+- `test_strength_map.py` — mapping is monotonic and symmetric; unknown strings raise
+- `test_priors.py` — empirical-Bayes shrinks sparse classes toward `Beta(1, 1)`; market priors are discounted by spread and volatility; `alpha=0` path when class is unsampled
+- `test_aggregate.py`:
+  - probability edge cases near 0 and 1
+  - Bayes-factor contributions composing additively in log-odds space
+  - two judges citing identical evidence yielding `dependency_discount ≈ 0.5` each, halving their pooled effect
+  - disagreement shrinkage activating when judge log-odds variance crosses the threshold, pulling toward prior (not toward 0.5)
+  - stale evidence (large `age_hours`) contributing less than fresh evidence
+  - zero-shrinkage when all judges agree
+- `test_uncertainty.py` — bootstrap widens when evidence clusters disagree
+- `test_judges.py` — each evidence-reading judge returns a valid `RawJudgeOpinion` against a fake LLM that produces fixture Likert picks; cross-examiner returns a non-empty `conflicts` list when opinions diverge and an empty list when they agree
+- `test_weights.py` — `select_regime` switches at N=20 and N=100; `cold_start` never updates weights; `steady` moves weights toward judges with lower regret
+
+Integration tests that hit real OpenRouter go in a separate file gated on `OPENROUTER_INTEGRATION=1` and are skipped by default.
+
+**Step 6: Run judge and math tests**
 
 Run:
 
 ```bash
-cd services/judge && uv run pytest -q tests/test_judges.py tests/test_priors.py tests/test_aggregate.py tests/test_uncertainty.py
+cd services/judge && uv run pytest -q tests/test_judges.py tests/test_priors.py tests/test_aggregate.py tests/test_uncertainty.py tests/test_strength_map.py tests/test_weights.py
 ```
 
 Expected:
 
 - deterministic scoring tests pass
 
-**Step 6: Commit scoring engine**
+**Step 7: Commit scoring engine**
 
 Run:
 
@@ -715,6 +789,8 @@ Run:
 git add services/judge/app/scoring services/judge/tests
 git commit -m "feat: add judge panel and aggregation math"
 ```
+
+
 
 ## Task 10: Implement calibration and backtesting
 
@@ -731,15 +807,23 @@ Add functions to:
 
 - compute Brier score
 - compute log loss
-- compute reliability curves and calibration error by event family
+- compute reliability curves and calibration error by `referenceClass`
 - fit isotonic calibration from historical predictions and outcomes
 - fall back to logistic or beta calibration when isotonic is underdetermined
 - update expert weights with exponentially weighted regret
 - return judge weights, calibration parameters, and online-learning parameters
 
+All of the above must respect the cold-start regimes from design §8.5.3. Use the `select_regime` helper from `weights.py` (Task 9):
+
+- `N < 20` (`cold_start`): return a snapshot with uniform judge weights, identity calibration map, and `weightRegime="cold_start"`. Do not attempt to fit isotonic, logistic, or online updates — there is not enough signal.
+- `20 ≤ N < 100` (`warming`): fit logistic or beta calibration only, run exponentially weighted updates with step size halved, and set `weightRegime="warming"`.
+- `N ≥ 100` (`steady`): fit isotonic with logistic fallback, run full EW updates, and set `weightRegime="steady"`.
+
+Always persist `resolvedOutcomeCount` on the snapshot so the active regime is auditable.
+
 **Step 2: Expose the calibration API**
 
-`POST /calibrate` should accept historical traces and outcomes and return a versioned snapshot payload.
+`POST /calibrate` should accept historical traces and outcomes and return a versioned snapshot payload containing `weightRegime`, `resolvedOutcomeCount`, judge weights, calibration parameters, and online-learning parameters.
 
 **Step 3: Persist snapshots from the API service**
 
@@ -747,18 +831,19 @@ Backtest route should:
 
 - load outcomes and historical traces from Postgres
 - call judge-service calibration endpoint
-- save a new `calibration_snapshots` row
+- save a new `calibration_snapshots` row, including `weight_regime` and `resolved_outcome_count`
 
 **Step 4: Add tests**
 
 Cover:
 
 - metric calculations
-- isotonic calibration output remaining monotonic
-- logistic fallback activating on small samples
-- weight updates favoring judges with lower proper-score regret
+- `cold_start` regime producing uniform weights and identity calibration with `N=0` and `N=19`
+- `warming` regime producing logistic/beta output and halved-step EW updates at `N=20` and `N=99`
+- `steady` regime producing isotonic output (monotonic) at `N=100`, with logistic fallback on degenerate data
+- weight updates favoring judges with lower proper-score regret (only in `warming` / `steady`)
 - stable output format
-- snapshot persistence
+- snapshot persistence preserving `weightRegime` and `resolvedOutcomeCount`
 
 **Step 5: Run calibration tests**
 
@@ -782,21 +867,21 @@ git add services/judge apps/api/src/modules/backtests
 git commit -m "feat: add calibration and backtesting"
 ```
 
-## Task 10A: Build historical benchmark and evaluation harness
+## Task 10A: Benchmark schema, Polymarket import, and metrics module
+
+This task covers the evaluation *infrastructure* — tables, import, and pure-function metrics — so that the dataset can be loaded before the judge pipeline is live. The replay runner, baselines, and routes depend on Task 11 and are deferred to Task 10B.
 
 **Files:**
-- Create: `apps/api/src/modules/evaluation/routes.ts`
 - Create: `apps/api/src/modules/evaluation/repository.ts`
 - Create: `apps/api/src/modules/evaluation/polymarketImport.ts`
-- Create: `apps/api/src/modules/evaluation/replay.ts`
 - Create: `apps/api/src/modules/evaluation/metrics.ts`
-- Create: `apps/api/src/modules/evaluation/baselines.ts`
-- Modify: `apps/api/src/app.ts`
-- Test: `apps/api/test/evaluation.test.ts`
+- Create: `apps/api/src/db/evaluation_schema.sql`
+- Test: `apps/api/test/evaluation-metrics.test.ts`
+- Test: `apps/api/test/evaluation-import.test.ts`
 
 **Step 1: Implement benchmark persistence**
 
-Create tables and repository functions for:
+Extend `schema.sql` (or add a sibling `evaluation_schema.sql` loaded by the same migration runner) with tables for:
 
 - imported benchmark markets
 - historical price snapshots by cutoff
@@ -822,64 +907,26 @@ Imported Polymarket records must preserve:
 - exclude canceled or structurally ambiguous markets
 - stratify by theme and retain the import audit trail
 
-**Step 3: Implement historical replay**
+**Step 3: Implement evaluation metrics**
 
-`replay.ts` should:
-
-- create cutoffs at `T-30d`, `T-7d`, `T-1d`, and `T-6h`
-- reconstruct event inputs from benchmark markets
-- filter evidence to timestamps at or before each cutoff
-- capture the Polymarket implied probability at each cutoff
-- run the configured baselines against the same benchmark item
-
-**Step 4: Implement evaluation baselines**
-
-`baselines.ts` must support:
-
-- `base_rate_only`
-- `polymarket_only`
-- `model_without_polymarket`
-- `model_with_polymarket`
-
-The orchestration must ensure the `model_without_polymarket` run does not accidentally read Polymarket-derived evidence.
-
-**Step 5: Implement evaluation metrics**
-
-`metrics.ts` should compute:
+`metrics.ts` should compute, as pure functions operating on arrays of `{ predicted, outcome }` pairs plus metadata:
 
 - Brier score
 - log loss
 - calibration bins and expected calibration error
 - average absolute error
-- win rate versus `polymarket_only`
+- win rate versus a reference (used by the runner for `polymarket_only`)
 - slice metrics by theme, horizon, and source configuration
 
-**Step 6: Expose evaluation routes**
-
-Add:
-
-- `POST /evaluation/benchmarks/import/polymarket`
-- `POST /evaluation/runs`
-- `GET /evaluation/runs/:id`
-
-`GET /evaluation/runs/:id` must return:
-
-- overall metrics
-- per-baseline metrics
-- per-theme and per-horizon slices
-- leakage and replay-fidelity flags
-
-**Step 7: Add evaluation tests**
+**Step 4: Add tests**
 
 Cover:
 
 - imports excluding canceled or incompatible markets
-- replay using only pre-cutoff evidence
-- `model_without_polymarket` not ingesting market-derived evidence
-- metric calculations on a fixed fixture set
-- per-slice reporting shape remaining stable
+- metric calculations on a fixed fixture set (deterministic)
+- ECE and calibration-bin edge cases
 
-**Step 8: Run evaluation tests**
+**Step 5: Run tests**
 
 Run:
 
@@ -889,15 +936,15 @@ pnpm --filter @cassandra/api test -- evaluation
 
 Expected:
 
-- evaluation import, replay, and metrics tests pass
+- evaluation import and metrics tests pass
 
-**Step 9: Commit evaluation harness**
+**Step 6: Commit benchmark infrastructure**
 
 Run:
 
 ```bash
-git add apps/api/src/modules/evaluation apps/api/src/app.ts apps/api/test/evaluation.test.ts
-git commit -m "feat: add historical evaluation harness"
+git add apps/api/src/modules/evaluation apps/api/src/db apps/api/test
+git commit -m "feat: add evaluation benchmark schema and metrics"
 ```
 
 ## Task 11: Wire API orchestration to the judge service
@@ -905,40 +952,50 @@ git commit -m "feat: add historical evaluation harness"
 **Files:**
 - Create: `apps/api/src/modules/judgments/routes.ts`
 - Create: `apps/api/src/modules/judgments/service.ts`
+- Create: `apps/api/src/modules/judgments/judgeCache.ts`
 - Create: `apps/api/src/workers/judgmentWorker.ts`
 - Modify: `apps/api/src/app.ts`
 - Test: `apps/api/test/judgments.test.ts`
+- Test: `apps/api/test/judge-cache.test.ts`
 
 **Step 1: Implement judgment service orchestration**
 
 The service should:
 
 - load event context
-- collect or refresh evidence
+- collect or refresh evidence (via the Task 6 evidence cache)
 - load latest calibration snapshot
-- call `POST /judge`
+- call `POST /judge`, wrapped by the judge output cache from Step 2
 - persist the resulting trace and judge opinions
 
-**Step 2: Add judgment routes**
+**Step 2: Implement the judge output cache**
+
+`judgments/judgeCache.ts` is a Redis-backed wrapper around the judge-service call, keyed on `(judgeName, sorted(evidenceIds)_hash, judgeModelVersion, promptVersion, snapshotId)`. Values are raw `JudgeOpinion` records. Defaults per design §13.2: hours-to-a-day TTL, bypassed when `CASSANDRA_ADAPTER_MODE=fixture`. Every cache hit and miss is recorded in the debug trace so a reviewer can tell whether a given judgment was computed or replayed.
+
+This cache is what makes Task 10B (evaluation runner) tractable: the `model_without_polymarket` and `model_with_polymarket` baselines share almost all non-market judge computations through this layer.
+
+**Step 3: Add judgment routes**
 
 Expose:
 
 - `POST /judgments`
 - `GET /judgments/:id`
 
-**Step 3: Add background worker**
+**Step 4: Add background worker**
 
 `judgmentWorker.ts` should process queued judgment runs and update status fields.
 
-**Step 4: Add integration-style tests**
+**Step 5: Add integration-style tests**
 
 Cover:
 
 - queued judgment run reaching `completed`
 - response includes judge opinions, citations, and calibration metadata
 - insufficient-evidence path returns neutral-ish probability and explicit status
+- judge output cache hit returns the same `JudgeOpinion` without calling the judge service (use a mock that counts invocations)
+- cache bypass path when `CASSANDRA_ADAPTER_MODE=fixture`
 
-**Step 5: Run judgment tests**
+**Step 6: Run judgment tests**
 
 Run:
 
@@ -950,13 +1007,92 @@ Expected:
 
 - judgment integration tests pass
 
-**Step 6: Commit orchestration**
+**Step 7: Commit orchestration**
 
 Run:
 
 ```bash
-git add apps/api/src/modules/judgments apps/api/src/workers apps/api/test/judgments.test.ts apps/api/src/app.ts
+git add apps/api/src/modules/judgments apps/api/src/workers apps/api/test/judgments.test.ts apps/api/test/judge-cache.test.ts apps/api/src/app.ts
 git commit -m "feat: wire api to judge service"
+```
+
+## Task 10B: Historical replay runner and evaluation routes
+
+This task depends on Task 11. It wires the benchmark dataset from Task 10A to the live judgment pipeline, runs the four baselines over historical cutoffs, and exposes evaluation routes.
+
+**Files:**
+- Create: `apps/api/src/modules/evaluation/replay.ts`
+- Create: `apps/api/src/modules/evaluation/baselines.ts`
+- Create: `apps/api/src/modules/evaluation/routes.ts`
+- Modify: `apps/api/src/app.ts`
+- Test: `apps/api/test/evaluation-replay.test.ts`
+- Test: `apps/api/test/evaluation-baselines.test.ts`
+
+**Step 1: Implement historical replay**
+
+`replay.ts` should:
+
+- create cutoffs at `T-30d`, `T-7d`, `T-1d`, and `T-6h`
+- reconstruct event inputs from benchmark markets, including a `referenceClass` tag where available
+- filter evidence to timestamps at or before each cutoff using the `publishedAt` field (never wall clock)
+- set `evaluationTime` on the judgment call to the cutoff timestamp so freshness decay computes correctly
+- capture the Polymarket implied probability at each cutoff
+- label each run with `replayFidelity = approximate` when any provider lacked archived retrieval
+- run the configured baselines against the same benchmark item, leveraging the Task 6 evidence cache and the Task 11 judge output cache to avoid redundant work
+
+**Step 2: Implement evaluation baselines**
+
+`baselines.ts` must support:
+
+- `base_rate_only` — empirical-Bayes prior with no live evidence
+- `polymarket_only` — the cutoff-time implied probability, no judgment pipeline
+- `model_without_polymarket` — full pipeline with Polymarket-family evidence providers disabled at the collector level (not just filtered downstream); the orchestration must fail closed if a Polymarket-sourced `EvidenceItem` reaches the judges
+- `model_with_polymarket` — full pipeline
+
+**Step 3: Expose evaluation routes**
+
+Add:
+
+- `POST /evaluation/benchmarks/import/polymarket` (moved from Task 10A)
+- `POST /evaluation/runs`
+- `GET /evaluation/runs/:id`
+
+`GET /evaluation/runs/:id` must return:
+
+- overall metrics
+- per-baseline metrics
+- per-theme and per-horizon slices
+- leakage and replay-fidelity flags
+
+**Step 4: Add tests**
+
+Cover:
+
+- replay using only pre-cutoff evidence (`publishedAt ≤ cutoff`)
+- `model_without_polymarket` failing closed if Polymarket evidence leaks into the collector
+- per-baseline metrics agreeing with the Task 10A pure-function `metrics.ts`
+- per-slice reporting shape remaining stable
+- eval runs reusing cached judge outputs across baselines (counted by mock invocation)
+
+**Step 5: Run tests**
+
+Run:
+
+```bash
+pnpm --filter @cassandra/api test -- evaluation-replay evaluation-baselines
+```
+
+Expected:
+
+- replay and baseline tests pass
+
+**Step 6: Commit runner**
+
+Run:
+
+```bash
+git add apps/api/src/modules/evaluation apps/api/src/app.ts apps/api/test/evaluation-replay.test.ts apps/api/test/evaluation-baselines.test.ts
+git commit -m "feat: add evaluation replay runner"
 ```
 
 ## Task 12: Build the minimal inspection UI
@@ -1095,30 +1231,33 @@ git commit -m "docs: add runbook and verification checklist"
 
 ## Acceptance Criteria
 
-- `POST /events` creates a valid event and persists it.
-- `POST /judgments` can produce a stored `VerdictTrace` for a valid event.
+- `POST /events` creates a valid event and persists it, including the selected `referenceClass`.
+- `POST /judgments` can produce a stored `VerdictTrace` for a valid event in `CASSANDRA_ADAPTER_MODE=fixture` with no live external API calls.
 - At least four evidence families can contribute to a single judgment in test fixtures.
 - A watchlist run can emit candidate events and preserve manual promotion state.
-- `POST /outcomes` records a resolution and `POST /backtests/retrain` creates a calibration snapshot.
-- `POST /evaluation/runs` can replay historical benchmarks at fixed cutoffs and produce baseline comparisons.
-- The web UI can display a trace with judge breakdown and citations.
+- `POST /outcomes` records a resolution and `POST /backtests/retrain` creates a calibration snapshot carrying the active `weightRegime` and `resolvedOutcomeCount`.
+- `POST /evaluation/runs` can replay historical benchmarks at fixed cutoffs using only `publishedAt ≤ cutoff` evidence, produce baseline comparisons including `model_without_polymarket` failing closed on Polymarket leakage, and label `replayFidelity` per run.
+- The web UI can display a trace with judge breakdown, `evidenceStrength` per judge, `dependencyMatrix`, `disagreementShrinkage`, and citations.
+- The shared-schema JSON Schema export drives Pydantic model generation; the model-drift guard test fails when schemas diverge.
 
 ## Defaults And Assumptions
 
 - Package names use the `@cassandra/*` namespace.
 - API-to-judge communication is synchronous HTTP in v1.
-- Live external API calls are wrapped behind adapters and excluded from default test runs.
-- Postgres schema can begin as raw SQL; ORM adoption is unnecessary for the first prototype.
+- Live external API calls are wrapped behind adapters and excluded from default test runs. `CASSANDRA_ADAPTER_MODE=fixture` is the default mode for local development and the test suite.
+- Postgres schema can begin as raw SQL; ORM adoption is unnecessary for the first prototype. Migrations are applied via `scripts/db-migrate.sh` wired into the API `pretest` hook.
 - UI styling should stay utilitarian and trace-focused rather than product-polished.
 - The first evaluation benchmark uses recently resolved binary Polymarket markets stratified by theme, not only the highest-volume markets.
+- Redis-backed caches (evidence and judge output) are required for any evaluation run at scale; live mode without caches is only suitable for one-off judgments.
 
 ## Execution Notes
 
-- Implement in task order.
+- Implement in task order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 10A → 11 → 10B → 12 → 13. Task 10B depends on Task 11, which is why the evaluation harness is split across 10A (schema + import + metrics) and 10B (runner + baselines + routes).
 - Keep commits scoped to one task.
 - Do not skip fixture-backed tests; they are the boundary against API drift.
 - Prefer deterministic math tests in Python before tuning live prompts or models.
 - Treat replay-fidelity flags as first-class outputs because historical retrieval is never perfectly clean.
+- Never pre-compute freshness at ingest time — always derive it at aggregation time from `evaluationTime - publishedAt`, so the same evidence row can be reused across replay cutoffs without mutation.
 
 Plan complete and saved to `docs/plans/2026-04-11-multisource-forecast-judge-implementation-plan.md`. Two execution options:
 
