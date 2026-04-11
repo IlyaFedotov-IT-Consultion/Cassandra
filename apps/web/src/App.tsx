@@ -35,6 +35,7 @@ import {
   fetchReady,
   fetchWatchlist,
   importPolymarketBenchmarks,
+  listBenchmarkMarkets,
   listBenchmarkSets,
   listCalibrationSnapshots,
   listCandidates,
@@ -1132,15 +1133,20 @@ function EvaluationPage() {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [benchmarkImportDraft, setBenchmarkImportDraft] = useState("");
+  const [selectedBenchmarkSetId, setSelectedBenchmarkSetId] = useState("");
   const benchmarkSetsQuery = useQuery({
     queryKey: ["benchmark-sets"],
     queryFn: listBenchmarkSets,
+  });
+  const benchmarkMarketsQuery = useQuery({
+    queryKey: ["benchmark-markets", selectedBenchmarkSetId],
+    queryFn: () => listBenchmarkMarkets(selectedBenchmarkSetId),
+    enabled: Boolean(selectedBenchmarkSetId),
   });
   const runsQuery = useQuery({
     queryKey: ["evaluation-runs"],
     queryFn: listEvaluationRuns,
   });
-  const [selectedBenchmarkSetId, setSelectedBenchmarkSetId] = useState("");
   const runMutation = useMutation({
     mutationFn: createEvaluationRun,
     onSuccess(run) {
@@ -1194,6 +1200,7 @@ function EvaluationPage() {
   }
 
   const benchmarkSets = benchmarkSetsQuery.data ?? [];
+  const benchmarkMarkets = benchmarkMarketsQuery.data ?? [];
   const runs = runsQuery.data ?? [];
 
   return (
@@ -1282,6 +1289,49 @@ function EvaluationPage() {
           )}
         </SectionCard>
       </section>
+      <SectionCard title="Benchmark Preview" kicker="Selected set">
+        {!selectedBenchmarkSetId ? (
+          <EmptyState
+            title="No benchmark set selected"
+            body="Import or choose a benchmark set to inspect its resolved markets before running a replay."
+          />
+        ) : benchmarkMarketsQuery.isLoading ? (
+          <LoadingState label="Loading benchmark markets…" />
+        ) : benchmarkMarketsQuery.isError ? (
+          <InlineError
+            message={
+              benchmarkMarketsQuery.error instanceof Error
+                ? benchmarkMarketsQuery.error.message
+                : "Unable to load benchmark markets"
+            }
+          />
+        ) : benchmarkMarkets.length === 0 ? (
+          <EmptyState
+            title="No resolved markets in this set"
+            body="Import or refresh the selected benchmark set before launching an evaluation run."
+          />
+        ) : (
+          <div className="list-stack">
+            <p className="helper-text">
+              Showing {Math.min(5, benchmarkMarkets.length)} of {benchmarkMarkets.length} resolved
+              markets from <strong>{selectedBenchmarkSetId}</strong>.
+            </p>
+            {benchmarkMarkets.slice(0, 5).map((market) => (
+              <article key={market.id} className="list-row">
+                <div>
+                  <strong>{market.title}</strong>
+                  <p>
+                    {humanizeToken(market.theme)} · Resolved {formatDateTime(market.resolvedAt)}
+                  </p>
+                </div>
+                <div className="list-row__tail">
+                  <StatusPill value={market.resolvedValue ? "yes" : "no"} />
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </SectionCard>
     </div>
   );
 }

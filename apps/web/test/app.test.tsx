@@ -385,6 +385,58 @@ describe("workspace app", () => {
         );
       }
 
+      if (method === "GET" && url.includes("/evaluation/benchmark-sets/") && url.endsWith("/markets")) {
+        const benchmarkSetId = decodeURIComponent(
+          url.slice(url.indexOf("/evaluation/benchmark-sets/") + "/evaluation/benchmark-sets/".length, -"/markets".length),
+        );
+
+        if (!importedBenchmarkSetId || benchmarkSetId !== importedBenchmarkSetId) {
+          return createResponse([]);
+        }
+
+        return createResponse([
+          {
+            id: "fixture-market-fed-hold",
+            benchmarkSetId,
+            title: "Will the Fed hold rates steady at the next FOMC meeting?",
+            resolutionCriteria:
+              "Resolves Yes if the target range is unchanged at the next scheduled FOMC decision.",
+            theme: "macro",
+            volume: 245000,
+            liquidity: 68000,
+            resolvedAt: "2026-06-17T18:00:00Z",
+            resolvedValue: true,
+            marketUrl: "https://polymarket.com/event/fed-hold-next-fomc",
+          },
+          {
+            id: "fixture-market-eu-fine",
+            benchmarkSetId,
+            title: "Will the EU fine Example Tech over antitrust conduct before July 2026?",
+            resolutionCriteria:
+              "Resolves Yes if the European Commission announces a formal monetary penalty before July 1, 2026.",
+            theme: "policy",
+            volume: 118000,
+            liquidity: 41000,
+            resolvedAt: "2026-06-21T09:00:00Z",
+            resolvedValue: false,
+            marketUrl: "https://polymarket.com/event/eu-antitrust-fine-example-tech",
+          },
+          {
+            id: "fixture-market-launch-delay",
+            benchmarkSetId,
+            title: "Will Example Motors ship its new EV before September 2026?",
+            resolutionCriteria:
+              "Resolves Yes if customer deliveries of the announced EV begin before September 1, 2026.",
+            theme: "technology",
+            volume: 196000,
+            liquidity: 53000,
+            resolvedAt: "2026-08-28T16:00:00Z",
+            resolvedValue: true,
+            marketUrl: "https://polymarket.com/event/example-motors-ev-shipments",
+          },
+        ]);
+      }
+
       if (method === "POST" && url.endsWith("/evaluation/benchmarks/import/polymarket")) {
         const payload = init?.body ? JSON.parse(String(init.body)) : {};
         importedBenchmarkSetId = payload.benchmarkSetId || "polymarket_recent_resolved";
@@ -697,7 +749,12 @@ describe("workspace app", () => {
     await user.click(screen.getByRole("button", { name: /import benchmarks/i }));
 
     expect(await screen.findByText(/Imported 3 benchmark markets\./i)).toBeVisible();
-    expect(await screen.findByText(/macro-replay-pack/i)).toBeVisible();
+    await waitFor(() => {
+      expect(screen.getAllByText(/macro-replay-pack/i).length).toBeGreaterThan(0);
+    });
+    expect(
+      await screen.findByText(/Will the Fed hold rates steady at the next FOMC meeting/i),
+    ).toBeVisible();
     expect(screen.getByRole("button", { name: /run evaluation/i })).toBeEnabled();
   });
 
