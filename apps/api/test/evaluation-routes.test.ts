@@ -210,6 +210,75 @@ describe("evaluation routes", () => {
     }
   });
 
+  it("returns 409 when an imported market already belongs to a different benchmark set", async () => {
+    const query = async (_text: string, params?: unknown[]) => {
+      if (Array.isArray(params) && params[0] === "market-1" && params.length === 1) {
+        return {
+          rows: [{ benchmark_set_id: "existing-benchmark-set" }],
+        };
+      }
+
+      return {
+        rows: [],
+      };
+    };
+
+    const app = buildApp({
+      dbPool: {
+        query,
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify([
+            {
+              id: "market-1",
+              question: "Will Example Corp launch Product X by 2026-12-31?",
+              resolution_criteria: "Official launch announcement by deadline.",
+              end_date_iso: "2026-12-31T23:59:59Z",
+              closed: true,
+              archived: false,
+              market_slug: "example-product-x",
+              volume_num: 100000,
+              liquidity_num: 25000,
+              outcomes: ["Yes", "No"],
+              outcome_prices: [1, 0],
+              tags: [{ slug: "technology" }],
+            },
+          ]),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        ),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/benchmarks/import/polymarket",
+        payload: {
+          benchmarkSetId: "custom-benchmark-set",
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error:
+          "Benchmark market market-1 already belongs to benchmark set existing-benchmark-set",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("creates evaluation runs through the evaluation route", async () => {
     const createdRun: EvaluationRun = {
       id: "run-1",

@@ -60,8 +60,8 @@ export function registerEvaluationRoutes(
   const getEvaluationRun =
     args.getEvaluationRun ?? ((runId: string) => getEvaluationRunById(args.pool, runId));
 
-  app.post("/evaluation/benchmarks/import/polymarket", async (_request, reply) => {
-    const parsed = ImportPolymarketBenchmarksInputSchema.safeParse(_request.body ?? {});
+  app.post("/evaluation/benchmarks/import/polymarket", async (request, reply) => {
+    const parsed = ImportPolymarketBenchmarksInputSchema.safeParse(request.body ?? {});
 
     if (!parsed.success) {
       reply.code(400);
@@ -71,18 +71,33 @@ export function registerEvaluationRoutes(
       };
     }
 
-    const markets = await importAndStoreResolvedPolymarketBenchmarks({
-      pool: args.pool,
-      baseUrl: args.env.POLYMARKET_GAMMA_URL,
-      fetchImpl: args.fetchImpl,
-      benchmarkSetId: parsed.data.benchmarkSetId,
-    });
+    try {
+      const markets = await importAndStoreResolvedPolymarketBenchmarks({
+        pool: args.pool,
+        baseUrl: args.env.POLYMARKET_GAMMA_URL,
+        fetchImpl: args.fetchImpl,
+        benchmarkSetId: parsed.data.benchmarkSetId,
+      });
 
-    reply.code(201);
-    return {
-      imported: markets.length,
-      markets,
-    };
+      reply.code(201);
+      return {
+        imported: markets.length,
+        markets,
+      };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith("Benchmark market ") &&
+        error.message.includes(" already belongs to benchmark set ")
+      ) {
+        reply.code(409);
+        return {
+          error: error.message,
+        };
+      }
+
+      throw error;
+    }
   });
 
   app.post("/evaluation/runs", async (request, reply) => {
