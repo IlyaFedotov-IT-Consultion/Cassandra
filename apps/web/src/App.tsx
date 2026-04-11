@@ -51,6 +51,7 @@ import {
   type EventRecord,
   type JudgmentRecordSummary,
 } from "./api";
+import { formatDateTime, humanizeToken } from "./format";
 
 type ToastTone = "success" | "error";
 
@@ -83,10 +84,6 @@ const referenceClassValues = [
 ] as const;
 
 type EventReferenceClass = (typeof referenceClassValues)[number];
-
-function formatDateTime(value: string) {
-  return new Date(value).toLocaleString();
-}
 
 function formatProbability(value?: number | null) {
   return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "Pending";
@@ -341,7 +338,7 @@ function InlineError({ message }: { message: string }) {
 }
 
 function StatusPill({ value }: { value: string }) {
-  return <span className="status-pill">{value.replaceAll("_", " ")}</span>;
+  return <span className="status-pill">{humanizeToken(value)}</span>;
 }
 
 function DialogFrame({
@@ -584,7 +581,10 @@ function EventDetailPage() {
         <p>{event.resolutionCriteria}</p>
         <div className="detail-grid">
           <MetricTile label="Deadline" value={formatDateTime(event.deadline)} />
-          <MetricTile label="Reference class" value={event.referenceClass ?? "None"} />
+          <MetricTile
+            label="Reference class"
+            value={event.referenceClass ? humanizeToken(event.referenceClass) : "None"}
+          />
           <MetricTile label="Entities" value={event.entities.join(", ")} />
         </div>
       </SectionCard>
@@ -767,14 +767,14 @@ function WatchlistDetailPage() {
       />
       <section className="metric-grid">
         <MetricTile label="Candidates" value={String(candidates.length)} />
-        <MetricTile label="Cadence" value={watchlist.cadence} />
+          <MetricTile label="Cadence" value={humanizeToken(watchlist.cadence)} />
         <MetricTile label="Jurisdictions" value={watchlist.jurisdictions.join(", ") || "Global"} />
       </section>
       <SectionCard title={watchlist.name} kicker="Discovery stream">
         <div className="detail-grid">
           <MetricTile label="Keywords" value={watchlist.keywords.join(", ")} />
           <MetricTile label="Updated" value={formatDateTime(watchlist.updatedAt)} />
-          <MetricTile label="Status" value={watchlist.status} />
+          <MetricTile label="Status" value={humanizeToken(watchlist.status)} />
         </div>
       </SectionCard>
       <SectionCard title="Candidate Review" kicker="Candidates">
@@ -940,8 +940,11 @@ function JudgmentDetailPage() {
       </section>
       <SectionCard title="Trace Summary" kicker="Verdict">
         <div className="detail-grid">
-          <MetricTile label="Judgment status" value={judgment.status} />
-          <MetricTile label="Replay fidelity" value={trace?.replayFidelity ?? "Pending"} />
+          <MetricTile label="Judgment status" value={humanizeToken(judgment.status)} />
+          <MetricTile
+            label="Replay fidelity"
+            value={trace?.replayFidelity ? humanizeToken(trace.replayFidelity) : "Pending"}
+          />
           <MetricTile label="Disagreement shrinkage" value={trace ? formatDecimal(trace.disagreementShrinkage) : "0.00"} />
         </div>
       </SectionCard>
@@ -955,7 +958,7 @@ function JudgmentDetailPage() {
                     <StatusPill value={opinion.evidenceStrength} />
                     <strong>{formatProbability(opinion.probability)}</strong>
                   </div>
-                  <h3>{opinion.judgeName.replaceAll("_", " ")}</h3>
+                  <h3>{humanizeToken(opinion.judgeName)}</h3>
                   <p>{opinion.rationale}</p>
                   <div className="record-card__details">
                     <span>Confidence {formatProbability(opinion.confidence)}</span>
@@ -970,7 +973,7 @@ function JudgmentDetailPage() {
               {trace.weightBreakdown.map((item) => (
                 <div key={item.source} className="list-row">
                   <div>
-                    <strong>{item.source.replaceAll("_", " ")}</strong>
+                    <strong>{humanizeToken(item.source)}</strong>
                     <p>{JSON.stringify(item.details)}</p>
                   </div>
                   <div className="list-row__tail">
@@ -992,7 +995,7 @@ function JudgmentDetailPage() {
                 >
                   <div>
                     <strong>{citation.title}</strong>
-                    <p>{citation.sourceFamily}</p>
+                    <p>{humanizeToken(citation.sourceFamily)}</p>
                   </div>
                   <div className="list-row__tail">
                     <span>Open source</span>
@@ -1259,7 +1262,7 @@ function EvaluationRunPage() {
       />
       <section className="metric-grid">
         <MetricTile label="Benchmark set" value={run.benchmarkSetId} />
-        <MetricTile label="Replay fidelity" value={run.replayFidelity} />
+        <MetricTile label="Replay fidelity" value={humanizeToken(run.replayFidelity)} />
         <MetricTile
           label="Brier score"
           value={typeof run.overallMetrics.brierScore === "number" ? formatDecimal(run.overallMetrics.brierScore) : "n/a"}
@@ -1428,7 +1431,10 @@ function CalibrationPage() {
             <div className="detail-stack">
               <div className="detail-grid">
                 <MetricTile label="Training window" value={snapshotDetailQuery.data.trainingWindow} />
-                <MetricTile label="Weight regime" value={snapshotDetailQuery.data.weightRegime} />
+                <MetricTile
+                  label="Weight regime"
+                  value={humanizeToken(snapshotDetailQuery.data.weightRegime)}
+                />
                 <MetricTile label="Resolved outcomes" value={String(snapshotDetailQuery.data.resolvedOutcomeCount)} />
               </div>
               <pre className="json-block">{JSON.stringify(snapshotDetailQuery.data.calibrationParams, null, 2)}</pre>
