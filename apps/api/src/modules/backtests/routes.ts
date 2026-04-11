@@ -1,13 +1,28 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 
-import { countOutcomes } from "../outcomes/repository.js";
-import { retrainCalibrationSnapshot } from "./repository.js";
+import type { AppEnv } from "../../config/env.js";
+import {
+  loadCalibrationTrainingData,
+  persistCalibrationSnapshotFromService,
+  requestCalibrationSnapshot,
+} from "./repository.js";
 
-export function registerBacktestRoutes(app: FastifyInstance, pool: Pool) {
+export function registerBacktestRoutes(
+  app: FastifyInstance,
+  args: {
+    pool: Pool;
+    env: AppEnv;
+  },
+) {
   app.post("/backtests/retrain", async (_request, reply) => {
-    const resolvedOutcomeCount = await countOutcomes(pool);
-    const snapshot = await retrainCalibrationSnapshot(pool, resolvedOutcomeCount);
+    const calibrationData = await loadCalibrationTrainingData(args.pool);
+    const snapshotFromService = await requestCalibrationSnapshot({
+      judgeBaseUrl: args.env.JUDGE_BASE_URL,
+      historicalTraces: calibrationData.historicalTraces,
+      resolvedOutcomes: calibrationData.resolvedOutcomes,
+    });
+    const snapshot = await persistCalibrationSnapshotFromService(args.pool, snapshotFromService);
 
     reply.code(201);
     return snapshot;

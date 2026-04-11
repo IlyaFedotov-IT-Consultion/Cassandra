@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 
-import type { CalibrationSnapshot } from "@cassandra/shared";
+import {
+  CalibrationSnapshotSchema,
+  OutcomeInputSchema,
+  VerdictTraceSchema,
+  type CalibrationSnapshot,
+  type OutcomeInput,
+  type VerdictTrace,
+} from "@cassandra/shared";
 import type { Pool } from "pg";
 
 const DEFAULT_JUDGE_WEIGHTS = {
@@ -120,6 +127,91 @@ export async function getLatestCalibrationSnapshot(
   }
 
   return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
+}
+
+export async function loadCalibrationTrainingData(
+  pool: Pool,
+): Promise<{
+  historicalTraces: VerdictTrace[];
+  resolvedOutcomes: OutcomeInput[];
+}> {
+  const result = await pool.query(`
+    SELECT DISTINCT ON (o.event_id)
+      o.event_id,
+      o.resolved_value,
+      o.resolved_at,
+      o.resolution_source_url,
+      j.verdict_trace
+    FROM outcomes o
+    JOIN judgments j
+      ON j.event_id = o.event_id
+    WHERE j.verdict_trace IS NOT NULL
+    ORDER BY o.event_id, j.updated_at DESC, j.created_at DESC
+  `);
+
+  const historicalTraces: VerdictTrace[] = [];
+  const resolvedOutcomes: OutcomeInput[] = [];
+
+  for (const row of result.rows as Record<string, unknown>[]) {
+    const trace = VerdictTraceSchema.parse(row.verdict_trace);
+    const outcome = OutcomeInputSchema.parse({
+      eventId: String(row.event_id),
+      resolvedValue: Boolean(row.resolved_value),
+      resolvedAt: toIsoString(row.resolved_at),
+      resolutionSourceUrl: String(row.resolution_source_url),
+    });
+
+    historicalTraces.push(trace);
+    resolvedOutcomes.push(outcome);
+  }
+
+  return {
+    historicalTraces,
+    resolvedOutcomes,
+  };
+}
+
+export async function requestCalibrationSnapshot(args: {
+  judgeBaseUrl: string;
+  historicalTraces: VerdictTrace[];
+  resolvedOutcomes: OutcomeInput[];
+  fetchImpl?: typeof fetch;
+}): Promise<CalibrationSnapshot> {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${args.judgeBaseUrl}/calibrate`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      historicalTraces: args.historicalTraces,
+      resolvedOutcomes: args.resolvedOutcomes,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Judge calibration request failed with ${response.status} ${response.statusText}`);
+  }
+
+  return CalibrationSnapshotSchema.parse(await response.json());
+}
+
+export async function persistCalibrationSnapshotFromService(
+  pool: Pool,
+  snapshot: CalibrationSnapshot,
+): Promise<CalibrationSnapshot> {
+  return createCalibrationSnapshot(pool, {
+    trainingWindow: snapshot.trainingWindow,
+    judgeWeights: snapshot.judgeWeights,
+    baseRateParams: snapshot.baseRateParams,
+    marketPriorParams: snapshot.marketPriorParams,
+    calibrationParams: snapshot.calibrationParams,
+    onlineLearningParams: snapshot.onlineLearningParams,
+    metrics: snapshot.metrics,
+    weightRegime: snapshot.weightRegime,
+    resolvedOutcomeCount: snapshot.resolvedOutcomeCount,
+    approved: snapshot.approved,
+  });
 }
 
 export async function retrainCalibrationSnapshot(

@@ -54,7 +54,10 @@ export function buildApp(checks: ReadinessChecks = {}) {
     registerEventRoutes(app, checks.dbPool);
     registerWatchlistRoutes(app, checks.dbPool);
     registerOutcomeRoutes(app, checks.dbPool);
-    registerBacktestRoutes(app, checks.dbPool);
+    registerBacktestRoutes(app, {
+      pool: checks.dbPool,
+      env: checks.env ?? getEnv(),
+    });
     registerJudgmentRoutes(app, {
       pool: checks.dbPool,
       env: checks.env ?? getEnv(),
