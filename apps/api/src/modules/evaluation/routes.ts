@@ -86,6 +86,7 @@ export function registerEvaluationRoutes(
         baseUrl: args.env.POLYMARKET_GAMMA_URL,
         fetchImpl: args.fetchImpl,
         benchmarkSetId: parsed.data.benchmarkSetId,
+        mode: args.env.CASSANDRA_ADAPTER_MODE,
       });
 
       reply.code(201);

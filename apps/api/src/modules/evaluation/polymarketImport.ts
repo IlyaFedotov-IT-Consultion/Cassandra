@@ -5,6 +5,54 @@ import { upsertBenchmarkMarkets } from "./repository.js";
 
 export const DEFAULT_BENCHMARK_SET_ID = "polymarket_recent_resolved";
 
+const fixtureResolvedPolymarketMarkets: PolymarketMarketPayload[] = [
+  {
+    id: "fixture-market-fed-hold",
+    question: "Will the Fed hold rates steady at the next FOMC meeting?",
+    resolution_criteria: "Resolves Yes if the target range is unchanged at the next scheduled FOMC decision.",
+    end_date_iso: "2026-06-17T18:00:00Z",
+    resolved_at: "2026-06-17T18:00:00Z",
+    closed: true,
+    archived: false,
+    market_slug: "fed-hold-next-fomc",
+    volume_num: 245000,
+    liquidity_num: 68000,
+    outcomes: ["Yes", "No"],
+    outcome_prices: [1, 0],
+    tags: [{ slug: "macro" }],
+  },
+  {
+    id: "fixture-market-eu-fine",
+    question: "Will the EU fine Example Tech over antitrust conduct before July 2026?",
+    resolution_criteria: "Resolves Yes if the European Commission announces a formal monetary penalty before July 1, 2026.",
+    end_date_iso: "2026-07-01T00:00:00Z",
+    resolved_at: "2026-06-21T09:00:00Z",
+    closed: true,
+    archived: false,
+    market_slug: "eu-antitrust-fine-example-tech",
+    volume_num: 118000,
+    liquidity_num: 41000,
+    outcomes: ["Yes", "No"],
+    outcome_prices: [0, 1],
+    tags: [{ slug: "policy" }],
+  },
+  {
+    id: "fixture-market-launch-delay",
+    question: "Will Example Motors ship its new EV before September 2026?",
+    resolution_criteria: "Resolves Yes if customer deliveries of the announced EV begin before September 1, 2026.",
+    end_date_iso: "2026-09-01T00:00:00Z",
+    resolved_at: "2026-08-28T16:00:00Z",
+    closed: true,
+    archived: false,
+    market_slug: "example-motors-ev-shipments",
+    volume_num: 196000,
+    liquidity_num: 53000,
+    outcomes: ["Yes", "No"],
+    outcome_prices: [1, 0],
+    tags: [{ slug: "technology" }],
+  },
+];
+
 interface PolymarketTag {
   slug?: string;
   label?: string;
@@ -94,7 +142,15 @@ export async function importResolvedPolymarketBenchmarks(args: {
   baseUrl: string;
   fetchImpl?: typeof fetch;
   benchmarkSetId?: string;
+  mode?: "fixture" | "live";
 }): Promise<BenchmarkMarket[]> {
+  if (args.mode === "fixture") {
+    return normalizePolymarketBenchmarkMarkets(
+      fixtureResolvedPolymarketMarkets,
+      args.benchmarkSetId,
+    );
+  }
+
   const fetchImpl = args.fetchImpl ?? fetch;
   const response = await fetchImpl(`${args.baseUrl}/markets?closed=true`);
 
@@ -111,11 +167,13 @@ export async function importAndStoreResolvedPolymarketBenchmarks(args: {
   baseUrl: string;
   fetchImpl?: typeof fetch;
   benchmarkSetId?: string;
+  mode?: "fixture" | "live";
 }): Promise<BenchmarkMarket[]> {
   const markets = await importResolvedPolymarketBenchmarks({
     baseUrl: args.baseUrl,
     fetchImpl: args.fetchImpl,
     benchmarkSetId: args.benchmarkSetId,
+    mode: args.mode,
   });
 
   return upsertBenchmarkMarkets(args.pool, markets);

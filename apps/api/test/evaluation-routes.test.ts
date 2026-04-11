@@ -40,7 +40,7 @@ describe("evaluation routes", () => {
         DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
       fetchImpl: async () =>
         new Response(
@@ -92,6 +92,90 @@ describe("evaluation routes", () => {
     }
   });
 
+  it("imports fixture benchmark markets without calling Polymarket in fixture mode", async () => {
+    const captured: unknown[][] = [];
+    const pool = {
+      async query(_text: string, params?: unknown[]) {
+        captured.push(params ?? []);
+
+        const [
+          id,
+          benchmarkSetId,
+          title,
+          resolutionCriteria,
+          theme,
+          volume,
+          liquidity,
+          resolvedAt,
+          resolvedValue,
+          marketUrl,
+        ] = params ?? [];
+
+        return {
+          rows: [
+            {
+              id,
+              benchmark_set_id: benchmarkSetId,
+              title,
+              resolution_criteria: resolutionCriteria,
+              theme,
+              volume,
+              liquidity,
+              resolved_at: new Date(String(resolvedAt)),
+              resolved_value: resolvedValue,
+              market_url: marketUrl,
+            },
+          ],
+        };
+      },
+    } as never;
+
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+      fetchImpl: async () => {
+        throw new Error("fixture import should not hit the network");
+      },
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/benchmarks/import/polymarket",
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({
+        imported: 3,
+        markets: [
+          expect.objectContaining({
+            benchmarkSetId: "polymarket_recent_resolved",
+            id: "fixture-market-fed-hold",
+            theme: "macro",
+          }),
+          expect.objectContaining({
+            benchmarkSetId: "polymarket_recent_resolved",
+            id: "fixture-market-eu-fine",
+            theme: "policy",
+          }),
+          expect.objectContaining({
+            benchmarkSetId: "polymarket_recent_resolved",
+            id: "fixture-market-launch-delay",
+            theme: "technology",
+          }),
+        ],
+      });
+      expect(captured).toHaveLength(3);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("imports resolved Polymarket benchmarks into an explicit benchmark set", async () => {
     const captured: unknown[][] = [];
     const pool = {
@@ -123,7 +207,7 @@ describe("evaluation routes", () => {
         DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
       fetchImpl: async () =>
         new Response(
@@ -187,7 +271,7 @@ describe("evaluation routes", () => {
         DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
     });
 
@@ -231,7 +315,7 @@ describe("evaluation routes", () => {
         DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
       fetchImpl: async () =>
         new Response(
