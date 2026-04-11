@@ -14,6 +14,7 @@ import {
   WatchlistInputSchema,
   WatchlistRecordSchema,
   type CalibrationSnapshot,
+  type BenchmarkMarket,
   type CandidateEventRecord,
   type EvaluationPrediction,
   type EvaluationRun,
@@ -35,6 +36,11 @@ const benchmarkMarketListSchema = BenchmarkMarketSchema.array();
 const evaluationRunSummaryListSchema = EvaluationRunSummarySchema.array();
 const evaluationPredictionListSchema = EvaluationPredictionSchema.array();
 const calibrationSnapshotListSchema = CalibrationSnapshotSummarySchema.array();
+
+interface BenchmarkImportResult {
+  imported: number;
+  markets: BenchmarkMarket[];
+}
 
 const defaultApiBaseUrl = String(import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000");
 
@@ -199,6 +205,36 @@ export async function runJudgment(eventId: string) {
 
 export function listBenchmarkSets() {
   return requestJson("/evaluation/benchmark-sets", benchmarkSetListSchema);
+}
+
+export function importPolymarketBenchmarks(benchmarkSetId?: string) {
+  return requestJson<BenchmarkImportResult>(
+    "/evaluation/benchmarks/import/polymarket",
+    {
+      parse(value: unknown) {
+        if (!value || typeof value !== "object") {
+          throw new Error("Invalid benchmark import response");
+        }
+
+        const imported =
+          "imported" in value && typeof value.imported === "number" ? value.imported : null;
+        const markets = "markets" in value ? benchmarkMarketListSchema.parse(value.markets) : null;
+
+        if (imported === null || markets === null) {
+          throw new Error("Invalid benchmark import response");
+        }
+
+        return {
+          imported,
+          markets,
+        };
+      },
+    },
+    {
+      method: "POST",
+      body: JSON.stringify(benchmarkSetId ? { benchmarkSetId } : {}),
+    },
+  );
 }
 
 export function listBenchmarkMarkets(benchmarkSetId: string) {

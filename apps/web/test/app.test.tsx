@@ -38,6 +38,8 @@ function renderApp(initialEntries: string[] = ["/"]) {
 
 describe("workspace app", () => {
   beforeEach(() => {
+    let importedBenchmarkSetId: string | null = null;
+
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = init?.method ?? "GET";
@@ -368,15 +370,74 @@ describe("workspace app", () => {
       }
 
       if (method === "GET" && url.endsWith("/evaluation/benchmark-sets")) {
-        return createResponse([
+        return createResponse(
+          importedBenchmarkSetId
+            ? [
+                {
+                  benchmarkSetId: importedBenchmarkSetId,
+                  marketCount: 3,
+                  earliestResolvedAt: "2026-06-17T18:00:00Z",
+                  latestResolvedAt: "2026-08-28T16:00:00Z",
+                  themes: ["macro", "policy", "technology"],
+                },
+              ]
+            : [],
+        );
+      }
+
+      if (method === "POST" && url.endsWith("/evaluation/benchmarks/import/polymarket")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        importedBenchmarkSetId = payload.benchmarkSetId || "polymarket_recent_resolved";
+
+        return createResponse(
           {
-            benchmarkSetId: "benchmark-set-1",
-            marketCount: 12,
-            earliestResolvedAt: "2025-01-01T00:00:00Z",
-            latestResolvedAt: "2025-12-31T00:00:00Z",
-            themes: ["technology", "policy"],
+            imported: 3,
+            markets: [
+              {
+                id: "fixture-market-fed-hold",
+                benchmarkSetId: importedBenchmarkSetId,
+                title: "Will the Fed hold rates steady at the next FOMC meeting?",
+                resolutionCriteria:
+                  "Resolves Yes if the target range is unchanged at the next scheduled FOMC decision.",
+                theme: "macro",
+                volume: 245000,
+                liquidity: 68000,
+                resolvedAt: "2026-06-17T18:00:00Z",
+                resolvedValue: true,
+                marketUrl: "https://polymarket.com/event/fed-hold-next-fomc",
+              },
+              {
+                id: "fixture-market-eu-fine",
+                benchmarkSetId: importedBenchmarkSetId,
+                title: "Will the EU fine Example Tech over antitrust conduct before July 2026?",
+                resolutionCriteria:
+                  "Resolves Yes if the European Commission announces a formal monetary penalty before July 1, 2026.",
+                theme: "policy",
+                volume: 118000,
+                liquidity: 41000,
+                resolvedAt: "2026-06-21T09:00:00Z",
+                resolvedValue: false,
+                marketUrl: "https://polymarket.com/event/eu-antitrust-fine-example-tech",
+              },
+              {
+                id: "fixture-market-launch-delay",
+                benchmarkSetId: importedBenchmarkSetId,
+                title: "Will Example Motors ship its new EV before September 2026?",
+                resolutionCriteria:
+                  "Resolves Yes if customer deliveries of the announced EV begin before September 1, 2026.",
+                theme: "technology",
+                volume: 196000,
+                liquidity: 53000,
+                resolvedAt: "2026-08-28T16:00:00Z",
+                resolvedValue: true,
+                marketUrl: "https://polymarket.com/event/example-motors-ev-shipments",
+              },
+            ],
           },
-        ]);
+          {
+            status: 201,
+          },
+        );
       }
 
       if (method === "GET" && url.endsWith("/evaluation/runs")) {
@@ -394,6 +455,27 @@ describe("workspace app", () => {
             createdAt: "2026-01-02T00:00:00Z",
           },
         ]);
+      }
+
+      if (method === "POST" && url.endsWith("/evaluation/runs")) {
+        return createResponse(
+          {
+            id: "run-new",
+            benchmarkSetId: importedBenchmarkSetId ?? "benchmark-set-1",
+            cutoffs: ["30d"],
+            baselines: ["model_with_polymarket"],
+            overallMetrics: {
+              brierScore: 0.21,
+            },
+            sliceResults: [],
+            replayFidelity: "exact",
+            leakageWarnings: [],
+            createdAt: "2026-01-04T00:00:00Z",
+          },
+          {
+            status: 201,
+          },
+        );
       }
 
       if (method === "GET" && url.endsWith("/evaluation/runs/run-1")) {
@@ -601,6 +683,22 @@ describe("workspace app", () => {
     expect(screen.getAllByText(/technology/i).length).toBeGreaterThan(0);
     expect(screen.getByText("0.19")).toBeVisible();
     expect(screen.getByText("0.62")).toBeVisible();
+  });
+
+  it("imports benchmark sets from the evaluation workspace", async () => {
+    const user = userEvent.setup();
+
+    renderApp(["/evaluation"]);
+
+    expect(await screen.findByRole("heading", { name: /evaluation workspace/i })).toBeVisible();
+    expect(screen.getByText(/No benchmark sets yet/i)).toBeVisible();
+
+    await user.type(screen.getByLabelText(/benchmark set id/i), "macro-replay-pack");
+    await user.click(screen.getByRole("button", { name: /import benchmarks/i }));
+
+    expect(await screen.findByText(/Imported 3 benchmark markets\./i)).toBeVisible();
+    expect(await screen.findByText(/macro-replay-pack/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: /run evaluation/i })).toBeEnabled();
   });
 
   it("adds a local return path on event detail views", async () => {

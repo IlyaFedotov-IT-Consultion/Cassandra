@@ -34,6 +34,7 @@ import {
   fetchJudgment,
   fetchReady,
   fetchWatchlist,
+  importPolymarketBenchmarks,
   listBenchmarkSets,
   listCalibrationSnapshots,
   listCandidates,
@@ -1128,7 +1129,9 @@ function JudgmentDetailPage() {
 
 function EvaluationPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const [benchmarkImportDraft, setBenchmarkImportDraft] = useState("");
   const benchmarkSetsQuery = useQuery({
     queryKey: ["benchmark-sets"],
     queryFn: listBenchmarkSets,
@@ -1146,6 +1149,23 @@ function EvaluationPage() {
     },
     onError(error) {
       pushToast(error instanceof Error ? error.message : "Unable to create evaluation run", "error");
+    },
+  });
+  const importMutation = useMutation({
+    mutationFn: importPolymarketBenchmarks,
+    async onSuccess(result, benchmarkSetId) {
+      await queryClient.invalidateQueries({ queryKey: ["benchmark-sets"] });
+      const importedBenchmarkSetId = benchmarkSetId || result.markets[0]?.benchmarkSetId || "";
+
+      if (importedBenchmarkSetId) {
+        setSelectedBenchmarkSetId(importedBenchmarkSetId);
+      }
+
+      setBenchmarkImportDraft("");
+      pushToast(`Imported ${result.imported} benchmark market${result.imported === 1 ? "" : "s"}.`);
+    },
+    onError(error) {
+      pushToast(error instanceof Error ? error.message : "Unable to import benchmarks", "error");
     },
   });
 
@@ -1184,6 +1204,30 @@ function EvaluationPage() {
       />
       <section className="two-up">
         <SectionCard title="Benchmark Sets" kicker="Replay scope">
+          <div className="section-card__toolbar">
+            <div className="inline-form">
+              <input
+                aria-label="Benchmark set id"
+                placeholder="Optional benchmark set id"
+                value={benchmarkImportDraft}
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  setBenchmarkImportDraft(event.target.value)
+                }
+              />
+              <button
+                className="ghost-button"
+                type="button"
+                disabled={importMutation.isPending}
+                onClick={() => importMutation.mutate(benchmarkImportDraft.trim() || undefined)}
+              >
+                {importMutation.isPending ? "Importing…" : "Import benchmarks"}
+              </button>
+            </div>
+            <p className="helper-text">
+              Fixture mode seeds a local resolved market pack. Live mode pulls recently resolved
+              Polymarket markets into the selected benchmark set.
+            </p>
+          </div>
           {benchmarkSets.length === 0 ? (
             <EmptyState title="No benchmark sets yet" body="Import benchmarks before launching an evaluation run." />
           ) : (
@@ -1201,6 +1245,10 @@ function EvaluationPage() {
                     <small>
                       {benchmarkSet.marketCount} markets · {benchmarkSet.themes.join(", ")}
                     </small>
+                    <small>
+                      {formatDateTime(benchmarkSet.earliestResolvedAt)} to{" "}
+                      {formatDateTime(benchmarkSet.latestResolvedAt)}
+                    </small>
                   </span>
                 </label>
               ))}
@@ -1208,7 +1256,7 @@ function EvaluationPage() {
           )}
           <button
             type="button"
-            disabled={!selectedBenchmarkSetId || runMutation.isPending}
+            disabled={!selectedBenchmarkSetId || runMutation.isPending || importMutation.isPending}
             onClick={() => runMutation.mutate(selectedBenchmarkSetId)}
           >
             {runMutation.isPending ? "Launching…" : "Run evaluation"}

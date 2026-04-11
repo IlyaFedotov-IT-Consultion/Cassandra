@@ -505,6 +505,12 @@ a:focus-visible {
   margin-bottom: 18px;
 }
 
+.section-card__toolbar {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
 .section-card h3 {
   font-size: clamp(1.5rem, 2vw, 2.25rem);
 }
@@ -513,6 +519,23 @@ a:focus-visible {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 18px;
+}
+
+.inline-form {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.inline-form input {
+  flex: 1 1 240px;
+}
+
+.helper-text {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.5;
 }
 
 .search-input {
@@ -640,6 +663,31 @@ a:focus-visible {
   background:
     linear-gradient(90deg, rgba(183, 88, 39, 0.08), transparent 52%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 241, 231, 0.98));
+}
+
+.radio-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 1px solid rgba(41, 74, 98, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.radio-row input {
+  width: auto;
+  margin-top: 0.2rem;
+}
+
+.radio-row span {
+  display: grid;
+  gap: 4px;
+}
+
+.radio-row small {
+  color: var(--ink-soft);
+  line-height: 1.45;
 }
 
 .table-shell {
@@ -872,6 +920,11 @@ th {
 
   .toolbar {
     justify-content: stretch;
+  }
+
+  .inline-form {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .search-input {
