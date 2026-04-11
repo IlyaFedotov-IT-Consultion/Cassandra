@@ -164,4 +164,71 @@ describe("watchlist discovery", () => {
     expect(stored[0]?.promotionStatus).toBe("promoted");
     expect(stored[0]?.supportingEvidenceIds).toHaveLength(2);
   });
+
+  it("reuses the same candidate across reruns when wording changes but the event signature is the same", async () => {
+    const watchlist = await createWatchlist(pool, {
+      name: "Product launches",
+      keywords: ["product launch", "Example Corp"],
+      jurisdictions: [],
+      cadence: "daily",
+      sourceToggles: {},
+    });
+
+    const initialProvider = {
+      name: "initialWatchlistProvider",
+      async collect() {
+        return [
+          buildEvidenceItem({
+            eventId: watchlist.id,
+            title: "Example Corp prepares Product X launch",
+            claims: ["Example Corp may launch Product X soon"],
+          }),
+        ];
+      },
+    };
+
+    const rerunProvider = {
+      name: "rerunWatchlistProvider",
+      async collect() {
+        return [
+          buildEvidenceItem({
+            eventId: watchlist.id,
+            title: "Example Corp to debut Product X next month",
+            summary: "The company is rolling out Product X soon.",
+            claims: ["Example Corp will release Product X soon"],
+          }),
+        ];
+      },
+    };
+
+    const initial = await discoverWatchlistCandidates({
+      pool,
+      watchlist,
+      providers: [initialProvider],
+      evaluationTime: "2026-10-11T12:00:00Z",
+      mode: "fixture",
+    });
+
+    const rerun = await runWatchlistDiscoveryWorker({
+      pool,
+      watchlist,
+      providers: [rerunProvider],
+      evaluationTime: "2026-10-11T13:00:00Z",
+      mode: "fixture",
+    });
+
+    expect(initial).toHaveLength(1);
+    expect(rerun).toHaveLength(1);
+    expect(rerun[0]?.id).toBe(initial[0]?.id);
+    expect(rerun[0]?.clusterKey).toBe(initial[0]?.clusterKey);
+    expect(rerun[0]?.candidateSignature).toMatchObject({
+      action: "launch",
+      polarity: "positive",
+      entities: ["example corp", "product x"],
+    });
+
+    const stored = await listCandidateEventsForWatchlist(pool, watchlist.id);
+
+    expect(stored).toHaveLength(1);
+  });
 });

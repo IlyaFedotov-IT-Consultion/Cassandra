@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { CandidateEvent, WatchlistInput } from "@cassandra/shared";
 import type { Pool } from "pg";
+import type { CandidateSignature } from "./cluster.js";
 
 export interface WatchlistRecord {
   id: string;
@@ -15,7 +16,9 @@ export interface WatchlistRecord {
   updatedAt: string;
 }
 
-export interface CandidateEventRecord extends CandidateEvent {}
+export interface CandidateEventRecord extends CandidateEvent {
+  candidateSignature: CandidateSignature | null;
+}
 
 function toIsoString(value: unknown): string {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
@@ -38,7 +41,7 @@ function mapWatchlistRow(row: Record<string, unknown>): WatchlistRecord {
   };
 }
 
-function mapCandidateEventRow(row: Record<string, unknown>): CandidateEvent {
+function mapCandidateEventRow(row: Record<string, unknown>): CandidateEventRecord {
   return {
     id: String(row.id),
     watchlistId: String(row.watchlist_id),
@@ -49,6 +52,10 @@ function mapCandidateEventRow(row: Record<string, unknown>): CandidateEvent {
       : [],
     clusterKey: String(row.cluster_key),
     promotionStatus: row.promotion_status as CandidateEvent["promotionStatus"],
+    candidateSignature:
+      row.candidate_signature && typeof row.candidate_signature === "object"
+        ? (row.candidate_signature as CandidateSignature)
+        : null,
   };
 }
 
@@ -104,7 +111,7 @@ export async function getWatchlistById(
 export async function listCandidateEventsForWatchlist(
   pool: Pool,
   watchlistId: string,
-): Promise<CandidateEvent[]> {
+): Promise<CandidateEventRecord[]> {
   const result = await pool.query(
     `
       SELECT *
@@ -121,6 +128,7 @@ export async function listCandidateEventsForWatchlist(
 export async function upsertCandidateEvent(
   pool: Pool,
   input: Omit<CandidateEvent, "id" | "promotionStatus"> & {
+    candidateSignature: CandidateSignature;
     promotionStatus?: CandidateEvent["promotionStatus"];
   },
 ): Promise<CandidateEventRecord> {
@@ -142,6 +150,7 @@ export async function upsertCandidateEvent(
           title = $2,
           description = $3,
           supporting_evidence_ids = $4::jsonb,
+          candidate_signature = $5::jsonb,
           updated_at = NOW()
         WHERE id = $1
         RETURNING *
@@ -151,6 +160,7 @@ export async function upsertCandidateEvent(
         input.title,
         input.description,
         JSON.stringify(input.supportingEvidenceIds),
+        JSON.stringify(input.candidateSignature),
       ],
     );
 
@@ -166,9 +176,10 @@ export async function upsertCandidateEvent(
         description,
         supporting_evidence_ids,
         cluster_key,
+        candidate_signature,
         promotion_status
       )
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8)
       RETURNING *
     `,
     [
@@ -178,6 +189,7 @@ export async function upsertCandidateEvent(
       input.description,
       JSON.stringify(input.supportingEvidenceIds),
       input.clusterKey,
+      JSON.stringify(input.candidateSignature),
       input.promotionStatus ?? "pending",
     ],
   );

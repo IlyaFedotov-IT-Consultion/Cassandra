@@ -33,10 +33,14 @@ CREATE TABLE IF NOT EXISTS candidate_events (
   description TEXT NOT NULL,
   supporting_evidence_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
   cluster_key TEXT NOT NULL,
+  candidate_signature JSONB NOT NULL DEFAULT '{}'::jsonb,
   promotion_status TEXT NOT NULL DEFAULT 'pending',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE candidate_events
+  ADD COLUMN IF NOT EXISTS candidate_signature JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS evidence_items (
   id UUID PRIMARY KEY,

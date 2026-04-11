@@ -48,6 +48,7 @@ export async function discoverWatchlistCandidates(args: {
         description: cluster.description,
         supportingEvidenceIds: cluster.supportingEvidenceIds,
         clusterKey: cluster.clusterKey,
+        candidateSignature: cluster.candidateSignature,
       }),
     ),
   );

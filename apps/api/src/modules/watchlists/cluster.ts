@@ -1,9 +1,20 @@
+import { createHash } from "node:crypto";
+
 import type { EvidenceItem } from "@cassandra/shared";
+
+export interface CandidateSignature {
+  version: 1;
+  entities: string[];
+  action: string;
+  objectTokens: string[];
+  polarity: "positive" | "negative" | "neutral";
+}
 
 export interface CandidateCluster {
   title: string;
   description: string;
   clusterKey: string;
+  candidateSignature: CandidateSignature;
   supportingEvidenceIds: string[];
   evidence: EvidenceItem[];
 }
@@ -59,6 +70,10 @@ const ACTION_SYNONYMS: Record<string, string> = {
   postpone: "delay",
   postponed: "delay",
   postpones: "delay",
+  prepare: "launch",
+  prepared: "launch",
+  prepares: "launch",
+  preparing: "launch",
   release: "launch",
   released: "launch",
   releases: "launch",
@@ -186,83 +201,97 @@ function buildEvidenceProfile(items: EvidenceItem[]): EvidenceProfile {
   };
 }
 
-function shouldCluster(profile: EvidenceProfile, clusterProfile: EvidenceProfile): boolean {
-  const entityScore =
-    profile.entityTokens.length > 0 && clusterProfile.entityTokens.length > 0
-      ? overlapRatio(profile.entityTokens, clusterProfile.entityTokens)
-      : 0;
-  const titleScore = jaccardSimilarity(profile.titleTokens, clusterProfile.titleTokens);
-  const claimScore = jaccardSimilarity(profile.claimTokens, clusterProfile.claimTokens);
-  const combinedScore = jaccardSimilarity(profile.combinedTokens, clusterProfile.combinedTokens);
+function normalizeEntity(value: string): string {
+  return normalizeText(value).replace(/\s+/g, " ").trim();
+}
 
-  if (entityScore > 0 && entityScore < 0.5) {
-    return false;
-  }
+function sortUnique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))].sort();
+}
 
-  if (profile.negativeAction !== clusterProfile.negativeAction) {
-    return false;
-  }
+function selectPrimaryAction(profile: EvidenceProfile): string {
+  const preferredActions = ["reject", "delay", "approve", "launch", "announce"];
 
-  if (profile.actionLabels.size > 0 && clusterProfile.actionLabels.size > 0) {
-    const actionOverlap = [...profile.actionLabels].some((label) =>
-      clusterProfile.actionLabels.has(label),
-    );
-
-    if (!actionOverlap) {
-      return false;
+  for (const action of preferredActions) {
+    if (profile.actionLabels.has(action)) {
+      return action;
     }
   }
 
-  const weightedScore =
-    entityScore * 0.4 + Math.max(titleScore, claimScore) * 0.35 + combinedScore * 0.25;
+  return profile.actionLabels.values().next().value ?? "unknown";
+}
 
-  return weightedScore >= 0.45;
+export function extractCandidateSignature(item: EvidenceItem): CandidateSignature {
+  const profile = buildEvidenceProfile([item]);
+  const normalizedEntities = sortUnique(item.entities.map(normalizeEntity));
+  const primaryAction = selectPrimaryAction(profile);
+  const entityTokens = new Set(profile.entityTokens);
+  const objectTokens = sortUnique(
+    profile.combinedTokens.filter(
+      (token) => !entityTokens.has(token) && !profile.actionLabels.has(token),
+    ),
+  ).slice(0, 6);
+  const polarity =
+    item.stance === "contradicts" || NEGATIVE_ACTIONS.has(primaryAction)
+      ? "negative"
+      : item.stance === "neutral" || item.stance === "unknown"
+        ? "neutral"
+        : "positive";
+
+  return {
+    version: 1,
+    entities: normalizedEntities,
+    action: primaryAction,
+    objectTokens,
+    polarity,
+  };
+}
+
+export function buildCandidateSignatureKey(signature: CandidateSignature): string {
+  const payload = JSON.stringify({
+    version: signature.version,
+    entities: signature.entities,
+    action: signature.action,
+    polarity: signature.polarity,
+  });
+  return createHash("sha256").update(payload).digest("hex").slice(0, 24);
 }
 
 export function clusterCandidateEvidence(items: EvidenceItem[]): CandidateCluster[] {
-  const clusters: CandidateCluster[] = [];
+  const clustersByKey = new Map<string, CandidateCluster>();
 
   for (const item of items) {
-    const profile = buildEvidenceProfile([item]);
-    let matchedCluster: CandidateCluster | undefined;
+    const signature = extractCandidateSignature(item);
+    const clusterKey = buildCandidateSignatureKey(signature);
+    const existingCluster = clustersByKey.get(clusterKey);
 
-    for (const cluster of clusters) {
-      const clusterProfile = buildEvidenceProfile(cluster.evidence);
+    if (!existingCluster) {
+      const profile = buildEvidenceProfile([item]);
 
-      if (shouldCluster(profile, clusterProfile)) {
-        matchedCluster = cluster;
-        break;
-      }
-    }
-
-    if (!matchedCluster) {
-      clusters.push({
+      clustersByKey.set(clusterKey, {
         title: item.title,
         description: item.summary,
-        clusterKey: buildClusterKey([
-          ...profile.entityTokens,
-          ...profile.actionLabels,
-          ...profile.claimTokens.slice(0, 6),
-        ]),
+        clusterKey,
+        candidateSignature: signature,
         supportingEvidenceIds: [item.id],
         evidence: [item],
       });
       continue;
     }
 
-    matchedCluster.supportingEvidenceIds = [...matchedCluster.supportingEvidenceIds, item.id];
-    matchedCluster.evidence = [...matchedCluster.evidence, item];
+    existingCluster.supportingEvidenceIds = [...existingCluster.supportingEvidenceIds, item.id];
+    existingCluster.evidence = [...existingCluster.evidence, item];
 
-    if (item.summary.length > matchedCluster.description.length) {
-      matchedCluster.description = item.summary;
+    if (item.summary.length > existingCluster.description.length) {
+      existingCluster.description = item.summary;
     }
 
-    if (item.title.length > matchedCluster.title.length) {
-      matchedCluster.title = item.title;
+    if (item.title.length > existingCluster.title.length) {
+      existingCluster.title = item.title;
     }
   }
 
-  return clusters.sort(
+  return [...clustersByKey.values()].sort(
     (left, right) =>
       right.supportingEvidenceIds.length - left.supportingEvidenceIds.length ||
       left.title.localeCompare(right.title),
