@@ -30,7 +30,7 @@ Today the repository includes working implementations for:
 
 Still planned or partial:
 
-- the web app is currently a lightweight static operator console rather than the fuller inspection UI described in the design docs
+- the operator workspace is implemented, but it is still a prototype and not a final production dashboard
 - there is no generated OpenAPI or Swagger document yet; the human-written reference lives in [docs/api-reference.md](docs/api-reference.md)
 
 A fuller implementation snapshot lives in [docs/current-status.md](docs/current-status.md).
@@ -93,6 +93,8 @@ A fuller implementation snapshot lives in [docs/current-status.md](docs/current-
    pnpm --filter @cassandra/web dev
    ```
 
+   The web app is a Vite React client and reads the API base URL from `VITE_API_BASE_URL`.
+
 For the full Docker-backed stack, you can also run:
 
 ```bash
@@ -113,6 +115,7 @@ The shared environment template is in `.env.example`. The most important values 
 - `API_PORT`
 - `JUDGE_BASE_URL`
 - `JUDGE_PORT`
+- `VITE_API_BASE_URL`
 - `CASSANDRA_ADAPTER_MODE`
 - `PERPLEXITY_API_KEY`
 - `OPENROUTER_API_KEY`
