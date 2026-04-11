@@ -82,6 +82,11 @@ describe("VerdictTraceSchema", () => {
 });
 
 describe("EvidenceStrengthSchema", () => {
+  it("accepts the full Likert range including moderate levels", () => {
+    expect(EvidenceStrengthSchema.parse("moderate_against")).toBe("moderate_against");
+    expect(EvidenceStrengthSchema.parse("moderate_for")).toBe("moderate_for");
+  });
+
   it("rejects out-of-range strings", () => {
     expect(() => EvidenceStrengthSchema.parse("very_for")).toThrow();
   });

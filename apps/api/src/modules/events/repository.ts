@@ -89,3 +89,9 @@ export async function getEventById(pool: Pool, id: string): Promise<EventRecord 
 
   return mapEventRow(result.rows[0] as Record<string, unknown>);
 }
+
+export async function listEvents(pool: Pool): Promise<EventRecord[]> {
+  const result = await pool.query(`SELECT * FROM events ORDER BY created_at DESC`);
+
+  return result.rows.map((row) => mapEventRow(row as Record<string, unknown>));
+}

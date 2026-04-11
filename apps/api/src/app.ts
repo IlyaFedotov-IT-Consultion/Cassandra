@@ -1,6 +1,13 @@
 import Fastify from "fastify";
+import type { Pool } from "pg";
+
+import { registerBacktestRoutes } from "./modules/backtests/routes.js";
+import { registerEventRoutes } from "./modules/events/routes.js";
+import { registerOutcomeRoutes } from "./modules/outcomes/routes.js";
+import { registerWatchlistRoutes } from "./modules/watchlists/routes.js";
 
 export interface ReadinessChecks {
+  dbPool?: Pool;
   checkDb?: () => Promise<void>;
   checkRedis?: () => Promise<void>;
 }
@@ -36,6 +43,13 @@ export function buildApp(checks: ReadinessChecks = {}) {
       };
     }
   });
+
+  if (checks.dbPool) {
+    registerEventRoutes(app, checks.dbPool);
+    registerWatchlistRoutes(app, checks.dbPool);
+    registerOutcomeRoutes(app, checks.dbPool);
+    registerBacktestRoutes(app, checks.dbPool);
+  }
 
   return app;
 }

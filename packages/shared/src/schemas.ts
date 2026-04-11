@@ -74,9 +74,11 @@ export const ReferenceClassSchema = z.enum([
 ]);
 export const EvidenceStrengthSchema = z.enum([
   "strong_against",
+  "moderate_against",
   "weak_against",
   "neutral",
   "weak_for",
+  "moderate_for",
   "strong_for",
 ]);
 export const WeightRegimeSchema = z.enum(["cold_start", "warming", "steady"]);
