@@ -4,15 +4,16 @@ Cassandra is a research prototype for multi-source event forecasting. The reposi
 
 ## Current Status
 
-The repository currently contains the Task 1 root scaffold:
+The repository currently contains:
 
 - `pnpm` workspace metadata
 - shared TypeScript compiler settings
 - local Docker Compose infrastructure
+- root migration script scaffolding
 - environment variable template
+- the shared schema package
+- the API service skeleton
 - planning and design documents
-
-The application packages themselves have not been scaffolded yet.
 
 ## Planned Layout
 
@@ -44,6 +45,8 @@ docs/
    cp .env.example .env
    ```
 
+   The default local mode is `CASSANDRA_ADAPTER_MODE=fixture`, which is intended for offline iteration without live third-party API calls. Switch to `live` only when you want real judgments or historical replay against external providers.
+
 2. Install workspace metadata and create the lockfile:
 
    ```bash
@@ -70,6 +73,7 @@ The root `.env.example` contains the shared configuration used by the API, judge
 - `REDIS_URL`
 - `JUDGE_BASE_URL`
 - `VITE_API_BASE_URL`
+- `CASSANDRA_ADAPTER_MODE`
 - `PERPLEXITY_API_KEY`
 - `OPENROUTER_API_KEY`
 - `POLYMARKET_GAMMA_URL`
@@ -84,6 +88,7 @@ pnpm dev
 pnpm build
 pnpm test
 pnpm lint
+pnpm db:migrate
 ```
 
-These are currently no-ops until the individual packages are created.
+`pnpm db:migrate` is the root entrypoint for applying the API schema once `apps/api/src/db/schema.sql` exists in Task 4.

@@ -15,10 +15,11 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsx ./scripts/export-json-schema.ts",
     "test": "vitest run"
   },
   "dependencies": {
-    "zod": "^4.1.8"
+    "zod": "^4.1.8",
+    "zod-to-json-schema": "^3.24.6"
   }
 }

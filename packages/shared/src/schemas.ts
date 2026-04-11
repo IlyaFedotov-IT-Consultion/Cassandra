@@ -4,6 +4,7 @@ const IdSchema = z.string().min(1);
 const TimestampSchema = z.string().min(1);
 const ProbabilitySchema = z.number().min(0).max(1);
 const JsonMapSchema = z.record(z.string(), z.unknown());
+const NullableStringSchema = z.string().min(1).nullable();
 
 export const SourceFamilySchema = z.enum([
   "official",
@@ -62,6 +63,24 @@ export const BaselineNameSchema = z.enum([
   "model_without_polymarket",
   "model_with_polymarket",
 ]);
+export const ReferenceClassSchema = z.enum([
+  "regulatory_approval",
+  "election",
+  "product_launch",
+  "court_decision",
+  "macro_release",
+  "policy_decision",
+  "geopolitical_event",
+]);
+export const EvidenceStrengthSchema = z.enum([
+  "strong_against",
+  "weak_against",
+  "neutral",
+  "weak_for",
+  "strong_for",
+]);
+export const WeightRegimeSchema = z.enum(["cold_start", "warming", "steady"]);
+export const ReplayFidelitySchema = z.enum(["exact", "approximate"]);
 
 export const EventInputSchema = z
   .object({
@@ -69,6 +88,7 @@ export const EventInputSchema = z
     resolutionCriteria: z.string().min(1),
     deadline: TimestampSchema,
     entities: z.array(z.string().min(1)).min(1),
+    referenceClass: ReferenceClassSchema.nullable().default(null),
     marketSymbols: z.array(z.string().min(1)).default([]),
     polymarketMarketId: z.string().min(1).optional(),
   })
@@ -121,25 +141,39 @@ export const EvidenceItemSchema = z
     entities: z.array(z.string().min(1)).default([]),
     claims: z.array(z.string().min(1)).default([]),
     stance: z.enum(["supports", "contradicts", "neutral", "unknown"]),
-    freshnessHours: z.number().min(0),
     qualitySignals: JsonMapSchema.default({}),
     metadata: JsonMapSchema.default({}),
   })
   .strict();
 
-export const JudgeOpinionSchema = z
+export const JudgeOpinionJudgeFieldsSchema = z
   .object({
-    id: IdSchema.optional(),
-    judgmentId: IdSchema.optional(),
     judgeName: z.string().min(1),
     probability: ProbabilitySchema,
     confidence: ProbabilitySchema,
-    logBayesFactor: z.number(),
-    reliabilityWeight: z.number().min(0),
-    dependencyDiscount: z.number().min(0).max(1),
+    evidenceStrength: EvidenceStrengthSchema,
     rationale: z.string().min(1),
     evidenceIds: z.array(IdSchema).default([]),
     warnings: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+
+export const JudgeOpinionAggregatorFieldsSchema = z
+  .object({
+    logBayesFactor: z.number(),
+    baseWeight: z.number().min(0),
+    dependencyDiscount: z.number().min(0).max(1),
+    freshnessDecay: z.number().min(0).max(1),
+    effectiveLogOddsContribution: z.number(),
+  })
+  .strict();
+
+export const JudgeOpinionSchema = JudgeOpinionJudgeFieldsSchema.merge(
+  JudgeOpinionAggregatorFieldsSchema,
+)
+  .extend({
+    id: IdSchema.optional(),
+    judgmentId: IdSchema.optional(),
     missingEvidence: z.array(z.string().min(1)).default([]),
   })
   .strict();
@@ -160,22 +194,54 @@ export const CitationSchema = z
   })
   .strict();
 
+export const DependencyMatrixEntrySchema = z
+  .object({
+    judgeA: z.string().min(1),
+    judgeB: z.string().min(1),
+    jaccard: z.number().min(0).max(1),
+  })
+  .strict();
+
+export const ConflictSchema = z
+  .object({
+    judgeA: z.string().min(1),
+    judgeB: z.string().min(1),
+    reason: z.string().min(1),
+    severity: z.enum(["low", "medium", "high"]),
+  })
+  .strict();
+
+export const MissingEvidenceRecordSchema = z
+  .object({
+    claim: z.string().min(1),
+    sourceFamily: SourceFamilySchema,
+    reason: z.string().min(1),
+  })
+  .strict();
+
 export const VerdictTraceSchema = z
   .object({
     id: IdSchema,
     eventId: IdSchema,
+    evaluationTime: TimestampSchema,
+    referenceClass: ReferenceClassSchema.nullable(),
+    referenceClassFallback: NullableStringSchema.default(null),
     priorProbability: ProbabilitySchema,
     rawPosteriorProbability: ProbabilitySchema,
     finalProbability: ProbabilitySchema,
     confidenceLow: ProbabilitySchema,
     confidenceHigh: ProbabilitySchema,
+    dependencyMatrix: z.array(DependencyMatrixEntrySchema).default([]),
+    disagreementShrinkage: z.number().min(0).max(1),
     judgeOpinions: z.array(JudgeOpinionSchema).min(1),
     weightBreakdown: z.array(WeightBreakdownEntrySchema),
     ensembleMethod: EnsembleMethodSchema,
     calibrationMethod: CalibrationMethodSchema,
     uncertaintyMethod: UncertaintyMethodSchema,
-    conflicts: z.array(z.string().min(1)).default([]),
-    missingEvidence: z.array(z.string().min(1)).default([]),
+    weightRegime: WeightRegimeSchema,
+    replayFidelity: ReplayFidelitySchema,
+    conflicts: z.array(ConflictSchema).default([]),
+    missingEvidence: z.array(MissingEvidenceRecordSchema).default([]),
     citations: z.array(CitationSchema).min(1),
     modelVersion: z.string().min(1),
     weightVersion: z.string().min(1),
@@ -212,6 +278,8 @@ export const CalibrationSnapshotSchema = z
     calibrationParams: JsonMapSchema,
     onlineLearningParams: JsonMapSchema,
     metrics: JsonMapSchema,
+    weightRegime: WeightRegimeSchema,
+    resolvedOutcomeCount: z.number().int().min(0),
     approved: z.boolean(),
   })
   .strict();
@@ -250,9 +318,25 @@ export const EvaluationRunSchema = z
     baselines: z.array(BaselineNameSchema).min(1),
     overallMetrics: JsonMapSchema,
     sliceResults: z.array(EvaluationSliceResultSchema),
-    replayFidelity: z.enum(["exact", "approximate"]),
+    replayFidelity: ReplayFidelitySchema,
     leakageWarnings: z.array(z.string().min(1)).default([]),
     createdAt: TimestampSchema,
+  })
+  .strict();
+
+export const CassandraSchemaBundleSchema = z
+  .object({
+    EventInput: EventInputSchema,
+    WatchlistInput: WatchlistInputSchema,
+    CandidateEvent: CandidateEventSchema,
+    EvidenceItem: EvidenceItemSchema,
+    JudgeOpinion: JudgeOpinionSchema,
+    VerdictTrace: VerdictTraceSchema,
+    OutcomeInput: OutcomeInputSchema,
+    CalibrationSnapshot: CalibrationSnapshotSchema,
+    BenchmarkMarket: BenchmarkMarketSchema,
+    EvaluationRun: EvaluationRunSchema,
+    EvaluationSliceResult: EvaluationSliceResultSchema,
   })
   .strict();
 

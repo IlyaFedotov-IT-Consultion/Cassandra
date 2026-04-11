@@ -7,6 +7,7 @@ const EnvSchema = z.object({
     .min(1)
     .default("postgresql://postgres:postgres@localhost:5432/cassandra"),
   REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
+  CASSANDRA_ADAPTER_MODE: z.enum(["live", "fixture"]).default("fixture"),
 });
 
 export type AppEnv = z.infer<typeof EnvSchema>;
