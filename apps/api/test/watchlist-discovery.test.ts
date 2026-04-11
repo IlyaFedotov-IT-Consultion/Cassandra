@@ -76,6 +76,23 @@ describe("clusterCandidateEvidence", () => {
     expect(clusters[0]?.supportingEvidenceIds.length).toBe(2);
     expect(clusters[1]?.supportingEvidenceIds.length).toBe(1);
   });
+
+  it("does not merge conflicting launch and delay narratives for the same entity", () => {
+    const clusters = clusterCandidateEvidence([
+      buildEvidenceItem({
+        title: "Example Corp prepares Product X launch",
+        claims: ["Example Corp may launch Product X soon"],
+      }),
+      buildEvidenceItem({
+        title: "Example Corp delays Product X launch",
+        summary: "The company pushed the launch into next quarter.",
+        claims: ["Example Corp delayed Product X launch"],
+        stance: "contradicts",
+      }),
+    ]);
+
+    expect(clusters).toHaveLength(2);
+  });
 });
 
 describe("watchlist discovery", () => {
