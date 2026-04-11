@@ -263,14 +263,24 @@ function PageIntro({
   title,
   description,
   actions,
+  returnLink,
 }: {
   title: string;
   description: string;
   actions?: ReactNode;
+  returnLink?: {
+    to: string;
+    label: string;
+  };
 }) {
   return (
     <header className="page-intro">
       <div>
+        {returnLink ? (
+          <Link className="page-intro__return-link" to={returnLink.to}>
+            {returnLink.label}
+          </Link>
+        ) : null}
         <p className="page-intro__eyebrow">Operator View</p>
         <h2>{title}</h2>
         <p>{description}</p>
@@ -559,6 +569,10 @@ function EventDetailPage() {
       <PageIntro
         title="Event Detail"
         description="Run new judgments, inspect the latest signal, and review prior executions for this target."
+        returnLink={{
+          to: "/events",
+          label: "Back to events",
+        }}
         actions={
           <button type="button" onClick={() => runJudgmentMutation.mutate()}>
             {runJudgmentMutation.isPending ? "Queueing…" : "Run judgment"}
@@ -764,6 +778,10 @@ function WatchlistDetailPage() {
       <PageIntro
         title="Watchlist Detail"
         description="Review candidate clusters, assess supporting context, and seed forecast targets from the promising leads."
+        returnLink={{
+          to: "/watchlists",
+          label: "Back to watchlists",
+        }}
       />
       <section className="metric-grid">
         <MetricTile label="Candidates" value={String(candidates.length)} />
@@ -925,6 +943,10 @@ function JudgmentDetailPage() {
       <PageIntro
         title="Judgment Trace"
         description="Review the final forecast, inspect disagreement and missing evidence, and check the exact cited record behind the run."
+        returnLink={{
+          to: "/judgments",
+          label: "Back to judgments",
+        }}
       />
       <section className="metric-grid">
         <MetricTile label="Final probability" value={formatProbability(trace?.finalProbability)} />
@@ -1259,6 +1281,10 @@ function EvaluationRunPage() {
       <PageIntro
         title="Evaluation Run"
         description="Compare replay performance, slice metrics, and per-market predictions for the selected benchmark set."
+        returnLink={{
+          to: "/evaluation",
+          label: "Back to evaluation",
+        }}
       />
       <section className="metric-grid">
         <MetricTile label="Benchmark set" value={run.benchmarkSetId} />

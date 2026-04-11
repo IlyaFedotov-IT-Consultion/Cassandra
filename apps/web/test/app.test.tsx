@@ -91,7 +91,7 @@ describe("workspace app", () => {
         ]);
       }
 
-      if (method === "GET" && url.endsWith("/judgments")) {
+      if (method === "GET" && (url.endsWith("/judgments") || url.includes("/judgments?eventId="))) {
         return createResponse([
           {
             id: "judgment-1",
@@ -563,6 +563,7 @@ describe("workspace app", () => {
     renderApp(["/judgments/judgment-1"]);
 
     expect(await screen.findByRole("heading", { name: /judgment trace/i })).toBeVisible();
+    expect(screen.getByRole("link", { name: /back to judgments/i })).toHaveAttribute("href", "/judgments");
     expect(screen.getAllByText("63.0%").length).toBeGreaterThan(0);
     expect(screen.getByText(/Official release indicates launch readiness/i)).toBeVisible();
     expect(screen.getByText(/Web chatter remains less certain/i)).toBeVisible();
@@ -579,6 +580,7 @@ describe("workspace app", () => {
     renderApp(["/watchlists/watchlist-1"]);
 
     expect(await screen.findByRole("heading", { name: /watchlist detail/i })).toBeVisible();
+    expect(screen.getByRole("link", { name: /back to watchlists/i })).toHaveAttribute("href", "/watchlists");
     expect(screen.getByText(/Example Therapy receives FDA fast-track decision/i)).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: /seed event/i }));
@@ -594,10 +596,18 @@ describe("workspace app", () => {
     renderApp(["/evaluation/runs/run-1"]);
 
     expect(await screen.findByRole("heading", { name: /evaluation run/i })).toBeVisible();
+    expect(screen.getByRole("link", { name: /back to evaluation/i })).toHaveAttribute("href", "/evaluation");
     expect(screen.getByText(/benchmark-set-1/i)).toBeVisible();
     expect(screen.getAllByText(/technology/i).length).toBeGreaterThan(0);
     expect(screen.getByText("0.19")).toBeVisible();
     expect(screen.getByText("0.62")).toBeVisible();
+  });
+
+  it("adds a local return path on event detail views", async () => {
+    renderApp(["/events/event-1"]);
+
+    expect(await screen.findByRole("heading", { name: /event detail/i })).toBeVisible();
+    expect(screen.getByRole("link", { name: /back to events/i })).toHaveAttribute("href", "/events");
   });
 
   it("loads calibration history and retrains a new snapshot", async () => {
