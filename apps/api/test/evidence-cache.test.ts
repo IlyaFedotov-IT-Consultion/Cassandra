@@ -251,4 +251,43 @@ describe("collectEvidenceForEventWithCache", () => {
       type: "Error",
     });
   });
+
+  it("rejects live collection when every provider returns zero evidence items", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria:
+        "Counts only if Example Corp posts a general availability announcement on its official site.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+
+    await expect(
+      collectEvidenceForEventWithCache({
+        pool,
+        event,
+        evaluationTime: "2026-10-11T12:15:00Z",
+        mode: "live",
+        providers: [
+          {
+            name: "officialSearch",
+            async collect() {
+              return [];
+            },
+          },
+          {
+            name: "web",
+            async collect() {
+              return [];
+            },
+          },
+        ],
+        cacheStore: new InMemoryEvidenceCacheStore(),
+      }),
+    ).rejects.toThrow("returned zero evidence items");
+
+    const persisted = await listEvidenceForEvent(pool, event.id);
+    expect(persisted).toHaveLength(0);
+  });
 });

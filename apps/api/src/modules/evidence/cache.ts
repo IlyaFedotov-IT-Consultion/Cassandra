@@ -45,6 +45,24 @@ export function buildEvidenceCacheKey(
   return `evidence:${providerName}:${hourBucket}:${canonicalQuestion}`;
 }
 
+function summarizeProviderRuns(providerRuns: ProviderRun[]): string {
+  return providerRuns
+    .map((run) => {
+      const parts = [
+        `raw=${run.rawCount}`,
+        `normalized=${run.normalizedCount}`,
+        `cache=${run.cacheStatus}`,
+      ];
+
+      if (run.error) {
+        parts.push(`error=${run.error}`);
+      }
+
+      return `${run.providerName} (${parts.join(", ")})`;
+    })
+    .join("; ");
+}
+
 export async function collectEvidenceForEventWithCache(
   args: CollectEvidenceArgs & {
     cacheStore: EvidenceCacheStore;
@@ -137,15 +155,20 @@ export async function collectEvidenceForEventWithCache(
     args.providers.length > 0 &&
     failedRuns.length === args.providers.length
   ) {
-    const summary = failedRuns
-      .map((run) => `${run.providerName}: ${run.error}`)
-      .join("; ");
+    const summary = failedRuns.map((run) => `${run.providerName}: ${run.error}`).join("; ");
     throw new Error(
       `All ${args.providers.length} evidence provider(s) failed in live mode: ${summary}`,
     );
   }
 
   const normalizedItems = normalizeEvidenceItems(rawItems);
+
+  if (args.mode === "live" && args.providers.length > 0 && normalizedItems.length === 0) {
+    throw new Error(
+      `All ${args.providers.length} live evidence provider(s) returned zero evidence items: ${summarizeProviderRuns(providerRuns)}`,
+    );
+  }
+
   const items = await insertEvidenceItems(args.pool, normalizedItems);
 
   logger?.info(

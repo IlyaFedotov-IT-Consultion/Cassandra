@@ -87,6 +87,61 @@ describe("VerdictTraceSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("defaults an omitted nullable reference class to null", () => {
+    const result = VerdictTraceSchema.parse({
+      id: "trace-1",
+      eventId: "event-1",
+      evaluationTime: "2026-01-01T12:00:00Z",
+      referenceClassFallback: "global_baseline",
+      priorProbability: 0.4,
+      rawPosteriorProbability: 0.55,
+      finalProbability: 0.57,
+      confidenceLow: 0.49,
+      confidenceHigh: 0.63,
+      dependencyMatrix: [],
+      disagreementShrinkage: 0.1,
+      judgeOpinions: [
+        {
+          judgeName: "official_records",
+          probability: 0.57,
+          confidence: 0.8,
+          evidenceStrength: "moderate_for",
+          rationale: "Official evidence supports the event.",
+          evidenceIds: ["evidence-1"],
+          warnings: [],
+          logBayesFactor: 1.2,
+          baseWeight: 0.4,
+          dependencyDiscount: 1,
+          freshnessDecay: 1,
+          effectiveLogOddsContribution: 0.48,
+          missingEvidence: [],
+        },
+      ],
+      weightBreakdown: [{ source: "official_records", weight: 0.4, details: {} }],
+      ensembleMethod: "logarithmic_opinion_pool",
+      calibrationMethod: "identity",
+      uncertaintyMethod: "bootstrap",
+      weightRegime: "steady",
+      replayFidelity: "exact",
+      conflicts: [],
+      missingEvidence: [],
+      citations: [
+        {
+          title: "Example report",
+          url: "https://example.com/report",
+          sourceFamily: "official",
+        },
+      ],
+      cacheEvents: [],
+      modelVersion: "judge-v1",
+      weightVersion: "weights-v1",
+      calibrationVersion: "cal-v1",
+      status: "completed",
+    });
+
+    expect(result.referenceClass).toBeNull();
+  });
 });
 
 describe("EvidenceStrengthSchema", () => {

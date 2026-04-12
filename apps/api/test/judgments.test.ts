@@ -793,6 +793,55 @@ describe("judgment routes and service", () => {
     );
   });
 
+  it("fails live judgments when every evidence provider returns zero items", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const queued = await createJudgmentRun(pool, event.id);
+    const judgeSpy = vi.fn();
+
+    await expect(
+      runJudgment({
+        pool,
+        env: createFixtureEnv({
+          CASSANDRA_ADAPTER_MODE: "live",
+        }),
+        input: {
+          judgmentId: queued.id,
+          eventId: event.id,
+          evaluationTime: "2026-10-11T12:00:00Z",
+        },
+        evidenceProviders: [
+          {
+            name: "officialSearch",
+            async collect() {
+              return [];
+            },
+          },
+          {
+            name: "web",
+            async collect() {
+              return [];
+            },
+          },
+        ],
+        judgeClient: {
+          judge: judgeSpy,
+        } as never,
+      }),
+    ).rejects.toThrow("returned zero evidence items");
+
+    expect(judgeSpy).not.toHaveBeenCalled();
+
+    const stored = await getJudgmentById(pool, queued.id);
+    expect(stored?.status).toBe("failed");
+  });
+
   it("rejects live judge traces that use placeholder citations", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",
