@@ -1125,4 +1125,228 @@ describe("judgment routes and service", () => {
       }),
     ).rejects.toThrow("placeholder");
   });
+
+  it("only includes citations for evidence referenced by the judge panel", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const calibrationSnapshot = buildCalibrationSnapshot();
+    const officialEvidence = buildEvidenceItem({
+      eventId: event.id,
+      sourceFamily: "official",
+      sourceType: "press_release",
+      title: "Example Corp confirms launch preparation",
+      url: "https://example.com/official-launch-prep",
+    });
+    const communityEvidence = buildEvidenceItem({
+      eventId: event.id,
+      sourceFamily: "community",
+      sourceType: "reddit_post",
+      title: "Community discusses launch schedule",
+      url: "https://example.com/community-launch-thread",
+    });
+    const webEvidence = buildEvidenceItem({
+      eventId: event.id,
+      sourceFamily: "web",
+      sourceType: "web_article",
+      title: "Analysts expect Product X before year end",
+      url: "https://example.com/analyst-launch-report",
+    });
+    const unusedMarketEvidence = buildEvidenceItem({
+      eventId: event.id,
+      sourceFamily: "market",
+      sourceType: "market_odds",
+      title: "Macro forecast for unrelated sector ETF flows",
+      summary: "This market note covers shipping indexes and unrelated sector ETF flows.",
+      entities: ["Sector ETF"],
+      claims: ["ETF flows may rise this quarter"],
+      url: "https://example.com/unrelated-market-note",
+      metadata: {
+        provider: "marketProvider",
+      },
+    });
+
+    const trace = await evaluateEventForecast({
+      env: createFixtureEnv(),
+      event,
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidence: [
+        officialEvidence,
+        communityEvidence,
+        webEvidence,
+        unusedMarketEvidence,
+      ],
+      calibrationSnapshot,
+    });
+
+    expect(trace.citations.map((citation) => citation.url)).toEqual([
+      officialEvidence.url,
+      communityEvidence.url,
+      webEvidence.url,
+    ]);
+  });
+
+  it("filters unrelated evidence before calling the judge service", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const calibrationSnapshot = buildCalibrationSnapshot();
+    const officialEvidence = buildEvidenceItem({
+      eventId: event.id,
+      sourceFamily: "official",
+      sourceType: "press_release",
+      title: "Example Corp confirms launch preparation",
+      url: "https://example.com/official-launch-prep-2",
+    });
+    const communityEvidence = buildEvidenceItem({
+      eventId: event.id,
+      sourceFamily: "community",
+      sourceType: "reddit_post",
+      title: "Community discusses launch schedule",
+      url: "https://example.com/community-launch-thread-2",
+    });
+    const webEvidence = buildEvidenceItem({
+      eventId: event.id,
+      sourceFamily: "web",
+      sourceType: "web_article",
+      title: "Analysts expect Product X before year end",
+      url: "https://example.com/analyst-launch-report-2",
+    });
+    const unrelatedEvidence = buildEvidenceItem({
+      eventId: event.id,
+      sourceFamily: "prediction_market",
+      sourceType: "polymarket_market",
+      title: "Will Torino qualify for the League Phase of the 2026-27 UEFA Champions League?",
+      summary: "Soccer market about Torino qualifying for the Champions League.",
+      entities: ["Torino"],
+      claims: ["Torino may qualify for the Champions League."],
+      url: "https://polymarket.com/event/torino-qualify",
+    });
+
+    let capturedEvidence: EvidenceItem[] = [];
+
+    await evaluateEventForecast({
+      env: createFixtureEnv({
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      event,
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidence: [
+        officialEvidence,
+        communityEvidence,
+        webEvidence,
+        unrelatedEvidence,
+      ],
+      calibrationSnapshot,
+      judgeClient: {
+        async judge(input) {
+          capturedEvidence = input.evidence as EvidenceItem[];
+
+          return {
+            id: randomUUID(),
+            eventId: event.id,
+            evaluationTime: "2026-10-11T12:00:00Z",
+            referenceClass: event.referenceClass,
+            referenceClassFallback: null,
+            priorProbability: 0.5,
+            rawPosteriorProbability: 0.62,
+            finalProbability: 0.6,
+            confidenceLow: 0.5,
+            confidenceHigh: 0.7,
+            dependencyMatrix: [],
+            disagreementShrinkage: 0.02,
+            judgeOpinions: [
+              {
+                judgeName: "official_records",
+                probability: 0.6,
+                confidence: 0.7,
+                evidenceStrength: "weak_for" as const,
+                rationale: "Official evidence tilts positive.",
+                evidenceIds: [officialEvidence.id],
+                warnings: [],
+                logBayesFactor: 0.5,
+                baseWeight: 0.4,
+                dependencyDiscount: 1,
+                freshnessDecay: 1,
+                effectiveLogOddsContribution: 0.2,
+                missingEvidence: [],
+              },
+              {
+                judgeName: "community_signal",
+                probability: 0.58,
+                confidence: 0.68,
+                evidenceStrength: "weak_for" as const,
+                rationale: "Community evidence is directionally positive.",
+                evidenceIds: [communityEvidence.id],
+                warnings: [],
+                logBayesFactor: 0.4,
+                baseWeight: 0.2,
+                dependencyDiscount: 1,
+                freshnessDecay: 1,
+                effectiveLogOddsContribution: 0.08,
+                missingEvidence: [],
+              },
+              {
+                judgeName: "open_web_research",
+                probability: 0.61,
+                confidence: 0.69,
+                evidenceStrength: "weak_for" as const,
+                rationale: "Web evidence supports the launch read.",
+                evidenceIds: [webEvidence.id],
+                warnings: [],
+                logBayesFactor: 0.5,
+                baseWeight: 0.4,
+                dependencyDiscount: 1,
+                freshnessDecay: 1,
+                effectiveLogOddsContribution: 0.2,
+                missingEvidence: [],
+              },
+            ],
+            weightBreakdown: [
+              {
+                source: "official_records",
+                weight: 0.4,
+                details: {},
+              },
+            ],
+            ensembleMethod: "logarithmic_opinion_pool" as const,
+            calibrationMethod: "identity" as const,
+            uncertaintyMethod: "bootstrap" as const,
+            weightRegime: "cold_start" as const,
+            replayFidelity: "exact" as const,
+            conflicts: [],
+            missingEvidence: [],
+            citations: [
+              {
+                title: officialEvidence.title,
+                url: officialEvidence.url,
+                sourceFamily: officialEvidence.sourceFamily,
+              },
+            ],
+            modelVersion: "judge-v1",
+            weightVersion: calibrationSnapshot.id,
+            calibrationVersion: calibrationSnapshot.id,
+            status: "completed" as const,
+            cacheEvents: [],
+          };
+        },
+      },
+    });
+
+    expect(capturedEvidence.map((item) => item.id)).toEqual([
+      officialEvidence.id,
+      communityEvidence.id,
+      webEvidence.id,
+    ]);
+  });
 });

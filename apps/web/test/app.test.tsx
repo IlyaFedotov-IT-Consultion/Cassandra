@@ -1029,6 +1029,7 @@ describe("workspace app", () => {
     expect(screen.getAllByText(/Official release indicates launch readiness/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Web chatter remains less certain/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Exact GA date is not independently confirmed/i)).toBeVisible();
+    expect(screen.getByRole("heading", { name: /supporting citations/i })).toBeVisible();
     expect(screen.getByRole("link", { name: /Example Corp release/i })).toHaveAttribute(
       "href",
       "https://example.com/release",

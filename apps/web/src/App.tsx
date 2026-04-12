@@ -1492,25 +1492,33 @@ function JudgmentDetailPage() {
               ))}
             </div>
           </SectionCard>
-          <SectionCard title="Citations Timeline" kicker="Evidence">
+          <SectionCard title="Supporting Citations" kicker="Sources">
             <div className="list-stack">
-              {trace.citations.map((citation) => (
-                <a
-                  key={citation.url}
-                  className="list-row"
-                  href={citation.url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <div>
-                    <strong>{citation.title}</strong>
-                    <p>{humanizeToken(citation.sourceFamily)}</p>
-                  </div>
-                  <div className="list-row__tail">
-                    <span>{isLikelyEnglishCitation(citation) ? "English-priority" : "Non-English / mixed"}</span>
-                  </div>
-                </a>
-              ))}
+              {trace.citations.map((citation) => {
+                const citationDetails = [
+                  humanizeToken(citation.sourceFamily),
+                  citation.provider ? humanizeToken(citation.provider) : null,
+                  citation.publishedAt ? formatDateTime(citation.publishedAt) : null,
+                ].filter(Boolean);
+
+                return (
+                  <a
+                    key={citation.url}
+                    className="list-row"
+                    href={citation.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <div>
+                      <strong>{citation.title}</strong>
+                      <p>{citationDetails.join(" · ")}</p>
+                    </div>
+                    <div className="list-row__tail">
+                      <span>{isLikelyEnglishCitation(citation) ? "English priority" : "Mixed language"}</span>
+                    </div>
+                  </a>
+                );
+              })}
             </div>
           </SectionCard>
           <section className="two-up">

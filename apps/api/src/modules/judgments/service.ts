@@ -55,6 +55,38 @@ import {
 const DEFAULT_EVALUATION_TIME = () => new Date().toISOString();
 const PROMPT_VERSION = "prompt-v1";
 const MIN_COMPLETED_LIVE_CITATIONS = 2;
+const MAX_EVIDENCE_ITEMS_FOR_JUDGE = 12;
+const MAX_EVIDENCE_ITEMS_PER_FAMILY = 4;
+const CITATION_RELEVANCE_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "their",
+  "this",
+  "to",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "will",
+  "with",
+]);
 export const LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE =
   "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.";
 const PANEL_JUDGES = [
@@ -519,6 +551,111 @@ function buildWeightBreakdown(
   }));
 }
 
+function tokenizeCitationRelevance(value: string): string[] {
+  return (value.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+    (token) => token.length >= 3 && !CITATION_RELEVANCE_STOP_WORDS.has(token),
+  );
+}
+
+function isEventRelevantEvidence(event: EventRecord, item: JudgmentEvidenceItem): boolean {
+  const evidenceText = [
+    item.title,
+    item.summary,
+    ...item.entities,
+    ...item.claims,
+  ]
+    .join(" ")
+    .toLowerCase();
+  const entityMatches = event.entities.filter((entity) => {
+    const normalized = entity.trim().toLowerCase();
+    return normalized.length >= 3 && evidenceText.includes(normalized);
+  });
+
+  if (entityMatches.length > 0) {
+    return true;
+  }
+
+  const eventTokens = new Set(
+    tokenizeCitationRelevance(
+      [event.question, event.resolutionCriteria, ...event.entities].join(" "),
+    ),
+  );
+  const evidenceTokens = new Set(tokenizeCitationRelevance(evidenceText));
+  let overlapCount = 0;
+
+  for (const token of eventTokens) {
+    if (evidenceTokens.has(token)) {
+      overlapCount += 1;
+    }
+  }
+
+  return overlapCount >= 2;
+}
+
+function evidenceFamilyPriority(sourceFamily: SourceFamily): number {
+  switch (sourceFamily) {
+    case "official":
+    case "government":
+      return 0;
+    case "community":
+      return 1;
+    case "web":
+    case "llm_research":
+      return 2;
+    case "market":
+    case "prediction_market":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function compareEvidenceForJudging(left: JudgmentEvidenceItem, right: JudgmentEvidenceItem): number {
+  const familyGap =
+    evidenceFamilyPriority(left.sourceFamily) - evidenceFamilyPriority(right.sourceFamily);
+
+  if (familyGap !== 0) {
+    return familyGap;
+  }
+
+  const publishedGap =
+    new Date(right.publishedAt).getTime() - new Date(left.publishedAt).getTime();
+
+  if (publishedGap !== 0) {
+    return publishedGap;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function selectEvidenceForJudgeInput(
+  event: EventRecord,
+  evidence: JudgmentEvidenceItem[],
+): JudgmentEvidenceItem[] {
+  const relevantEvidence = evidence.filter((item) => isEventRelevantEvidence(event, item));
+  const candidateEvidence = relevantEvidence.length > 0 ? relevantEvidence : evidence;
+  const sortedEvidence = [...candidateEvidence].sort(compareEvidenceForJudging);
+  const perFamilyCount = new Map<SourceFamily, number>();
+  const selectedEvidence: JudgmentEvidenceItem[] = [];
+
+  for (const item of sortedEvidence) {
+    const familyCount = perFamilyCount.get(item.sourceFamily) ?? 0;
+
+    if (familyCount >= MAX_EVIDENCE_ITEMS_PER_FAMILY) {
+      continue;
+    }
+
+    selectedEvidence.push(item);
+    perFamilyCount.set(item.sourceFamily, familyCount + 1);
+
+    if (selectedEvidence.length >= MAX_EVIDENCE_ITEMS_FOR_JUDGE) {
+      break;
+    }
+  }
+
+  return selectedEvidence;
+}
+
 function buildCitations(evidence: JudgmentEvidenceItem[]): CitationRecord[] {
   const seen = new Set<string>();
   const citations: CitationRecord[] = [];
@@ -541,6 +678,55 @@ function buildCitations(evidence: JudgmentEvidenceItem[]): CitationRecord[] {
   }
 
   return citations;
+}
+
+function selectTraceCitationEvidence(args: {
+  event: EventRecord;
+  evidence: JudgmentEvidenceItem[];
+  trace: VerdictTrace;
+}): JudgmentEvidenceItem[] {
+  const referencedIds = new Set(
+    args.trace.judgeOpinions.flatMap((opinion) => opinion.evidenceIds),
+  );
+  const referencedEvidence = args.evidence.filter((item) => referencedIds.has(item.id));
+  const relevantReferencedEvidence = referencedEvidence.filter((item) =>
+    isEventRelevantEvidence(args.event, item),
+  );
+
+  if (relevantReferencedEvidence.length > 0) {
+    return relevantReferencedEvidence;
+  }
+
+  if (referencedEvidence.length > 0) {
+    return referencedEvidence;
+  }
+
+  const relevantCollectedEvidence = args.evidence.filter((item) =>
+    isEventRelevantEvidence(args.event, item),
+  );
+
+  if (relevantCollectedEvidence.length > 0) {
+    return relevantCollectedEvidence;
+  }
+
+  return args.evidence;
+}
+
+function sanitizeTraceCitations(args: {
+  event: EventRecord;
+  evidence: JudgmentEvidenceItem[];
+  trace: VerdictTrace;
+}): VerdictTrace {
+  const citations = selectTraceCitationEvidence(args);
+
+  if (citations.length === 0) {
+    return args.trace;
+  }
+
+  return VerdictTraceSchema.parse({
+    ...args.trace,
+    citations: buildCitations(citations),
+  });
 }
 
 function buildFallbackCitation(event: EventRecord): CitationRecord {
@@ -943,7 +1129,10 @@ export async function evaluateEventForecast(
 ): Promise<VerdictTrace> {
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
   const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
-  const evidenceForJudge = mapEvidenceForJudge(args.evidence);
+  const evidenceForJudge = selectEvidenceForJudgeInput(
+    args.event,
+    mapEvidenceForJudge(args.evidence),
+  );
 
   const cached = await getOrCreateCachedJudgeResult({
     cacheStore: judgeCacheStore,
@@ -967,13 +1156,18 @@ export async function evaluateEventForecast(
           calibrationSnapshot: args.calibrationSnapshot,
           mode: args.env.CASSANDRA_ADAPTER_MODE,
         });
-
-        return args.env.CASSANDRA_ADAPTER_MODE === "live"
+        const validatedTrace = args.env.CASSANDRA_ADAPTER_MODE === "live"
           ? validateLiveVerdictTrace({
               event: args.event,
               trace,
             })
           : trace;
+
+        return sanitizeTraceCitations({
+          event: args.event,
+          evidence: evidenceForJudge,
+          trace: validatedTrace,
+        });
       },
   });
 
@@ -985,7 +1179,14 @@ export async function evaluateEventForecast(
         })
       : cached.value;
 
-  return appendJudgeCacheEvent(validatedTrace, cached.cacheStatus);
+  return appendJudgeCacheEvent(
+    sanitizeTraceCitations({
+      event: args.event,
+      evidence: evidenceForJudge,
+      trace: validatedTrace,
+    }),
+    cached.cacheStatus,
+  );
 }
 
 export async function runJudgment(args: JudgmentServiceDeps & {
@@ -1141,7 +1342,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
         },
       }),
     });
-    const evidenceForCoverage: JudgmentEvidenceItem[] = collected.items.map((item) => ({
+    const evidenceForCoverage = selectEvidenceForJudgeInput(event, collected.items.map((item) => ({
       id: item.id,
       eventId: item.eventId,
       title: item.title,
@@ -1158,7 +1359,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       stance: item.stance,
       qualitySignals: item.qualitySignals,
       metadata: item.metadata,
-    }));
+    })));
     const liveCoverage =
       args.env.CASSANDRA_ADAPTER_MODE === "live"
         ? assessLiveCoverage(event, evidenceForCoverage)
@@ -1177,6 +1378,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
           details: {
             uniqueCitationCount: liveCoverage.uniqueCitationCount,
             hasEnoughCitationCoverage: liveCoverage.hasEnoughCitationCoverage,
+            selectedEvidenceCount: evidenceForCoverage.length,
           },
         }),
       });
