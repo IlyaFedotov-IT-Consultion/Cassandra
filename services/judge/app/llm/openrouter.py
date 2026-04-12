@@ -28,7 +28,10 @@ DEFAULT_JUDGE_MODEL = "openai/gpt-5"
 DEFAULT_CROSS_EXAMINER_MODEL = "openai/gpt-5"
 DEFAULT_SEARCH_MODEL = "perplexity/sonar"
 DEFAULT_TIMEOUT = 120.0
-DEFAULT_MAX_TOKENS = 4000
+DEFAULT_JUDGE_MAX_TOKENS = 12000
+DEFAULT_CROSS_EXAMINER_MAX_TOKENS = 4000
+DEFAULT_SEARCH_MAX_TOKENS = 4000
+MAX_TOKENS_LENGTH_RETRY_MULTIPLIER = 2
 DEFAULT_RETRIES = 2
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
@@ -103,7 +106,9 @@ class OpenRouterLLMClient(LLMClient):
         search_model: str = DEFAULT_SEARCH_MODEL,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        judge_max_tokens: int = DEFAULT_JUDGE_MAX_TOKENS,
+        cross_examiner_max_tokens: int = DEFAULT_CROSS_EXAMINER_MAX_TOKENS,
+        search_max_tokens: int = DEFAULT_SEARCH_MAX_TOKENS,
         retries: int = DEFAULT_RETRIES,
         http_client: httpx.Client | None = None,
     ) -> None:
@@ -115,7 +120,9 @@ class OpenRouterLLMClient(LLMClient):
         self._search_model = search_model
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._max_tokens = max_tokens
+        self._judge_max_tokens = judge_max_tokens
+        self._cross_examiner_max_tokens = cross_examiner_max_tokens
+        self._search_max_tokens = search_max_tokens
         self._retries = retries
         self._http = http_client or httpx.Client(timeout=timeout)
         self._owns_client = http_client is None
@@ -149,7 +156,7 @@ class OpenRouterLLMClient(LLMClient):
             event=event,
             evidence=evidence,
         )
-        payload = self._chat(
+        parsed = self._chat_json_with_length_retry(
             model=self._judge_model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -163,8 +170,8 @@ class OpenRouterLLMClient(LLMClient):
                     "schema": PANEL_RESPONSE_SCHEMA,
                 },
             },
+            initial_max_tokens=self._judge_max_tokens,
         )
-        parsed = self._parse_json_content(payload)
         return self._coerce_panel_response(parsed, default_rationale=default_rationale)
 
     def cross_examine(
@@ -194,7 +201,7 @@ class OpenRouterLLMClient(LLMClient):
             + json.dumps(serialized, indent=2)
             + "\n\nReturn JSON: {\"conflicts\": [{\"judgeA\": ..., \"judgeB\": ..., \"reason\": ..., \"severity\": ...}]}"
         )
-        payload = self._chat(
+        parsed = self._chat_json_with_length_retry(
             model=self._cross_examiner_model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -208,8 +215,8 @@ class OpenRouterLLMClient(LLMClient):
                     "schema": CROSS_EXAMINER_SCHEMA,
                 },
             },
+            initial_max_tokens=self._cross_examiner_max_tokens,
         )
-        parsed = self._parse_json_content(payload)
         conflicts = parsed.get("conflicts", [])
         if not isinstance(conflicts, list):
             raise LLMResponseError(f"cross_examiner returned non-list conflicts: {conflicts!r}")
@@ -227,6 +234,7 @@ class OpenRouterLLMClient(LLMClient):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query},
             ],
+            max_tokens=self._search_max_tokens,
         )
         choice = payload["choices"][0]
         message = choice.get("message", {})
@@ -287,11 +295,12 @@ class OpenRouterLLMClient(LLMClient):
         model: str,
         messages: list[dict[str, str]],
         response_format: dict[str, Any] | None = None,
+        max_tokens: int,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "max_tokens": self._max_tokens,
+            "max_tokens": max_tokens,
         }
         if response_format is not None:
             body["response_format"] = response_format
@@ -343,6 +352,40 @@ class OpenRouterLLMClient(LLMClient):
         raise LLMTransportError(
             f"openrouter call failed after {self._retries + 1} attempts: {last_error}"
         )
+
+    def _chat_json_with_length_retry(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        response_format: dict[str, Any],
+        initial_max_tokens: int,
+    ) -> dict[str, Any]:
+        max_tokens = initial_max_tokens
+
+        for attempt in range(2):
+            payload = self._chat(
+                model=model,
+                messages=messages,
+                response_format=response_format,
+                max_tokens=max_tokens,
+            )
+            try:
+                return self._parse_json_content(payload)
+            except LLMResponseError as exc:
+                if "finish_reason=length" not in str(exc) or attempt == 1:
+                    raise
+
+                retry_tokens = max_tokens * MAX_TOKENS_LENGTH_RETRY_MULTIPLIER
+                logger.warning(
+                    "openrouter response truncated for model=%s at max_tokens=%d; retrying with max_tokens=%d",
+                    model,
+                    max_tokens,
+                    retry_tokens,
+                )
+                max_tokens = retry_tokens
+
+        raise LLMResponseError("openrouter JSON parsing failed after retry")
 
     def _parse_json_content(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:

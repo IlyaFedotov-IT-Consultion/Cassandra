@@ -408,7 +408,7 @@ async function scenarioJudgmentFlow(): Promise<ScenarioResult> {
 
     if (!Array.isArray(judgmentList)) {
       failures.push("GET /judgments did not return an array");
-    } else if (!judgmentList.some((j) => j.id === enqueued.id)) {
+    } else if (!judgmentList.some((j) => j.id === trace.id)) {
       failures.push("GET /judgments list does not include created judgment");
     }
 
