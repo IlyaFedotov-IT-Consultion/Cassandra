@@ -5,6 +5,7 @@ import {
   OutcomeInputSchema,
   VerdictTraceSchema,
   type CalibrationSnapshot,
+  type CalibrationSnapshotSummary,
   type OutcomeInput,
   type VerdictTrace,
 } from "@cassandra/shared";
@@ -144,14 +145,28 @@ export async function getCalibrationSnapshotById(
   return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
 }
 
-export async function listCalibrationSnapshots(pool: Pool): Promise<CalibrationSnapshot[]> {
+export async function listCalibrationSnapshots(pool: Pool): Promise<CalibrationSnapshotSummary[]> {
   const result = await pool.query(`
-    SELECT *
+    SELECT id, created_at, training_window, metrics, weight_regime, resolved_outcome_count, approved
     FROM calibration_snapshots
     ORDER BY created_at DESC
   `);
 
-  return result.rows.map((row) => mapCalibrationSnapshotRow(row as Record<string, unknown>));
+  return result.rows.map((row) => {
+    const r = row as Record<string, unknown>;
+    return {
+      id: String(r.id),
+      createdAt: toIsoString(r.created_at),
+      trainingWindow: String(r.training_window),
+      metrics:
+        r.metrics && typeof r.metrics === "object"
+          ? (r.metrics as Record<string, unknown>)
+          : {},
+      weightRegime: r.weight_regime as CalibrationSnapshotSummary["weightRegime"],
+      resolvedOutcomeCount: Number(r.resolved_outcome_count),
+      approved: Boolean(r.approved),
+    };
+  });
 }
 
 export async function loadCalibrationTrainingData(
