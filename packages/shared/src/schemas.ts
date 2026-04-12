@@ -220,6 +220,9 @@ export const CitationSchema = z
     title: z.string().min(1),
     url: z.string().url(),
     sourceFamily: SourceFamilySchema,
+    evidenceId: IdSchema.optional(),
+    provider: z.string().min(1).optional(),
+    publishedAt: TimestampSchema.optional(),
   })
   .strict();
 

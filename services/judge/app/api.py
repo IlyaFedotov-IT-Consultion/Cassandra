@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from hashlib import sha1
-
 from fastapi import APIRouter, Depends
 
 from app.llm import LLMClient, get_llm_client
@@ -27,11 +25,6 @@ def _llm_dependency() -> LLMClient:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _event_id_for_request(question: str) -> str:
-    return f"event-{sha1(question.encode('utf8')).hexdigest()[:12]}"
-
 
 def _collect_market_signals(request: JudgeRequest) -> dict[str, float]:
     for item in request.evidence:
@@ -90,6 +83,9 @@ def _cluster_groups(request: JudgeRequest, judge_probabilities: list[float]) -> 
 def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     citations = [
         {
+            "evidenceId": item.id,
+            "provider": str(item.metadata.get("provider")) if item.metadata.get("provider") else None,
+            "publishedAt": item.publishedAt,
             "title": item.title,
             "url": item.url,
             "sourceFamily": item.sourceFamily,
@@ -148,7 +144,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     return VerdictTrace.model_validate(
         {
             "id": f"trace-{request.calibration_snapshot.id}",
-            "eventId": _event_id_for_request(request.event.question),
+            "eventId": request.event_id,
             "evaluationTime": request.evaluation_time,
             "referenceClass": request.event.referenceClass,
             "referenceClassFallback": None if not prior.reference_class_fallback else "global_baseline",

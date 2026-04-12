@@ -17,7 +17,11 @@ import {
   getJudgmentById,
   listJudgments,
 } from "../src/modules/judgments/repository.js";
-import { evaluateEventForecast, runJudgment } from "../src/modules/judgments/service.js";
+import {
+  createDefaultEvidenceProviders,
+  evaluateEventForecast,
+  runJudgment,
+} from "../src/modules/judgments/service.js";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra";
@@ -659,7 +663,25 @@ describe("judgment routes and service", () => {
           {
             name: "live-provider",
             async collect() {
-              return [buildEvidenceItem({ eventId: event.id })];
+              return [
+                buildEvidenceItem({
+                  eventId: event.id,
+                  sourceFamily: "official",
+                  sourceType: "press_release",
+                  title: "Official launch update",
+                }),
+                buildEvidenceItem({
+                  eventId: event.id,
+                  sourceFamily: "community",
+                  sourceType: "reddit_post",
+                  title: "Community launch thread",
+                }),
+                buildEvidenceItem({
+                  eventId: event.id,
+                  sourceFamily: "web",
+                  title: "Independent launch report",
+                }),
+              ];
             },
           },
         ],
@@ -674,5 +696,180 @@ describe("judgment routes and service", () => {
     const stored = await getJudgmentById(pool, queued.id);
 
     expect(stored?.status).toBe("failed");
+  });
+
+  it("registers all live evidence families in the default provider list", () => {
+    const providers = createDefaultEvidenceProviders(
+      createFixtureEnv({
+        CASSANDRA_ADAPTER_MODE: "live",
+        ZAI_API_KEY: "zai-key",
+      }),
+    );
+
+    expect(providers.map((provider) => provider.name)).toEqual([
+      "officialSearch",
+      "governmentSearch",
+      "communitySearch",
+      "web",
+      "perplexity",
+      "marketProvider",
+      "polymarketGamma",
+      "polymarketClob",
+    ]);
+  });
+
+  it("marks live judgments as insufficient_evidence when citation coverage is too weak", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const queued = await createJudgmentRun(pool, event.id);
+    const judgeSpy = vi.fn();
+
+    const stored = await runJudgment({
+      pool,
+      env: createFixtureEnv({
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      input: {
+        judgmentId: queued.id,
+        eventId: event.id,
+        evaluationTime: "2026-10-11T12:00:00Z",
+      },
+      evidenceProviders: [
+        {
+          name: "marketProvider",
+          async collect() {
+            return [
+              buildEvidenceItem({
+                eventId: event.id,
+                sourceFamily: "market",
+                sourceType: "quote_snapshot",
+                title: "Example market snapshot",
+                url: "https://markets.example.com/example-corp",
+              }),
+            ];
+          },
+        },
+      ],
+      judgeClient: {
+        judge: judgeSpy,
+      } as never,
+    });
+
+    expect(judgeSpy).not.toHaveBeenCalled();
+    expect(stored.status).toBe("insufficient_evidence");
+    expect(stored.verdictTrace).toMatchObject({
+      eventId: event.id,
+      status: "insufficient_evidence",
+    });
+    expect(stored.verdictTrace?.missingEvidence.map((entry) => entry.sourceFamily)).toEqual(
+      expect.arrayContaining(["official", "community", "web"]),
+    );
+  });
+
+  it("rejects live judge traces that use placeholder citations", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const calibrationSnapshot = buildCalibrationSnapshot();
+    const evidence = [
+      buildEvidenceItem({
+        eventId: event.id,
+        sourceFamily: "official",
+        sourceType: "press_release",
+      }),
+      buildEvidenceItem({
+        eventId: event.id,
+        sourceFamily: "community",
+        sourceType: "reddit_post",
+      }),
+      buildEvidenceItem({
+        eventId: event.id,
+        sourceFamily: "web",
+      }),
+    ];
+
+    await expect(
+      evaluateEventForecast({
+        env: createFixtureEnv({
+          CASSANDRA_ADAPTER_MODE: "live",
+        }),
+        event,
+        evaluationTime: "2026-10-11T12:00:00Z",
+        evidence,
+        calibrationSnapshot,
+        judgeClient: {
+          async judge() {
+            return {
+              id: randomUUID(),
+              eventId: event.id,
+              evaluationTime: "2026-10-11T12:00:00Z",
+              referenceClass: event.referenceClass,
+              referenceClassFallback: null,
+              priorProbability: 0.5,
+              rawPosteriorProbability: 0.62,
+              finalProbability: 0.6,
+              confidenceLow: 0.5,
+              confidenceHigh: 0.7,
+              dependencyMatrix: [],
+              disagreementShrinkage: 0.02,
+              judgeOpinions: [
+                {
+                  judgeName: "official_records",
+                  probability: 0.6,
+                  confidence: 0.7,
+                  evidenceStrength: "weak_for" as const,
+                  rationale: "Official evidence tilts positive.",
+                  evidenceIds: [evidence[0]!.id],
+                  warnings: [],
+                  logBayesFactor: 0.5,
+                  baseWeight: 0.4,
+                  dependencyDiscount: 1,
+                  freshnessDecay: 1,
+                  effectiveLogOddsContribution: 0.2,
+                  missingEvidence: [],
+                },
+              ],
+              weightBreakdown: [
+                {
+                  source: "official_records",
+                  weight: 0.4,
+                  details: {},
+                },
+              ],
+              ensembleMethod: "logarithmic_opinion_pool" as const,
+              calibrationMethod: "identity" as const,
+              uncertaintyMethod: "bootstrap" as const,
+              weightRegime: "cold_start" as const,
+              replayFidelity: "exact" as const,
+              conflicts: [],
+              missingEvidence: [],
+              citations: [
+                {
+                  title: "Placeholder",
+                  url: "https://example.invalid/no-evidence",
+                  sourceFamily: "web" as const,
+                },
+              ],
+              modelVersion: "judge-v1",
+              weightVersion: calibrationSnapshot.id,
+              calibrationVersion: calibrationSnapshot.id,
+              status: "completed" as const,
+              cacheEvents: [],
+            };
+          },
+        },
+      }),
+    ).rejects.toThrow("placeholder");
   });
 });

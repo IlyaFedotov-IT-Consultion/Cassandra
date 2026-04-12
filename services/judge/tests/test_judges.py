@@ -148,3 +148,28 @@ def test_cross_examiner_flags_divergence_and_stays_quiet_on_agreement() -> None:
 
     assert divergent.conflicts
     assert not aligned.conflicts
+
+
+def test_open_web_judge_does_not_trigger_hidden_search_calls() -> None:
+    class NoSearchLLM:
+        def judge_panel(self, *, judge_name, event, evidence, default_rationale):
+            return {
+                "probability": 0.61,
+                "evidenceStrength": "weak_for",
+                "rationale": "Web evidence tilts positive.",
+            }
+
+        def cross_examine(self, *, raw_opinions):
+            return {"conflicts": []}
+
+        def search_web(self, *, query):
+            raise AssertionError("search_web should not be called by open_web_research")
+
+    opinion = evaluate_open_web_research(
+        _event(),
+        [_evidence("web-1", "web", "supports")],
+        llm=NoSearchLLM(),
+    )
+
+    assert opinion.evidence_ids == ["web-1"]
+    assert opinion.warnings == []

@@ -17,6 +17,12 @@ const EnvSchema = z.object({
   OPENROUTER_JUDGE_MODEL: z.string().min(1).optional(),
   OPENROUTER_CROSS_EXAMINER_MODEL: z.string().min(1).optional(),
   OPENROUTER_SEARCH_MODEL: z.string().min(1).optional(),
+  ZAI_API_KEY: z.string().min(1).optional(),
+  ZAI_BASE_URL: z.string().url().default("https://api.z.ai/api/paas/v4"),
+  ZAI_MODEL: z.string().min(1).optional(),
+  ZAI_WEB_SEARCH_URL: z.string().url().optional(),
+  ZAI_WEB_SEARCH_PRIME_URL: z.string().url().optional(),
+  ZAI_web_search_prime_URL: z.string().url().optional(),
   POLYMARKET_GAMMA_URL: z.string().url().default("https://gamma-api.polymarket.com"),
   POLYMARKET_CLOB_URL: z.string().url().default("https://clob.polymarket.com"),
   CUSTOM_MARKET_API_BASE_URL: z

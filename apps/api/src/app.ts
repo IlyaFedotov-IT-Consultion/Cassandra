@@ -23,6 +23,7 @@ import {
 import { registerEventRoutes } from "./modules/events/routes.js";
 import { registerJudgmentRoutes } from "./modules/judgments/routes.js";
 import { registerOutcomeRoutes } from "./modules/outcomes/routes.js";
+import { registerResearchRoutes, type ResearchRunInput, type ResearchRunRecord } from "./modules/research/routes.js";
 import { registerWatchlistRoutes } from "./modules/watchlists/routes.js";
 
 export interface ReadinessChecks {
@@ -31,6 +32,7 @@ export interface ReadinessChecks {
   redisConnection?: Redis;
   logger?: ReturnType<typeof createLogger>;
   fetchImpl?: typeof fetch;
+  runResearch?: (input: ResearchRunInput) => Promise<ResearchRunRecord>;
   runEvaluation?: RegisterEvaluationRoutesArgs["runEvaluation"];
   getEvaluationRun?: RegisterEvaluationRoutesArgs["getEvaluationRun"];
   listBenchmarkSets?: RegisterEvaluationRoutesArgs["listBenchmarkSets"];
@@ -167,6 +169,11 @@ export function buildApp(checks: ReadinessChecks = {}) {
         error: error instanceof Error ? error.message : "Unknown readiness error",
       };
     }
+  });
+
+  registerResearchRoutes(app, {
+    env,
+    runResearch: checks.runResearch,
   });
 
   if (checks.dbPool) {

@@ -14,7 +14,11 @@ fi
 
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
 
-uv run datamodel-codegen \
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$(mktemp -d)}"
+
+cd "${SERVICE_ROOT}"
+
+uv run --group dev datamodel-codegen \
   --input "${SCHEMA_PATH}" \
   --input-file-type jsonschema \
   --output "${OUTPUT_PATH}" \

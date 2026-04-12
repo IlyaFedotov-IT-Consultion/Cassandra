@@ -45,6 +45,23 @@ class EventInput(BaseModel):
     polymarketMarketId: constr(min_length=1) | None = None
 
 
+class EventRecord(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    question: constr(min_length=1)
+    resolutionCriteria: constr(min_length=1)
+    deadline: constr(min_length=1)
+    entities: list[Entity] = Field(..., min_length=1)
+    referenceClass: ReferenceClass | None
+    marketSymbols: list[constr(min_length=1)]
+    polymarketMarketId: constr(min_length=1) | None
+    id: constr(min_length=1)
+    status: constr(min_length=1)
+    createdAt: constr(min_length=1)
+    updatedAt: constr(min_length=1)
+
+
 class Keyword(RootModel[constr(min_length=1)]):
     root: constr(min_length=1)
 
@@ -71,6 +88,21 @@ class WatchlistInput(BaseModel):
     sourceToggles: SourceToggles = Field({}, validate_default=True)
 
 
+class WatchlistRecord(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    name: constr(min_length=1)
+    keywords: list[Keyword] = Field(..., min_length=1)
+    jurisdictions: list[constr(min_length=1)]
+    cadence: constr(min_length=1)
+    sourceToggles: SourceToggles = Field({}, validate_default=True)
+    id: constr(min_length=1)
+    status: constr(min_length=1)
+    createdAt: constr(min_length=1)
+    updatedAt: constr(min_length=1)
+
+
 class PromotionStatus(StrEnum):
     pending = 'pending'
     promoted = 'promoted'
@@ -88,6 +120,20 @@ class CandidateEvent(BaseModel):
     supportingEvidenceIds: list[constr(min_length=1)]
     clusterKey: constr(min_length=1)
     promotionStatus: PromotionStatus
+
+
+class CandidateEventRecord(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: constr(min_length=1)
+    watchlistId: constr(min_length=1)
+    title: constr(min_length=1)
+    description: constr(min_length=1)
+    supportingEvidenceIds: list[constr(min_length=1)]
+    clusterKey: constr(min_length=1)
+    promotionStatus: PromotionStatus
+    candidateSignature: dict[str, Any] | None
 
 
 class SourceFamily(StrEnum):
@@ -270,9 +316,31 @@ class Citation(BaseModel):
     title: constr(min_length=1)
     url: AnyUrl
     sourceFamily: SourceFamily
+    evidenceId: constr(min_length=1) | None = None
+    provider: constr(min_length=1) | None = None
+    publishedAt: constr(min_length=1) | None = None
+
+
+class Layer(StrEnum):
+    judge_output = 'judge_output'
 
 
 class Status(StrEnum):
+    hit = 'hit'
+    miss = 'miss'
+    bypass = 'bypass'
+
+
+class CacheEvent(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    layer: Layer
+    target: constr(min_length=1)
+    status: Status
+
+
+class Status1(StrEnum):
     queued = 'queued'
     running = 'running'
     completed = 'completed'
@@ -306,10 +374,273 @@ class VerdictTrace(BaseModel):
     conflicts: list[Conflict] = Field([], validate_default=True)
     missingEvidence: list[MissingEvidenceItem] = Field([], validate_default=True)
     citations: list[Citation] = Field(..., min_length=1)
+    cacheEvents: list[CacheEvent] = Field([], validate_default=True)
     modelVersion: constr(min_length=1)
     weightVersion: constr(min_length=1)
     calibrationVersion: constr(min_length=1)
-    status: Status
+    status: Status1
+
+
+class JudgeOpinion2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    judgeName: constr(min_length=1)
+    probability: confloat(ge=0.0, le=1.0)
+    confidence: confloat(ge=0.0, le=1.0)
+    evidenceStrength: EvidenceStrength
+    rationale: constr(min_length=1)
+    evidenceIds: list[constr(min_length=1)]
+    warnings: list[constr(min_length=1)]
+    logBayesFactor: float
+    baseWeight: confloat(ge=0.0)
+    dependencyDiscount: confloat(ge=0.0, le=1.0)
+    freshnessDecay: confloat(ge=0.0, le=1.0)
+    effectiveLogOddsContribution: float
+    id: constr(min_length=1) | None = None
+    judgmentId: constr(min_length=1) | None = None
+    missingEvidence: list[constr(min_length=1)]
+
+
+class Conflict1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    judgeA: constr(min_length=1)
+    judgeB: constr(min_length=1)
+    reason: constr(min_length=1)
+    severity: Severity
+
+
+class MissingEvidenceItem1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    claim: constr(min_length=1)
+    sourceFamily: SourceFamily
+    reason: constr(min_length=1)
+
+
+class Citation1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    title: constr(min_length=1)
+    url: AnyUrl
+    sourceFamily: SourceFamily
+    evidenceId: constr(min_length=1) | None = None
+    provider: constr(min_length=1) | None = None
+    publishedAt: constr(min_length=1) | None = None
+
+
+class Status3(StrEnum):
+    hit = 'hit'
+    miss = 'miss'
+    bypass = 'bypass'
+
+
+class CacheEvent1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    layer: Layer
+    target: constr(min_length=1)
+    status: Status3
+
+
+class Status4(StrEnum):
+    queued = 'queued'
+    running = 'running'
+    completed = 'completed'
+    insufficient_evidence = 'insufficient_evidence'
+    failed = 'failed'
+
+
+class VerdictTrace1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: constr(min_length=1)
+    eventId: constr(min_length=1)
+    evaluationTime: constr(min_length=1)
+    referenceClass: ReferenceClass | None
+    referenceClassFallback: constr(min_length=1) | None
+    priorProbability: confloat(ge=0.0, le=1.0)
+    rawPosteriorProbability: confloat(ge=0.0, le=1.0)
+    finalProbability: confloat(ge=0.0, le=1.0)
+    confidenceLow: confloat(ge=0.0, le=1.0)
+    confidenceHigh: confloat(ge=0.0, le=1.0)
+    dependencyMatrix: list[DependencyMatrixItem] = Field([], validate_default=True)
+    disagreementShrinkage: confloat(ge=0.0, le=1.0)
+    judgeOpinions: list[JudgeOpinion2] = Field(..., min_length=1)
+    weightBreakdown: list[WeightBreakdownItem]
+    ensembleMethod: EnsembleMethod
+    calibrationMethod: CalibrationMethod
+    uncertaintyMethod: UncertaintyMethod
+    weightRegime: WeightRegime
+    replayFidelity: ReplayFidelity
+    conflicts: list[Conflict1] = Field([], validate_default=True)
+    missingEvidence: list[MissingEvidenceItem1] = Field([], validate_default=True)
+    citations: list[Citation1] = Field(..., min_length=1)
+    cacheEvents: list[CacheEvent1] = Field([], validate_default=True)
+    modelVersion: constr(min_length=1)
+    weightVersion: constr(min_length=1)
+    calibrationVersion: constr(min_length=1)
+    status: Status4
+
+
+class JudgmentRecordSummary(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: constr(min_length=1)
+    eventId: constr(min_length=1)
+    status: Status1
+    verdictTrace: VerdictTrace1 | None
+    createdAt: constr(min_length=1)
+    updatedAt: constr(min_length=1)
+
+
+class JudgeOpinion3(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    judgeName: constr(min_length=1)
+    probability: confloat(ge=0.0, le=1.0)
+    confidence: confloat(ge=0.0, le=1.0)
+    evidenceStrength: EvidenceStrength
+    rationale: constr(min_length=1)
+    evidenceIds: list[constr(min_length=1)]
+    warnings: list[constr(min_length=1)]
+    logBayesFactor: float
+    baseWeight: confloat(ge=0.0)
+    dependencyDiscount: confloat(ge=0.0, le=1.0)
+    freshnessDecay: confloat(ge=0.0, le=1.0)
+    effectiveLogOddsContribution: float
+    id: constr(min_length=1) | None = None
+    judgmentId: constr(min_length=1) | None = None
+    missingEvidence: list[constr(min_length=1)]
+
+
+class Conflict2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    judgeA: constr(min_length=1)
+    judgeB: constr(min_length=1)
+    reason: constr(min_length=1)
+    severity: Severity
+
+
+class MissingEvidenceItem2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    claim: constr(min_length=1)
+    sourceFamily: SourceFamily
+    reason: constr(min_length=1)
+
+
+class Citation2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    title: constr(min_length=1)
+    url: AnyUrl
+    sourceFamily: SourceFamily
+    evidenceId: constr(min_length=1) | None = None
+    provider: constr(min_length=1) | None = None
+    publishedAt: constr(min_length=1) | None = None
+
+
+class Status6(StrEnum):
+    hit = 'hit'
+    miss = 'miss'
+    bypass = 'bypass'
+
+
+class CacheEvent2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    layer: Layer
+    target: constr(min_length=1)
+    status: Status6
+
+
+class Status7(StrEnum):
+    queued = 'queued'
+    running = 'running'
+    completed = 'completed'
+    insufficient_evidence = 'insufficient_evidence'
+    failed = 'failed'
+
+
+class VerdictTrace2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: constr(min_length=1)
+    eventId: constr(min_length=1)
+    evaluationTime: constr(min_length=1)
+    referenceClass: ReferenceClass | None
+    referenceClassFallback: constr(min_length=1) | None
+    priorProbability: confloat(ge=0.0, le=1.0)
+    rawPosteriorProbability: confloat(ge=0.0, le=1.0)
+    finalProbability: confloat(ge=0.0, le=1.0)
+    confidenceLow: confloat(ge=0.0, le=1.0)
+    confidenceHigh: confloat(ge=0.0, le=1.0)
+    dependencyMatrix: list[DependencyMatrixItem] = Field([], validate_default=True)
+    disagreementShrinkage: confloat(ge=0.0, le=1.0)
+    judgeOpinions: list[JudgeOpinion3] = Field(..., min_length=1)
+    weightBreakdown: list[WeightBreakdownItem]
+    ensembleMethod: EnsembleMethod
+    calibrationMethod: CalibrationMethod
+    uncertaintyMethod: UncertaintyMethod
+    weightRegime: WeightRegime
+    replayFidelity: ReplayFidelity
+    conflicts: list[Conflict2] = Field([], validate_default=True)
+    missingEvidence: list[MissingEvidenceItem2] = Field([], validate_default=True)
+    citations: list[Citation2] = Field(..., min_length=1)
+    cacheEvents: list[CacheEvent2] = Field([], validate_default=True)
+    modelVersion: constr(min_length=1)
+    weightVersion: constr(min_length=1)
+    calibrationVersion: constr(min_length=1)
+    status: Status7
+
+
+class JudgeOpinion4(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    judgeName: constr(min_length=1)
+    probability: confloat(ge=0.0, le=1.0)
+    confidence: confloat(ge=0.0, le=1.0)
+    evidenceStrength: EvidenceStrength
+    rationale: constr(min_length=1)
+    evidenceIds: list[constr(min_length=1)]
+    warnings: list[constr(min_length=1)]
+    logBayesFactor: float
+    baseWeight: confloat(ge=0.0)
+    dependencyDiscount: confloat(ge=0.0, le=1.0)
+    freshnessDecay: confloat(ge=0.0, le=1.0)
+    effectiveLogOddsContribution: float
+    id: constr(min_length=1) | None = None
+    judgmentId: constr(min_length=1) | None = None
+    missingEvidence: list[constr(min_length=1)]
+
+
+class JudgmentRecordDetails(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: constr(min_length=1)
+    eventId: constr(min_length=1)
+    status: Status4
+    verdictTrace: VerdictTrace2 | None
+    createdAt: constr(min_length=1)
+    updatedAt: constr(min_length=1)
+    judgeOpinions: list[JudgeOpinion4]
 
 
 class OutcomeInput(BaseModel):
@@ -340,6 +671,19 @@ class CalibrationSnapshot(BaseModel):
     approved: bool
 
 
+class CalibrationSnapshotSummary(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: constr(min_length=1)
+    createdAt: constr(min_length=1)
+    trainingWindow: constr(min_length=1)
+    metrics: dict[str, Any]
+    weightRegime: WeightRegime
+    resolvedOutcomeCount: conint(ge=0, le=9007199254740991)
+    approved: bool
+
+
 class BenchmarkMarket(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -354,6 +698,17 @@ class BenchmarkMarket(BaseModel):
     resolvedAt: constr(min_length=1)
     resolvedValue: bool
     marketUrl: AnyUrl
+
+
+class BenchmarkSetSummary(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    benchmarkSetId: constr(min_length=1)
+    marketCount: conint(ge=0, le=9007199254740991)
+    earliestResolvedAt: constr(min_length=1)
+    latestResolvedAt: constr(min_length=1)
+    themes: list[constr(min_length=1)]
 
 
 class Cutoff(RootModel[constr(min_length=1)]):
@@ -395,6 +750,38 @@ class EvaluationRun(BaseModel):
     createdAt: constr(min_length=1)
 
 
+class EvaluationRunSummary(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: constr(min_length=1)
+    benchmarkSetId: constr(min_length=1)
+    cutoffs: list[Cutoff] = Field(..., min_length=1)
+    baselines: list[Baseline] = Field(..., min_length=1)
+    overallMetrics: dict[str, Any]
+    replayFidelity: ReplayFidelity
+    leakageWarnings: list[constr(min_length=1)]
+    createdAt: constr(min_length=1)
+
+
+class EvaluationPrediction(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: constr(min_length=1)
+    evaluationRunId: constr(min_length=1)
+    benchmarkMarketId: constr(min_length=1)
+    baseline: Baseline
+    cutoffAt: constr(min_length=1)
+    predictedProbability: confloat(ge=0.0, le=1.0)
+    outcome: bool | None
+    theme: constr(min_length=1) | None = None
+    horizon: constr(min_length=1) | None = None
+    sourceConfiguration: constr(min_length=1) | None = None
+    metadata: dict[str, Any]
+    createdAt: constr(min_length=1)
+
+
 class EvaluationSliceResult(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -413,15 +800,36 @@ class CassandraSchemaBundle(BaseModel):
         extra='forbid',
     )
     EventInput_1: EventInput = Field(..., alias='EventInput')
+    EventRecord_1: EventRecord = Field(..., alias='EventRecord')
     WatchlistInput_1: WatchlistInput = Field(..., alias='WatchlistInput')
+    WatchlistRecord_1: WatchlistRecord = Field(..., alias='WatchlistRecord')
     CandidateEvent_1: CandidateEvent = Field(..., alias='CandidateEvent')
+    CandidateEventRecord_1: CandidateEventRecord = Field(
+        ..., alias='CandidateEventRecord'
+    )
     EvidenceItem_1: EvidenceItem = Field(..., alias='EvidenceItem')
     JudgeOpinion_1: JudgeOpinion = Field(..., alias='JudgeOpinion')
     VerdictTrace_1: VerdictTrace = Field(..., alias='VerdictTrace')
+    JudgmentRecordSummary_1: JudgmentRecordSummary = Field(
+        ..., alias='JudgmentRecordSummary'
+    )
+    JudgmentRecordDetails_1: JudgmentRecordDetails = Field(
+        ..., alias='JudgmentRecordDetails'
+    )
     OutcomeInput_1: OutcomeInput = Field(..., alias='OutcomeInput')
     CalibrationSnapshot_1: CalibrationSnapshot = Field(..., alias='CalibrationSnapshot')
+    CalibrationSnapshotSummary_1: CalibrationSnapshotSummary = Field(
+        ..., alias='CalibrationSnapshotSummary'
+    )
     BenchmarkMarket_1: BenchmarkMarket = Field(..., alias='BenchmarkMarket')
+    BenchmarkSetSummary_1: BenchmarkSetSummary = Field(..., alias='BenchmarkSetSummary')
     EvaluationRun_1: EvaluationRun = Field(..., alias='EvaluationRun')
+    EvaluationRunSummary_1: EvaluationRunSummary = Field(
+        ..., alias='EvaluationRunSummary'
+    )
+    EvaluationPrediction_1: EvaluationPrediction = Field(
+        ..., alias='EvaluationPrediction'
+    )
     EvaluationSliceResult_1: EvaluationSliceResult = Field(
         ..., alias='EvaluationSliceResult'
     )

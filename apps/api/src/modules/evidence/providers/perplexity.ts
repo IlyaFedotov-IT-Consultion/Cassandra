@@ -13,8 +13,8 @@ interface PerplexityPayload {
 }
 
 export function createPerplexityProvider(config: {
-  baseUrl?: string;
   apiKey?: string;
+  baseUrl?: string;
 } = {}): EvidenceProvider {
   return {
     name: "perplexity",
@@ -23,9 +23,17 @@ export function createPerplexityProvider(config: {
         input.mode === "fixture"
           ? await loadProviderFixture<PerplexityPayload>("perplexity", input.event.question)
           : await fetchProviderJson<PerplexityPayload>(
-              `${config.baseUrl ?? "https://api.perplexity.ai"}/search?q=${encodeURIComponent(input.event.question)}`,
+              `${config.baseUrl ?? "https://api.perplexity.ai"}/search`,
               {
-                headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : undefined,
+                body: JSON.stringify({
+                  max_results: 5,
+                  query: input.event.question,
+                }),
+                headers: {
+                  ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+                  "content-type": "application/json",
+                },
+                method: "POST",
               },
             );
 

@@ -3,10 +3,10 @@ import type { EvidenceItem } from "@cassandra/shared";
 import type { EvidenceProvider } from "../types.js";
 import {
   createProviderEvidenceItem,
-  fetchProviderJson,
   loadProviderFixture,
   type ProviderDocument,
 } from "./fixtureLoader.js";
+import { searchWithZaiCli } from "./zaiCli.js";
 
 interface OfficialPayload {
   results: Array<
@@ -16,22 +16,28 @@ interface OfficialPayload {
   >;
 }
 
-export function createOfficialSearchProvider(config: { baseUrl?: string } = {}): EvidenceProvider {
+export function createOfficialSearchProvider(config: { zaiApiKey?: string } = {}): EvidenceProvider {
   return {
     name: "officialSearch",
     async collect(input): Promise<EvidenceItem[]> {
       const payload =
         input.mode === "fixture"
           ? await loadProviderFixture<OfficialPayload>("officialSearch", input.event.question)
-          : await fetchProviderJson<OfficialPayload>(
-              `${config.baseUrl ?? "https://example-official-search.local"}/search?q=${encodeURIComponent(input.event.question)}`,
-            );
+          : {
+              results: await searchWithZaiCli({
+                apiKey: config.zaiApiKey,
+                count: 4,
+                providerName: "officialSearch",
+                query: `${input.event.question} ${input.event.entities.join(" ")} official press release investor relations announcement`,
+                recency: "oneYear",
+              }),
+            };
 
       return payload.results.map((document) =>
         createProviderEvidenceItem({
           eventId: input.event.id,
           sourceFamily: "official",
-          sourceType: document.sourceType ?? "press_release",
+          sourceType: "press_release",
           document,
           metadata: {
             provider: "officialSearch",

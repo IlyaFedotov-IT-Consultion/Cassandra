@@ -124,6 +124,10 @@ The shared environment template is in `.env.example`. The most important values 
 - `CASSANDRA_ADAPTER_MODE`
 - `PERPLEXITY_API_KEY`
 - `OPENROUTER_API_KEY`
+- `ZAI_API_KEY`
+- `ZAI_BASE_URL`
+- `ZAI_MODEL`
+- `ZAI_WEB_SEARCH_URL`
 - `POLYMARKET_GAMMA_URL`
 - `POLYMARKET_CLOB_URL`
 - `CUSTOM_MARKET_API_BASE_URL`

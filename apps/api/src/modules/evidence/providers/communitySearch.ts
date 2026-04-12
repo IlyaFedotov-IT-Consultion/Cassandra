@@ -3,10 +3,10 @@ import type { EvidenceItem } from "@cassandra/shared";
 import type { EvidenceProvider } from "../types.js";
 import {
   createProviderEvidenceItem,
-  fetchProviderJson,
   loadProviderFixture,
   type ProviderDocument,
 } from "./fixtureLoader.js";
+import { searchWithZaiCli } from "./zaiCli.js";
 
 interface CommunityPayload {
   posts: Array<
@@ -16,16 +16,28 @@ interface CommunityPayload {
   >;
 }
 
-export function createCommunitySearchProvider(config: { baseUrl?: string } = {}): EvidenceProvider {
+export function createCommunitySearchProvider(config: { zaiApiKey?: string } = {}): EvidenceProvider {
   return {
     name: "communitySearch",
     async collect(input): Promise<EvidenceItem[]> {
       const payload =
         input.mode === "fixture"
           ? await loadProviderFixture<CommunityPayload>("communitySearch", input.event.question)
-          : await fetchProviderJson<CommunityPayload>(
-              `${config.baseUrl ?? "https://example-community-search.local"}/search?q=${encodeURIComponent(input.event.question)}`,
-            );
+          : {
+              posts: (
+                await searchWithZaiCli({
+                  apiKey: config.zaiApiKey,
+                  count: 3,
+                  domains: ["reddit.com", "x.com"],
+                  providerName: "communitySearch",
+                  query: `${input.event.question} ${input.event.entities.join(" ")} discussion reactions rumor`,
+                  recency: "oneMonth",
+                })
+              ).map((document) => ({
+                ...document,
+                postType: document.url.includes("x.com") ? "x_post" as const : "reddit_post" as const,
+              })),
+            };
 
       return payload.posts.map((document) =>
         createProviderEvidenceItem({

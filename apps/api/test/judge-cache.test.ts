@@ -16,7 +16,10 @@ describe("judge cache", () => {
       mode: "live",
       cacheKeyParts: {
         judgeName: "panel",
-        evidenceIds: ["evidence-1", "evidence-2"],
+        eventId: "event-1",
+        eventQuestion: "Will Example Corp launch Product X by 2026-12-31?",
+        evaluationTime: "2026-10-11T12:00:00Z",
+        evidenceFingerprint: "evidence-1|evidence-2",
         judgeModelVersion: "judge-v1",
         promptVersion: "prompt-v1",
         snapshotId: "snapshot-1",
@@ -35,7 +38,10 @@ describe("judge cache", () => {
       mode: "live",
       cacheKeyParts: {
         judgeName: "panel",
-        evidenceIds: ["evidence-2", "evidence-1"],
+        eventId: "event-1",
+        eventQuestion: "Will Example Corp launch Product X by 2026-12-31?",
+        evaluationTime: "2026-10-11T12:00:00Z",
+        evidenceFingerprint: "evidence-1|evidence-2",
         judgeModelVersion: "judge-v1",
         promptVersion: "prompt-v1",
         snapshotId: "snapshot-1",
@@ -64,7 +70,10 @@ describe("judge cache", () => {
       mode: "fixture",
       cacheKeyParts: {
         judgeName: "panel",
-        evidenceIds: ["evidence-1"],
+        eventId: "event-1",
+        eventQuestion: "Will Example Corp launch Product X by 2026-12-31?",
+        evaluationTime: "2026-10-11T12:00:00Z",
+        evidenceFingerprint: "evidence-1",
         judgeModelVersion: "judge-v1",
         promptVersion: "prompt-v1",
         snapshotId: "snapshot-1",
@@ -83,7 +92,10 @@ describe("judge cache", () => {
       mode: "fixture",
       cacheKeyParts: {
         judgeName: "panel",
-        evidenceIds: ["evidence-1"],
+        eventId: "event-1",
+        eventQuestion: "Will Example Corp launch Product X by 2026-12-31?",
+        evaluationTime: "2026-10-11T12:00:00Z",
+        evidenceFingerprint: "evidence-1",
         judgeModelVersion: "judge-v1",
         promptVersion: "prompt-v1",
         snapshotId: "snapshot-1",
@@ -105,7 +117,10 @@ describe("judge cache", () => {
   it("changes the cache key when the calibration snapshot changes", () => {
     const first = buildJudgeCacheKey({
       judgeName: "panel",
-      evidenceIds: ["evidence-1"],
+      eventId: "event-1",
+      eventQuestion: "Will Example Corp launch Product X by 2026-12-31?",
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidenceFingerprint: "evidence-1",
       judgeModelVersion: "judge-v1",
       promptVersion: "prompt-v1",
       snapshotId: "snapshot-1",
@@ -113,10 +128,39 @@ describe("judge cache", () => {
 
     const second = buildJudgeCacheKey({
       judgeName: "panel",
-      evidenceIds: ["evidence-1"],
+      eventId: "event-1",
+      eventQuestion: "Will Example Corp launch Product X by 2026-12-31?",
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidenceFingerprint: "evidence-1",
       judgeModelVersion: "judge-v1",
       promptVersion: "prompt-v1",
       snapshotId: "snapshot-2",
+    });
+
+    expect(first).not.toBe(second);
+  });
+
+  it("changes the cache key when the event context changes even if evidence ids match", () => {
+    const first = buildJudgeCacheKey({
+      judgeName: "panel",
+      eventId: "event-1",
+      eventQuestion: "Will Example Corp launch Product X by 2026-12-31?",
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidenceFingerprint: "evidence-1",
+      judgeModelVersion: "judge-v1",
+      promptVersion: "prompt-v1",
+      snapshotId: "snapshot-1",
+    });
+
+    const second = buildJudgeCacheKey({
+      judgeName: "panel",
+      eventId: "event-2",
+      eventQuestion: "Will the EU fine Example Corp by 2026-12-31?",
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidenceFingerprint: "evidence-1",
+      judgeModelVersion: "judge-v1",
+      promptVersion: "prompt-v1",
+      snapshotId: "snapshot-1",
     });
 
     expect(first).not.toBe(second);

@@ -17,6 +17,7 @@ def test_judge_endpoint_validates_and_returns_trace_shape() -> None:
     response = client.post(
         "/judge",
         json={
+            "eventId": "event-123",
             "event": {
                 "question": "Will Example Corp launch Product X by 2026-12-31?",
                 "resolutionCriteria": "Counts only if Example Corp posts a general availability announcement on its official site.",
@@ -71,6 +72,7 @@ def test_judge_endpoint_validates_and_returns_trace_shape() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "completed"
+    assert payload["eventId"] == "event-123"
     assert payload["judgeOpinions"]
     assert payload["citations"]
     assert payload["calibrationVersion"] == "33333333-3333-4333-8333-333333333333"
@@ -93,6 +95,7 @@ def test_judge_endpoint_runs_full_panel_and_reports_missing_families() -> None:
     response = client.post(
         "/judge",
         json={
+            "eventId": "event-panel",
             "event": {
                 "question": "Will Example Corp launch Product X by 2026-12-31?",
                 "resolutionCriteria": "Counts only if Example Corp posts a general availability announcement on its official site.",

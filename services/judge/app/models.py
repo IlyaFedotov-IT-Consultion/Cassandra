@@ -15,6 +15,7 @@ from app.models_generated import (
 
 
 class JudgeRequest(BaseModel):
+    event_id: str = Field(alias="eventId")
     event: EventInput
     evaluation_time: str = Field(alias="evaluationTime")
     evidence: list[EvidenceItem]

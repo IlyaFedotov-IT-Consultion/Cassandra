@@ -12,6 +12,7 @@ GENERATED_MODELS = ROOT / "app" / "models_generated.py"
 def test_generated_request_models_accept_shared_schema_payloads() -> None:
     judge_request = JudgeRequest.model_validate(
         {
+            "eventId": "event-1",
             "event": {
                 "question": "Will Example Corp launch Product X by 2026-12-31?",
                 "resolutionCriteria": "Counts only if Example Corp posts a general availability announcement on its official site.",

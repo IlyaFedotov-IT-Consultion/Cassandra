@@ -18,12 +18,14 @@ import {
   createRedisEvidenceCacheStore,
   type EvidenceCacheStore,
 } from "../evidence/cache.js";
-import {
-  createMarketProvider,
-} from "../evidence/providers/marketProvider.js";
+import { createCommunitySearchProvider } from "../evidence/providers/communitySearch.js";
+import { createGovernmentSearchProvider } from "../evidence/providers/governmentSearch.js";
+import { createMarketProvider } from "../evidence/providers/marketProvider.js";
+import { createOfficialSearchProvider } from "../evidence/providers/officialSearch.js";
 import { createPerplexityProvider } from "../evidence/providers/perplexity.js";
 import { createPolymarketClobProvider } from "../evidence/providers/polymarketClob.js";
 import { createPolymarketGammaProvider } from "../evidence/providers/polymarketGamma.js";
+import { createWebProvider } from "../evidence/providers/web.js";
 import type { AdapterMode, EvidenceProvider } from "../evidence/types.js";
 import { getEventById, type EventRecord } from "../events/repository.js";
 import { countOutcomes } from "../outcomes/repository.js";
@@ -47,8 +49,8 @@ import {
 } from "./repository.js";
 
 const DEFAULT_EVALUATION_TIME = () => new Date().toISOString();
-const JUDGE_MODEL_VERSION = "judge-fixture-v1";
 const PROMPT_VERSION = "prompt-v1";
+const MIN_COMPLETED_LIVE_CITATIONS = 2;
 const PANEL_JUDGES = [
   {
     judgeName: "official_records",
@@ -143,6 +145,67 @@ export interface EvaluateEventForecastArgs {
   calibrationSnapshot: CalibrationSnapshot;
   judgeCacheStore?: JudgeCacheStore;
   judgeClient?: JudgeClient;
+}
+
+interface LiveCoverageResult {
+  hasEnoughCitationCoverage: boolean;
+  missingEvidence: MissingEvidenceRecord[];
+}
+
+function buildJudgeModelVersion(env: AppEnv): string {
+  return [
+    env.CASSANDRA_ADAPTER_MODE,
+    env.OPENROUTER_JUDGE_MODEL ?? "default-judge",
+    env.OPENROUTER_CROSS_EXAMINER_MODEL ?? "default-cross",
+    env.OPENROUTER_SEARCH_MODEL ?? "default-search",
+    env.ZAI_MODEL ?? "default-zai",
+  ].join("|");
+}
+
+function buildEvidenceFingerprint(evidence: JudgmentEvidenceItem[]): string {
+  return evidence
+    .map((item) =>
+      [
+        item.id,
+        item.url.trim().toLowerCase(),
+        item.sourceFamily,
+        item.sourceType,
+        item.publishedAt,
+      ].join("|"),
+    )
+    .sort()
+    .join("||");
+}
+
+function isPlaceholderCitationUrl(url: string): boolean {
+  return (
+    url.includes("example.invalid") ||
+    url.includes("openrouter.ai/synthetic")
+  );
+}
+
+function assessLiveCoverage(
+  event: EventRecord,
+  evidence: JudgmentEvidenceItem[],
+): LiveCoverageResult {
+  const uniqueCitationUrls = new Set(
+    evidence
+      .map((item) => item.url)
+      .filter((url) => !isPlaceholderCitationUrl(url)),
+  );
+  const hasAuthoritativeCitation = evidence.some((item) => {
+    return (
+      ["official", "government", "community", "web"].includes(item.sourceFamily) &&
+      !isPlaceholderCitationUrl(item.url)
+    );
+  });
+
+  return {
+    hasEnoughCitationCoverage:
+      uniqueCitationUrls.size >= MIN_COMPLETED_LIVE_CITATIONS &&
+      hasAuthoritativeCitation,
+    missingEvidence: buildMissingEvidence(event, evidence),
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -335,6 +398,17 @@ function buildMissingEvidence(
     });
   }
 
+  if (
+    !availableFamilies.has("web" as SourceFamily) &&
+    !availableFamilies.has("llm_research" as SourceFamily)
+  ) {
+    missing.push({
+      claim: event.question,
+      sourceFamily: "web" as SourceFamily,
+      reason: "No open-web or research source was collected for this judgment run.",
+    });
+  }
+
   return missing;
 }
 
@@ -367,6 +441,10 @@ function buildCitations(evidence: JudgmentEvidenceItem[]): CitationRecord[] {
 
     seen.add(item.url);
     citations.push({
+      evidenceId: item.id,
+      provider:
+        typeof item.metadata.provider === "string" ? item.metadata.provider : undefined,
+      publishedAt: item.publishedAt,
       title: item.title,
       url: item.url,
       sourceFamily: item.sourceFamily,
@@ -382,6 +460,58 @@ function buildFallbackCitation(event: EventRecord): CitationRecord {
     url: "https://example.invalid/no-evidence",
     sourceFamily: "web",
   };
+}
+
+function buildInsufficientEvidenceVerdictTrace(args: {
+  env: AppEnv;
+  event: EventRecord;
+  evidence: JudgmentEvidenceItem[];
+  evaluationTime: string;
+  calibrationSnapshot: CalibrationSnapshot;
+}): VerdictTrace {
+  const judgeOpinions = PANEL_JUDGES.map((panelJudge) =>
+    buildJudgeOpinion({
+      judgeName: panelJudge.judgeName,
+      evidence: [],
+      calibrationSnapshot: args.calibrationSnapshot,
+      evaluationTime: args.evaluationTime,
+      missingSourceFamily: panelJudge.missingSourceFamily,
+    }),
+  );
+  const dependencyMatrix = buildDependencyMatrix(judgeOpinions);
+  const citations = args.evidence.length > 0
+    ? buildCitations(args.evidence)
+    : [buildFallbackCitation(args.event)];
+
+  return VerdictTraceSchema.parse({
+    id: randomUUID(),
+    eventId: args.event.id,
+    evaluationTime: args.evaluationTime,
+    referenceClass: args.event.referenceClass,
+    referenceClassFallback: args.event.referenceClass ? null : "global_baseline",
+    priorProbability: 0.5,
+    rawPosteriorProbability: 0.5,
+    finalProbability: 0.5,
+    confidenceLow: 0.35,
+    confidenceHigh: 0.65,
+    dependencyMatrix,
+    disagreementShrinkage: 0,
+    judgeOpinions,
+    weightBreakdown: buildWeightBreakdown(judgeOpinions, dependencyMatrix),
+    ensembleMethod: "logarithmic_opinion_pool",
+    calibrationMethod: selectCalibrationMethod(args.calibrationSnapshot),
+    uncertaintyMethod: "bootstrap",
+    weightRegime: args.calibrationSnapshot.weightRegime,
+    replayFidelity: "approximate",
+    conflicts: [],
+    missingEvidence: buildMissingEvidence(args.event, args.evidence),
+    citations,
+    cacheEvents: [],
+    modelVersion: buildJudgeModelVersion(args.env),
+    weightVersion: args.calibrationSnapshot.id,
+    calibrationVersion: args.calibrationSnapshot.id,
+    status: "insufficient_evidence",
+  });
 }
 
 function appendJudgeCacheEvent(
@@ -458,6 +588,7 @@ function buildJudgeOpinion(args: {
 }
 
 function buildFixtureVerdictTrace(args: {
+  env: AppEnv;
   event: EventRecord;
   evidence: JudgmentEvidenceItem[];
   evaluationTime: string;
@@ -516,7 +647,7 @@ function buildFixtureVerdictTrace(args: {
     missingEvidence: buildMissingEvidence(args.event, args.evidence),
     citations,
     cacheEvents: [],
-    modelVersion: JUDGE_MODEL_VERSION,
+    modelVersion: buildJudgeModelVersion(args.env),
     weightVersion: args.calibrationSnapshot.id,
     calibrationVersion: args.calibrationSnapshot.id,
     status: noEvidence ? "insufficient_evidence" as const : "completed" as const,
@@ -536,7 +667,10 @@ class DefaultJudgeClient implements JudgeClient {
     mode: AdapterMode;
   }): Promise<VerdictTrace> {
     if (input.mode === "fixture") {
-      return buildFixtureVerdictTrace(input);
+      return buildFixtureVerdictTrace({
+        ...input,
+        env: this.env,
+      });
     }
 
     const response = await fetch(`${this.env.JUDGE_BASE_URL}/judge`, {
@@ -545,6 +679,7 @@ class DefaultJudgeClient implements JudgeClient {
         "content-type": "application/json",
       },
       body: JSON.stringify({
+        eventId: input.event.id,
         event: {
           question: input.event.question,
           resolutionCriteria: input.event.resolutionCriteria,
@@ -568,8 +703,20 @@ class DefaultJudgeClient implements JudgeClient {
   }
 }
 
-function createDefaultEvidenceProviders(env: AppEnv): EvidenceProvider[] {
+export function createDefaultEvidenceProviders(env: AppEnv): EvidenceProvider[] {
   return [
+    createOfficialSearchProvider({
+      zaiApiKey: env.ZAI_API_KEY,
+    }),
+    createGovernmentSearchProvider({
+      zaiApiKey: env.ZAI_API_KEY,
+    }),
+    createCommunitySearchProvider({
+      zaiApiKey: env.ZAI_API_KEY,
+    }),
+    createWebProvider({
+      zaiApiKey: env.ZAI_API_KEY,
+    }),
     createPerplexityProvider({
       apiKey: env.PERPLEXITY_API_KEY,
     }),
@@ -612,6 +759,26 @@ async function loadJudgmentDetails(
   };
 }
 
+function validateLiveVerdictTrace(args: {
+  event: EventRecord;
+  trace: VerdictTrace;
+}): VerdictTrace {
+  if (args.trace.eventId !== args.event.id) {
+    throw new Error(
+      `Judge trace eventId mismatch: expected ${args.event.id}, got ${args.trace.eventId}`,
+    );
+  }
+
+  if (
+    args.trace.status === "completed" &&
+    args.trace.citations.some((citation) => isPlaceholderCitationUrl(citation.url))
+  ) {
+    throw new Error("Judge trace contains placeholder citations in live mode.");
+  }
+
+  return args.trace;
+}
+
 export async function evaluateEventForecast(
   args: EvaluateEventForecastArgs,
 ): Promise<VerdictTrace> {
@@ -641,22 +808,42 @@ export async function evaluateEventForecast(
     mode: args.env.CASSANDRA_ADAPTER_MODE,
     cacheKeyParts: {
       judgeName: "panel",
-      evidenceIds: evidenceForJudge.map((item) => item.id),
-      judgeModelVersion: JUDGE_MODEL_VERSION,
+      eventId: args.event.id,
+      eventQuestion: args.event.question,
+      evaluationTime: args.evaluationTime,
+      evidenceFingerprint: buildEvidenceFingerprint(evidenceForJudge),
+      judgeModelVersion: buildJudgeModelVersion(args.env),
       promptVersion: PROMPT_VERSION,
       snapshotId: args.calibrationSnapshot.id,
     },
     load: async () =>
-      judgeClient.judge({
-        event: args.event,
-        evaluationTime: args.evaluationTime,
-        evidence: evidenceForJudge,
-        calibrationSnapshot: args.calibrationSnapshot,
-        mode: args.env.CASSANDRA_ADAPTER_MODE,
-      }),
+      {
+        const trace = await judgeClient.judge({
+          event: args.event,
+          evaluationTime: args.evaluationTime,
+          evidence: evidenceForJudge,
+          calibrationSnapshot: args.calibrationSnapshot,
+          mode: args.env.CASSANDRA_ADAPTER_MODE,
+        });
+
+        return args.env.CASSANDRA_ADAPTER_MODE === "live"
+          ? validateLiveVerdictTrace({
+              event: args.event,
+              trace,
+            })
+          : trace;
+      },
   });
 
-  return appendJudgeCacheEvent(cached.value, cached.cacheStatus);
+  const validatedTrace =
+    args.env.CASSANDRA_ADAPTER_MODE === "live"
+      ? validateLiveVerdictTrace({
+          event: args.event,
+          trace: cached.value,
+        })
+      : cached.value;
+
+  return appendJudgeCacheEvent(validatedTrace, cached.cacheStatus);
 }
 
 export async function runJudgment(args: JudgmentServiceDeps & {
@@ -712,15 +899,46 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       "judgment evidence ready",
     );
     const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
-    const verdictTrace = await evaluateEventForecast({
-      env: args.env,
-      event,
-      evaluationTime,
-      evidence: collected.items,
-      calibrationSnapshot,
-      judgeCacheStore,
-      judgeClient,
-    });
+    const evidenceForCoverage: JudgmentEvidenceItem[] = collected.items.map((item) => ({
+      id: item.id,
+      eventId: item.eventId,
+      title: item.title,
+      url: item.url,
+      summary: item.summary,
+      publishedAt: item.publishedAt,
+      sourceFamily: item.sourceFamily,
+      sourceType: item.sourceType,
+      publisher: item.publisher,
+      retrievedAt: item.retrievedAt,
+      rawText: item.rawText,
+      entities: item.entities,
+      claims: item.claims,
+      stance: item.stance,
+      qualitySignals: item.qualitySignals,
+      metadata: item.metadata,
+    }));
+    const liveCoverage =
+      args.env.CASSANDRA_ADAPTER_MODE === "live"
+        ? assessLiveCoverage(event, evidenceForCoverage)
+        : null;
+    const verdictTrace =
+      liveCoverage && !liveCoverage.hasEnoughCitationCoverage
+        ? buildInsufficientEvidenceVerdictTrace({
+            env: args.env,
+            event,
+            evidence: evidenceForCoverage,
+            evaluationTime,
+            calibrationSnapshot,
+          })
+        : await evaluateEventForecast({
+            env: args.env,
+            event,
+            evaluationTime,
+            evidence: collected.items,
+            calibrationSnapshot,
+            judgeCacheStore,
+            judgeClient,
+          });
 
     await appendJudgmentTrace(args.pool, judgment.id, verdictTrace);
 

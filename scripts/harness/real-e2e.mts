@@ -335,6 +335,9 @@ async function scenarioJudgmentFlow(): Promise<ScenarioResult> {
 
     const vt = parsed.data;
     shared.verdictTrace = vt;
+    if (shared.eventId && vt.eventId !== shared.eventId) {
+      failures.push(`verdict eventId mismatch: ${vt.eventId} !== ${shared.eventId}`);
+    }
     failures.push(...validateVerdictTraceInvariants(vt));
 
     const judgmentList = await timed(
@@ -747,6 +750,10 @@ function validateVerdictTraceInvariants(vt: VerdictTrace): string[] {
 
   if (vt.citations.length < 1) {
     failures.push(`expected >= 1 citation, got ${vt.citations.length}`);
+  }
+
+  if (vt.citations.some((citation) => citation.url.includes("example.invalid"))) {
+    failures.push("verdict contains placeholder citations");
   }
 
   if (vt.finalProbability < 0 || vt.finalProbability > 1) {

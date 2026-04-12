@@ -13,7 +13,10 @@ export interface JudgeCacheStore {
 
 export interface JudgeCacheKeyParts {
   judgeName: string;
-  evidenceIds: string[];
+  eventId: string;
+  eventQuestion: string;
+  evaluationTime: string;
+  evidenceFingerprint: string;
   judgeModelVersion: string;
   promptVersion: string;
   snapshotId: string;
@@ -45,8 +48,15 @@ export function createRedisJudgeCacheStore(redis: Redis): JudgeCacheStore {
 }
 
 export function buildJudgeCacheKey(parts: JudgeCacheKeyParts): string {
-  const evidenceDigest = createHash("sha256")
-    .update(parts.evidenceIds.slice().sort().join("|"))
+  const eventDigest = createHash("sha256")
+    .update(
+      [
+        parts.eventId,
+        parts.eventQuestion.trim().toLowerCase(),
+        parts.evaluationTime,
+        parts.evidenceFingerprint,
+      ].join("|"),
+    )
     .digest("hex");
 
   return [
@@ -55,7 +65,7 @@ export function buildJudgeCacheKey(parts: JudgeCacheKeyParts): string {
     parts.judgeModelVersion,
     parts.promptVersion,
     parts.snapshotId,
-    evidenceDigest,
+    eventDigest,
   ].join(":");
 }
 
