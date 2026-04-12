@@ -55,6 +55,8 @@ import {
 const DEFAULT_EVALUATION_TIME = () => new Date().toISOString();
 const PROMPT_VERSION = "prompt-v1";
 const MIN_COMPLETED_LIVE_CITATIONS = 2;
+export const LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE =
+  "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.";
 const PANEL_JUDGES = [
   {
     judgeName: "official_records",
@@ -812,6 +814,20 @@ function hasConfiguredSecret(value: string | undefined): boolean {
   return Boolean(trimmed && trimmed.toLowerCase() !== "replace-me");
 }
 
+function hasConfiguredAuthoritativeSearchProvider(env: AppEnv): boolean {
+  return hasConfiguredSecret(env.ZAI_API_KEY) || hasConfiguredSecret(env.PERPLEXITY_API_KEY);
+}
+
+export function assertLiveAuthoritativeSearchProviderConfigured(env: AppEnv): void {
+  if (env.CASSANDRA_ADAPTER_MODE !== "live") {
+    return;
+  }
+
+  if (!hasConfiguredAuthoritativeSearchProvider(env)) {
+    throw new Error(LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE);
+  }
+}
+
 function hasConfiguredCustomMarketBaseUrl(value: string | undefined): boolean {
   if (!value) {
     return false;
@@ -975,6 +991,9 @@ export async function evaluateEventForecast(
 export async function runJudgment(args: JudgmentServiceDeps & {
   input: RunJudgmentInput;
 }): Promise<JudgmentRecordDetails> {
+  if (!args.evidenceProviders) {
+    assertLiveAuthoritativeSearchProviderConfigured(args.env);
+  }
   const judgment = await getJudgmentById(args.pool, args.input.judgmentId);
 
   if (!judgment) {

@@ -727,6 +727,62 @@ describe("evaluation replay", () => {
     expect(run.replayFidelity).toBe("approximate");
   });
 
+  it("skips snapshot-dependent baselines when benchmark price history is unavailable", async () => {
+    const run = await runHistoricalEvaluation({
+      pool: {
+        async query(text: string) {
+          throw new Error(`Unexpected query during missing snapshot replay test: ${text}`);
+        },
+      } as never,
+      env: getEnv({
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      input: {
+        benchmarkSetId: "benchmark-set-1",
+        baselines: ["polymarket_only", "model_with_polymarket"],
+      },
+      listBenchmarkMarkets: async () => [benchmarkMarket],
+      listPriceSnapshotsForBenchmark: async () => [],
+      getCalibrationSnapshot: async () => ({
+        id: "snapshot-1",
+        createdAt: "2026-10-01T00:00:00Z",
+        trainingWindow: "all_time",
+        judgeWeights: {},
+        baseRateParams: {},
+        marketPriorParams: {},
+        calibrationParams: {
+          method: "identity",
+        },
+        onlineLearningParams: {
+          enabled: false,
+        },
+        metrics: {},
+        weightRegime: "cold_start",
+        resolvedOutcomeCount: 0,
+        approved: false,
+      }),
+      evidenceProviders: [],
+      persistEvaluationRunResult: async (_pool, input) => ({
+        id: "run-no-snapshots",
+        ...input.run,
+        createdAt: "2026-01-02T00:00:00Z",
+      }),
+    });
+
+    expect(run.overallMetrics.predictionCount).toBe(0);
+    expect(run.overallMetrics.byBaseline.polymarket_only.sampleSize).toBe(0);
+    expect(run.overallMetrics.byBaseline.model_with_polymarket.sampleSize).toBe(0);
+    expect(run.leakageWarnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Skipped polymarket_only"),
+        expect.stringContaining("Skipped model_with_polymarket"),
+        expect.stringContaining("no benchmark Polymarket price snapshot available"),
+      ]),
+    );
+  });
+
   it("fails when requested benchmark market ids are missing", async () => {
     await expect(
       runHistoricalEvaluation({

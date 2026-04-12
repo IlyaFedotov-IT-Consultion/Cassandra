@@ -20,6 +20,7 @@ import type { EventRecord } from "../events/repository.js";
 import { InMemoryJudgeCacheStore, type JudgeCacheStore } from "../judgments/judgeCache.js";
 import {
   assessLiveCoverageForEvidence,
+  assertLiveAuthoritativeSearchProviderConfigured,
   buildInsufficientEvidenceVerdictTraceForEvidence,
   createDefaultEvidenceProviders as createDefaultJudgmentEvidenceProviders,
   evaluateEventForecast,
@@ -434,13 +435,13 @@ export async function runHistoricalEvaluation(
   args: RunHistoricalEvaluationArgs,
 ): Promise<EvaluationRun> {
   assertLiveEvaluationMode(args.env);
+  const baselines = args.input.baselines ?? [...DEFAULT_BASELINES];
   const listBenchmarks = args.listBenchmarkMarkets ?? loadBenchmarkMarkets;
   const listSnapshots = args.listPriceSnapshotsForBenchmark ?? loadPriceSnapshotsForBenchmark;
   const getCalibrationSnapshot = args.getCalibrationSnapshot ?? getLatestCalibrationSnapshot;
   const evaluateModelBaseline = args.evaluateModelBaseline ?? defaultEvaluateModelBaseline;
   const persistEvaluationResult =
     args.persistEvaluationRunResult ?? persistEvaluationRunWithPredictions;
-  const baselines = args.input.baselines ?? [...DEFAULT_BASELINES];
   const benchmarkMarkets = await listBenchmarks(args.pool, args.input.benchmarkSetId);
   const requestedMarketIds = args.input.benchmarkMarketIds;
   const selectedMarkets = requestedMarketIds?.length
@@ -458,6 +459,14 @@ export async function runHistoricalEvaluation(
 
   if (selectedMarkets.length === 0) {
     throw new Error("No benchmark markets available for evaluation");
+  }
+
+  if (
+    baselines.some((baseline) => isModelBaseline(baseline)) &&
+    !args.evidenceProviders &&
+    !args.evaluateModelBaseline
+  ) {
+    assertLiveAuthoritativeSearchProviderConfigured(args.env);
   }
 
   const calibrationSnapshot =
@@ -483,6 +492,17 @@ export async function runHistoricalEvaluation(
       const polymarketProbability = polymarketSnapshot?.probability ?? 0.5;
 
       for (const baseline of baselines) {
+        if (
+          (baseline === "polymarket_only" || baseline === "model_with_polymarket") &&
+          !polymarketSnapshot
+        ) {
+          replayFidelity = "approximate";
+          leakageWarnings.add(
+            `Skipped ${baseline} for ${market.id} at ${cutoff.cutoffAt}: no benchmark Polymarket price snapshot available`,
+          );
+          continue;
+        }
+
         let predictedProbability: number;
 
         if (baseline === "base_rate_only") {

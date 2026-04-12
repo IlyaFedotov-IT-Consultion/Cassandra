@@ -12,6 +12,8 @@ import type { AppEnv } from "../../config/env.js";
 import { runJudgmentWorker } from "../../workers/judgmentWorker.js";
 import { listJudgments } from "./repository.js";
 import {
+  LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE,
+  assertLiveAuthoritativeSearchProviderConfigured,
   createEvidenceCacheStore,
   createJudgeCacheStore,
   enqueueJudgmentRun,
@@ -104,6 +106,7 @@ export function registerJudgmentRoutes(
     }
 
     try {
+      assertLiveAuthoritativeSearchProviderConfigured(args.env);
       const judgment = await enqueueJudgmentRun(args.pool, parsed.data.eventId);
       logger.info(
         {
@@ -147,6 +150,16 @@ export function registerJudgmentRoutes(
         judgeOpinions: [],
       };
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE
+      ) {
+        reply.code(409);
+        return {
+          error: error.message,
+        };
+      }
+
       if (error instanceof Error && error.message.startsWith("Event not found:")) {
         reply.code(404);
         return {

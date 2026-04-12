@@ -331,6 +331,7 @@ describe("evaluation routes", () => {
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
+        ZAI_API_KEY: "zai-key",
       }),
     });
 
@@ -385,6 +386,7 @@ describe("evaluation routes", () => {
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
+        ZAI_API_KEY: "zai-key",
       }),
       runEvaluation: async (input) => {
         expect(input).toEqual({
@@ -444,6 +446,44 @@ describe("evaluation routes", () => {
     }
   });
 
+  it("rejects live evaluation runs when no authoritative search providers are configured", async () => {
+    const runEvaluation = async () => {
+      throw new Error("route should reject live evaluation runs before execution when search providers are missing");
+    };
+
+    const app = buildApp({
+      dbPool: {
+        query: async () => ({ rows: [] }),
+      } as never,
+      env: getEnv({
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      runEvaluation,
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/runs",
+        payload: {
+          benchmarkSetId: "benchmark-set-1",
+          baselines: ["model_with_polymarket"],
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error:
+          "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("rejects invalid evaluation run input", async () => {
     const app = buildApp({
       dbPool: {
@@ -454,6 +494,7 @@ describe("evaluation routes", () => {
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
+        ZAI_API_KEY: "zai-key",
       }),
     });
 
@@ -486,6 +527,7 @@ describe("evaluation routes", () => {
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
+        ZAI_API_KEY: "zai-key",
       }),
       runEvaluation: async () => {
         throw new Error("No benchmark markets available for evaluation");
@@ -520,6 +562,7 @@ describe("evaluation routes", () => {
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
+        ZAI_API_KEY: "zai-key",
       }),
       runEvaluation: async () => {
         throw new Error("Benchmark markets not found: missing-market");

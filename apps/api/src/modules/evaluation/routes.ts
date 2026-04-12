@@ -6,7 +6,12 @@ import { z } from "zod";
 import type { EvaluationRun } from "@cassandra/shared";
 
 import type { AppEnv } from "../../config/env.js";
-import { createEvidenceCacheStore, createJudgeCacheStore } from "../judgments/service.js";
+import {
+  LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE,
+  assertLiveAuthoritativeSearchProviderConfigured,
+  createEvidenceCacheStore,
+  createJudgeCacheStore,
+} from "../judgments/service.js";
 import {
   assertLiveEvaluationMode,
   LIVE_EVALUATION_REQUIRED_MESSAGE,
@@ -135,11 +140,30 @@ export function registerEvaluationRoutes(
 
     try {
       assertLiveEvaluationMode(args.env);
+      const usesModelBaselines =
+        !parsed.data.baselines ||
+        parsed.data.baselines.some((baseline) =>
+          baseline === "model_without_polymarket" || baseline === "model_with_polymarket",
+        );
+
+      if (usesModelBaselines) {
+        assertLiveAuthoritativeSearchProviderConfigured(args.env);
+      }
       const run = await runEvaluation(parsed.data);
       reply.code(201);
       return run;
     } catch (error) {
       if (error instanceof Error && error.message === LIVE_EVALUATION_REQUIRED_MESSAGE) {
+        reply.code(409);
+        return {
+          error: error.message,
+        };
+      }
+
+      if (
+        error instanceof Error &&
+        error.message === LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE
+      ) {
         reply.code(409);
         return {
           error: error.message,

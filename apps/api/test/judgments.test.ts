@@ -109,11 +109,16 @@ async function waitForCompletedJudgment(app: ReturnType<typeof buildApp>, judgme
 
     expect(response.statusCode).toBe(200);
     const judgment = response.json();
+    const hasTerminalPersistenceLog = judgment.executionLog.some(
+      (entry: { stage: string; level: string }) =>
+        entry.stage === "storage" || (entry.stage === "run" && entry.level === "error"),
+    );
 
     if (
-      judgment.status === "completed" ||
-      judgment.status === "insufficient_evidence" ||
-      judgment.status === "failed"
+      (judgment.status === "completed" ||
+        judgment.status === "insufficient_evidence" ||
+        judgment.status === "failed") &&
+      hasTerminalPersistenceLog
     ) {
       return judgment;
     }
@@ -211,6 +216,46 @@ describe("judgment routes and service", () => {
 
       expect(completed.verdictTrace.citations.length).toBeGreaterThan(0);
       expect(completed.judgeOpinions.length).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects live judgments before queueing when no authoritative search providers are configured", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        DATABASE_URL,
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/judgments",
+        payload: {
+          eventId: event.id,
+          evaluationTime: "2026-10-11T12:00:00Z",
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error:
+          "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.",
+      });
+      expect(await listJudgments(pool)).toHaveLength(0);
     } finally {
       await app.close();
     }
