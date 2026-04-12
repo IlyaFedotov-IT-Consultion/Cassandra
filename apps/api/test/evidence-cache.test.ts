@@ -213,22 +213,24 @@ describe("collectEvidenceForEventWithCache", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
-      await collectEvidenceForEventWithCache({
-        pool,
-        event,
-        evaluationTime: "2026-10-11T12:15:00Z",
-        mode: "live",
-        providers: [
-          {
-            name: "failingProvider",
-            async collect() {
-              throw new Error("provider exploded");
+      await expect(
+        collectEvidenceForEventWithCache({
+          pool,
+          event,
+          evaluationTime: "2026-10-11T12:15:00Z",
+          mode: "live",
+          providers: [
+            {
+              name: "failingProvider",
+              async collect() {
+                throw new Error("provider exploded");
+              },
             },
-          },
-        ],
-        cacheStore: new InMemoryEvidenceCacheStore(),
-        logger,
-      });
+          ],
+          cacheStore: new InMemoryEvidenceCacheStore(),
+          logger,
+        }),
+      ).rejects.toThrow("All 1 evidence provider(s) failed in live mode");
     } finally {
       warnSpy.mockRestore();
     }
