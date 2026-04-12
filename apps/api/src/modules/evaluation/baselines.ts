@@ -9,7 +9,7 @@ export function providersForBaseline(
   baseline: EvaluationRun["baselines"][number],
   providers: EvidenceProvider[],
 ): EvidenceProvider[] {
-  if (baseline !== "model_without_polymarket") {
+  if (baseline !== "model_without_polymarket" && baseline !== "model_with_polymarket") {
     return providers;
   }
 

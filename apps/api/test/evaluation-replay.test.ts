@@ -4,6 +4,7 @@ import type { BenchmarkMarket, CalibrationSnapshot, EvidenceItem } from "@cassan
 import { getEnv } from "../src/config/env.js";
 import type { BenchmarkPriceSnapshotRecord } from "../src/modules/evaluation/repository.js";
 import {
+  buildHistoricalPolymarketEvidenceItem,
   buildReplayEvidenceCacheKey,
   buildReplayCutoffs,
   buildReplayEventRecord,
@@ -144,6 +145,124 @@ describe("evaluation replay", () => {
     expect(second[0]?.url).toContain("replay-market-2");
   });
 
+  it("reuses live replay evidence across cutoffs when a shared store is provided", async () => {
+    const event = buildReplayEventRecord(benchmarkMarket);
+    const cacheStore = new InMemoryEvidenceCacheStore();
+    const sharedEvidenceStore = new Map<string, EvidenceItem[]>();
+    let calls = 0;
+    const provider = {
+      name: "web",
+      async collect(input: { event: { id: string } }) {
+        calls += 1;
+        return [
+          {
+            id: `evidence-${input.event.id}`,
+            eventId: input.event.id,
+            sourceFamily: "web" as const,
+            sourceType: "web_article" as const,
+            title: `Evidence for ${input.event.id}`,
+            url: `https://example.com/${input.event.id}`,
+            publisher: "Example",
+            publishedAt: "2026-12-20T00:00:00Z",
+            retrievedAt: "2026-12-20T00:05:00Z",
+            summary: `Summary for ${input.event.id}`,
+            rawText: null,
+            entities: [],
+            claims: [],
+            stance: "supports" as const,
+            qualitySignals: {},
+            metadata: {
+              archivedRetrieval: false,
+            },
+          },
+        ];
+      },
+    };
+
+    const first = await collectReplayEvidence({
+      env: getEnv({
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      event,
+      cutoffAt: "2026-12-24T12:00:00Z",
+      providers: [provider],
+      evidenceCacheStore: cacheStore,
+      sharedEvidenceStore,
+    });
+    const second = await collectReplayEvidence({
+      env: getEnv({
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      event,
+      cutoffAt: "2026-12-30T12:00:00Z",
+      providers: [provider],
+      evidenceCacheStore: cacheStore,
+      sharedEvidenceStore,
+    });
+
+    expect(calls).toBe(1);
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+  });
+
+  it("continues replay evidence collection when one provider fails", async () => {
+    const warnings: string[] = [];
+    const event = buildReplayEventRecord(benchmarkMarket);
+    const evidence = await collectReplayEvidence({
+      env: getEnv({
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      event,
+      cutoffAt: "2026-12-24T12:00:00Z",
+      providers: [
+        {
+          name: "broken-provider",
+          async collect() {
+            throw new Error("upstream timeout");
+          },
+        },
+        {
+          name: "web",
+          async collect(input: { event: { id: string } }) {
+            return [
+              {
+                id: `evidence-${input.event.id}`,
+                eventId: input.event.id,
+                sourceFamily: "web" as const,
+                sourceType: "web_article" as const,
+                title: "Working evidence",
+                url: "https://example.com/working",
+                publisher: "Example",
+                publishedAt: "2026-12-20T00:00:00Z",
+                retrievedAt: "2026-12-20T00:05:00Z",
+                summary: "Working evidence",
+                rawText: null,
+                entities: [],
+                claims: [],
+                stance: "supports" as const,
+                qualitySignals: {},
+                metadata: {},
+              },
+            ];
+          },
+        },
+      ],
+      evidenceCacheStore: new InMemoryEvidenceCacheStore(),
+      warningCollector: (warning) => warnings.push(warning),
+    });
+
+    expect(evidence).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("broken-provider");
+    expect(warnings[0]).toContain("upstream timeout");
+  });
+
   it("filters evidence using publishedAt rather than retrievedAt", () => {
     const evidence: EvidenceItem[] = [
       {
@@ -238,6 +357,36 @@ describe("evaluation replay", () => {
     expect(inferReplayFidelity([])).toBe("approximate");
   });
 
+  it("builds historical Polymarket evidence from a benchmark snapshot", () => {
+    const evidence = buildHistoricalPolymarketEvidenceItem({
+      event: buildReplayEventRecord(benchmarkMarket),
+      market: benchmarkMarket,
+      snapshot: {
+        id: "snapshot-1",
+        benchmarkMarketId: benchmarkMarket.id,
+        cutoffAt: "2026-12-24T12:00:00Z",
+        probability: 0.61,
+        volume: 1500,
+        liquidity: 700,
+        source: "polymarket",
+        createdAt: "2026-12-24T12:01:00Z",
+      },
+    });
+
+    expect(evidence).toMatchObject({
+      eventId: "replay-market-1",
+      sourceFamily: "prediction_market",
+      sourceType: "quote_snapshot",
+      url: benchmarkMarket.marketUrl,
+      publishedAt: "2026-12-24T12:00:00.000Z",
+      metadata: expect.objectContaining({
+        archivedRetrieval: true,
+        provider: "benchmarkPolymarket",
+        probability: 0.61,
+      }),
+    });
+  });
+
   it("builds, persists, and summarizes a historical evaluation run", async () => {
     const calibrationSnapshot: CalibrationSnapshot = {
       id: "snapshot-1",
@@ -298,7 +447,7 @@ describe("evaluation replay", () => {
       env: getEnv({
         DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
       input: {
         benchmarkSetId: "benchmark-set-1",
@@ -419,7 +568,7 @@ describe("evaluation replay", () => {
       env: getEnv({
         DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
       input: {
         benchmarkSetId: "benchmark-set-1",
@@ -499,6 +648,85 @@ describe("evaluation replay", () => {
     );
   });
 
+  it("records insufficient-evidence predictions instead of skipping live replay baselines", async () => {
+    const run = await runHistoricalEvaluation({
+      pool: {
+        async query(text: string) {
+          throw new Error(`Unexpected query during insufficient-evidence replay test: ${text}`);
+        },
+      } as never,
+      env: getEnv({
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://127.0.0.1:9",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      input: {
+        benchmarkSetId: "benchmark-set-1",
+        baselines: ["model_without_polymarket"],
+      },
+      listBenchmarkMarkets: async () => [benchmarkMarket],
+      listPriceSnapshotsForBenchmark: async () => [],
+      getCalibrationSnapshot: async () => ({
+        id: "snapshot-1",
+        createdAt: "2026-10-01T00:00:00Z",
+        trainingWindow: "all_time",
+        judgeWeights: {},
+        baseRateParams: {},
+        marketPriorParams: {},
+        calibrationParams: {
+          method: "identity",
+        },
+        onlineLearningParams: {
+          enabled: false,
+        },
+        metrics: {},
+        weightRegime: "cold_start",
+        resolvedOutcomeCount: 0,
+        approved: false,
+      }),
+      evidenceProviders: [
+        {
+          name: "web",
+          async collect(input: { event: { id: string } }) {
+            return [
+              {
+                id: `evidence-${input.event.id}`,
+                eventId: input.event.id,
+                sourceFamily: "web" as const,
+                sourceType: "web_article" as const,
+                title: "Thin evidence",
+                url: "https://example.com/thin-evidence",
+                publisher: "Example",
+                publishedAt: "2022-04-01T00:00:00Z",
+                retrievedAt: "2026-04-12T00:00:00Z",
+                summary: "One article is not enough citation coverage for a live completed verdict.",
+                rawText: null,
+                entities: [],
+                claims: [],
+                stance: "supports" as const,
+                qualitySignals: {},
+                metadata: {
+                  archivedRetrieval: false,
+                },
+              },
+            ];
+          },
+        },
+      ],
+      persistEvaluationRunResult: async (_pool, input) => ({
+        id: "run-insufficient",
+        ...input.run,
+        createdAt: "2026-01-02T00:00:00Z",
+      }),
+    });
+
+    expect(run.overallMetrics.predictionCount).toBe(4);
+    expect(run.overallMetrics.byBaseline.model_without_polymarket.sampleSize).toBe(4);
+    expect(run.leakageWarnings).toEqual([]);
+    expect(run.replayFidelity).toBe("approximate");
+  });
+
   it("fails when requested benchmark market ids are missing", async () => {
     await expect(
       runHistoricalEvaluation({
@@ -510,7 +738,7 @@ describe("evaluation replay", () => {
         env: getEnv({
           DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
           REDIS_URL: "redis://localhost:6379",
-          CASSANDRA_ADAPTER_MODE: "fixture",
+          CASSANDRA_ADAPTER_MODE: "live",
         }),
         input: {
           benchmarkSetId: "benchmark-set-1",
@@ -519,5 +747,25 @@ describe("evaluation replay", () => {
         listBenchmarkMarkets: async () => [benchmarkMarket],
       }),
     ).rejects.toThrow("Benchmark markets not found: missing-market");
+  });
+
+  it("rejects historical evaluations in fixture mode", async () => {
+    await expect(
+      runHistoricalEvaluation({
+        pool: {
+          async query(text: string) {
+            throw new Error(`Unexpected query during fixture guard test: ${text}`);
+          },
+        } as never,
+        env: getEnv({
+          DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+          REDIS_URL: "redis://localhost:6379",
+          CASSANDRA_ADAPTER_MODE: "fixture",
+        }),
+        input: {
+          benchmarkSetId: "benchmark-set-1",
+        },
+      }),
+    ).rejects.toThrow("Real evaluations require CASSANDRA_ADAPTER_MODE=live");
   });
 });

@@ -357,10 +357,12 @@ Notes:
 - data is fetched from `POLYMARKET_GAMMA_URL`
 - imported rows are stored in `benchmark_markets`
 - imported markets carry their `benchmarkSetId`
+- this endpoint requires `CASSANDRA_ADAPTER_MODE=live`
 
 Errors:
 
 - `400` with `error: "Invalid benchmark import input"`
+- `409` with `error: "Real evaluations require CASSANDRA_ADAPTER_MODE=live"`
 - `409` with `error: "Benchmark market ... already belongs to benchmark set ..."`
 
 ### `GET /evaluation/benchmark-sets`
@@ -421,6 +423,7 @@ Fields:
 - `benchmarkSetId` is required
 - `benchmarkMarketIds` is optional and scopes the run to specific imported benchmarks
 - `baselines` is optional and defaults inside the evaluation flow when omitted
+- this endpoint requires `CASSANDRA_ADAPTER_MODE=live`
 
 Success:
 
@@ -430,6 +433,7 @@ Success:
 Errors:
 
 - `400` with `error: "Invalid evaluation run input"`
+- `409` with `error: "Real evaluations require CASSANDRA_ADAPTER_MODE=live"`
 - `404` with `error: "No benchmark markets available for evaluation"`
 - `404` with `error: "Benchmark markets not found: ..."`
 

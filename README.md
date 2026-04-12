@@ -104,7 +104,7 @@ docker compose --profile app up -d postgres redis api judge web
 The app containers use isolated dependency volumes for `node_modules` and the judge
 virtual environment so container-side installs do not overwrite the host workspace.
 
-The default local mode is `CASSANDRA_ADAPTER_MODE=fixture`, which is intended for offline iteration without live third-party API calls. Switch to `live` only when the required upstream credentials are intentionally configured.
+The default local mode is `CASSANDRA_ADAPTER_MODE=live`. Historical evaluation imports and runs now require live upstream queries so the benchmark set and replay metrics reflect real market data rather than placeholders.
 
 The API now emits structured JSON logs by default. In local development, set
 `LOG_LEVEL=debug` if you want more detail; in tests, the default app logger stays

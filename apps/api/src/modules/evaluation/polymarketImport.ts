@@ -1,61 +1,22 @@
 import { BenchmarkMarketSchema, type BenchmarkMarket } from "@cassandra/shared";
 import type { Pool } from "pg";
 
+import { assertLiveEvaluationMode } from "./liveMode.js";
 import { upsertBenchmarkMarkets } from "./repository.js";
 
 export const DEFAULT_BENCHMARK_SET_ID = "polymarket_recent_resolved";
 
-const fixtureResolvedPolymarketMarkets: PolymarketMarketPayload[] = [
-  {
-    id: "fixture-market-fed-hold",
-    question: "Will the Fed hold rates steady at the next FOMC meeting?",
-    resolution_criteria: "Resolves Yes if the target range is unchanged at the next scheduled FOMC decision.",
-    end_date_iso: "2026-06-17T18:00:00Z",
-    resolved_at: "2026-06-17T18:00:00Z",
-    closed: true,
-    archived: false,
-    market_slug: "fed-hold-next-fomc",
-    volume_num: 245000,
-    liquidity_num: 68000,
-    outcomes: ["Yes", "No"],
-    outcome_prices: [1, 0],
-    tags: [{ slug: "macro" }],
-  },
-  {
-    id: "fixture-market-eu-fine",
-    question: "Will the EU fine Example Tech over antitrust conduct before July 2026?",
-    resolution_criteria: "Resolves Yes if the European Commission announces a formal monetary penalty before July 1, 2026.",
-    end_date_iso: "2026-07-01T00:00:00Z",
-    resolved_at: "2026-06-21T09:00:00Z",
-    closed: true,
-    archived: false,
-    market_slug: "eu-antitrust-fine-example-tech",
-    volume_num: 118000,
-    liquidity_num: 41000,
-    outcomes: ["Yes", "No"],
-    outcome_prices: [0, 1],
-    tags: [{ slug: "policy" }],
-  },
-  {
-    id: "fixture-market-launch-delay",
-    question: "Will Example Motors ship its new EV before September 2026?",
-    resolution_criteria: "Resolves Yes if customer deliveries of the announced EV begin before September 1, 2026.",
-    end_date_iso: "2026-09-01T00:00:00Z",
-    resolved_at: "2026-08-28T16:00:00Z",
-    closed: true,
-    archived: false,
-    market_slug: "example-motors-ev-shipments",
-    volume_num: 196000,
-    liquidity_num: 53000,
-    outcomes: ["Yes", "No"],
-    outcome_prices: [1, 0],
-    tags: [{ slug: "technology" }],
-  },
-];
-
 interface PolymarketTag {
   slug?: string;
   label?: string;
+}
+
+interface PolymarketEventPayload {
+  slug?: string;
+  title?: string;
+  description?: string;
+  category?: string;
+  closedTime?: string;
 }
 
 interface PolymarketMarketPayload {
@@ -65,15 +26,26 @@ interface PolymarketMarketPayload {
   resolution_criteria?: string;
   description?: string;
   end_date_iso?: string;
+  endDateIso?: string;
+  endDate?: string;
   resolved_at?: string;
+  closedTime?: string;
   closed?: boolean;
   archived?: boolean;
   market_slug?: string;
+  slug?: string;
   volume_num?: number;
+  volumeNum?: number;
+  volume?: number | string;
   liquidity_num?: number;
-  outcomes?: string[];
-  outcome_prices?: number[];
+  liquidityNum?: number;
+  liquidity?: number | string;
+  category?: string;
+  outcomes?: string[] | string;
+  outcome_prices?: number[] | string;
+  outcomePrices?: number[] | string;
   tags?: PolymarketTag[];
+  events?: PolymarketEventPayload[];
 }
 
 function normalizeResolvedValue(outcomes: string[], prices: number[]): boolean | null {
@@ -89,15 +61,76 @@ function normalizeResolvedValue(outcomes: string[], prices: number[]): boolean |
     return null;
   }
 
-  if (prices[yesIndex] === 1 && prices[noIndex] === 0) {
+  const yesPrice = prices[yesIndex];
+  const noPrice = prices[noIndex];
+
+  if (!Number.isFinite(yesPrice) || !Number.isFinite(noPrice) || yesPrice === noPrice) {
+    return null;
+  }
+
+  if (yesPrice > noPrice) {
     return true;
   }
 
-  if (prices[yesIndex] === 0 && prices[noIndex] === 1) {
+  if (noPrice > yesPrice) {
     return false;
   }
 
   return null;
+}
+
+function parseStringArray(value: string[] | string | undefined): string[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseNumberArray(value: number[] | string | undefined): number[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => Number(item));
+  }
+
+  if (typeof value !== "string") {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map((item) => Number(item)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function coerceNumber(value: number | string | undefined): number {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "string" && value.length > 0) {
+    return Number(value);
+  }
+
+  return 0;
+}
+
+function normalizeTheme(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeTimestamp(value: string): string {
+  return new Date(value).toISOString();
 }
 
 export function normalizePolymarketBenchmarkMarkets(
@@ -105,20 +138,43 @@ export function normalizePolymarketBenchmarkMarkets(
   benchmarkSetId = DEFAULT_BENCHMARK_SET_ID,
 ): BenchmarkMarket[] {
   return markets.flatMap((market) => {
-    const title = market.question ?? market.title;
-    const resolutionCriteria = market.resolution_criteria ?? market.description;
-    const outcomes = market.outcomes ?? [];
-    const outcomePrices = market.outcome_prices ?? [];
+    const primaryEvent = market.events?.[0];
+    const title = market.question ?? market.title ?? primaryEvent?.title;
+    const resolutionCriteria =
+      market.resolution_criteria ?? market.description ?? primaryEvent?.description;
+    const outcomes = parseStringArray(market.outcomes);
+    const outcomePrices = parseNumberArray(market.outcome_prices ?? market.outcomePrices);
     const resolvedValue = normalizeResolvedValue(outcomes, outcomePrices);
 
-    if (!market.closed || market.archived || !title || !resolutionCriteria || resolvedValue === null) {
+    const resolvedAt =
+      market.resolved_at ??
+      market.closedTime ??
+      primaryEvent?.closedTime ??
+      market.end_date_iso ??
+      market.endDateIso ??
+      market.endDate;
+
+    if (
+      !market.closed ||
+      market.archived ||
+      !title ||
+      !resolutionCriteria ||
+      !resolvedAt ||
+      resolvedValue === null
+    ) {
       return [];
     }
 
-    const theme = market.tags?.[0]?.slug ?? market.tags?.[0]?.label ?? "general";
-    const resolvedAt = market.resolved_at ?? market.end_date_iso;
-    const marketUrl = market.market_slug
-      ? `https://polymarket.com/event/${market.market_slug}`
+    const theme = normalizeTheme(
+      market.tags?.[0]?.slug ??
+        market.tags?.[0]?.label ??
+        market.category ??
+        primaryEvent?.category ??
+        "general",
+    );
+    const marketSlug = market.market_slug ?? market.slug ?? primaryEvent?.slug;
+    const marketUrl = marketSlug
+      ? `https://polymarket.com/event/${marketSlug}`
       : `https://polymarket.com/event/${market.id}`;
 
     return [
@@ -128,9 +184,9 @@ export function normalizePolymarketBenchmarkMarkets(
         title,
         resolutionCriteria,
         theme,
-        volume: market.volume_num ?? 0,
-        liquidity: market.liquidity_num ?? 0,
-        resolvedAt,
+        volume: coerceNumber(market.volume_num ?? market.volumeNum ?? market.volume),
+        liquidity: coerceNumber(market.liquidity_num ?? market.liquidityNum ?? market.liquidity),
+        resolvedAt: normalizeTimestamp(resolvedAt),
         resolvedValue,
         marketUrl,
       }),
@@ -144,15 +200,14 @@ export async function importResolvedPolymarketBenchmarks(args: {
   benchmarkSetId?: string;
   mode?: "fixture" | "live";
 }): Promise<BenchmarkMarket[]> {
-  if (args.mode === "fixture") {
-    return normalizePolymarketBenchmarkMarkets(
-      fixtureResolvedPolymarketMarkets,
-      args.benchmarkSetId,
-    );
-  }
+  assertLiveEvaluationMode({
+    CASSANDRA_ADAPTER_MODE: args.mode ?? "live",
+  });
 
   const fetchImpl = args.fetchImpl ?? fetch;
-  const response = await fetchImpl(`${args.baseUrl}/markets?closed=true`);
+  const response = await fetchImpl(
+    `${args.baseUrl}/markets?closed=true&uma_resolution_status=resolved`,
+  );
 
   if (!response.ok) {
     throw new Error(`Polymarket import failed with ${response.status} ${response.statusText}`);

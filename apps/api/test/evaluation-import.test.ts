@@ -63,10 +63,12 @@ describe("evaluation import", () => {
   });
 
   it("imports recently resolved markets through fetch injection", async () => {
+    let requestedUrl: string | undefined;
     const markets = await importResolvedPolymarketBenchmarks({
       baseUrl: "https://gamma-api.polymarket.com",
-      fetchImpl: async () =>
-        new Response(
+      fetchImpl: async (input) => {
+        requestedUrl = String(input);
+        return new Response(
           JSON.stringify([
             {
               id: "market-1",
@@ -89,7 +91,8 @@ describe("evaluation import", () => {
               "content-type": "application/json",
             },
           },
-        ),
+        );
+      },
     });
 
     expect(markets).toEqual([
@@ -100,6 +103,8 @@ describe("evaluation import", () => {
         theme: "technology",
       }),
     ]);
+    expect(requestedUrl).toContain("closed=true");
+    expect(requestedUrl).toContain("uma_resolution_status=resolved");
   });
 
   it("honors an explicit benchmark set override during import", async () => {
@@ -139,6 +144,50 @@ describe("evaluation import", () => {
         id: "market-1",
       }),
     ]);
+  });
+
+  it("normalizes the current Polymarket Gamma payload shape", () => {
+    const markets = normalizePolymarketBenchmarkMarkets([
+      {
+        id: "12",
+        question: "Will Joe Biden get Coronavirus before the election?",
+        description: "Resolves yes if Joe Biden publicly confirms a positive COVID-19 test before November 3, 2020.",
+        slug: "will-joe-biden-get-coronavirus-before-the-election",
+        endDate: "2020-11-04T00:00:00Z",
+        closedTime: "2020-11-02 16:31:01+00",
+        category: "US-current-affairs",
+        volumeNum: 32257.45,
+        liquidityNum: 0,
+        closed: true,
+        archived: false,
+        outcomes: "[\"Yes\", \"No\"]",
+        outcomePrices: "[\"0.000000695371682462938946447150318990679\", \"0.999999304628317537061053552849681\"]",
+      } as never,
+    ]);
+
+    expect(markets).toEqual([
+      expect.objectContaining({
+        id: "12",
+        title: "Will Joe Biden get Coronavirus before the election?",
+        resolutionCriteria: "Resolves yes if Joe Biden publicly confirms a positive COVID-19 test before November 3, 2020.",
+        theme: "us-current-affairs",
+        volume: 32257.45,
+        liquidity: 0,
+        resolvedAt: "2020-11-02T16:31:01.000Z",
+        resolvedValue: false,
+        marketUrl:
+          "https://polymarket.com/event/will-joe-biden-get-coronavirus-before-the-election",
+      }),
+    ]);
+  });
+
+  it("rejects fixture-mode benchmark imports", async () => {
+    await expect(
+      importResolvedPolymarketBenchmarks({
+        baseUrl: "https://gamma-api.polymarket.com",
+        mode: "fixture",
+      }),
+    ).rejects.toThrow("Real evaluations require CASSANDRA_ADAPTER_MODE=live");
   });
 
   it("imports and persists resolved markets through the evaluation repository", async () => {

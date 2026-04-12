@@ -7,6 +7,10 @@ import type { EvaluationRun } from "@cassandra/shared";
 
 import type { AppEnv } from "../../config/env.js";
 import { createEvidenceCacheStore, createJudgeCacheStore } from "../judgments/service.js";
+import {
+  assertLiveEvaluationMode,
+  LIVE_EVALUATION_REQUIRED_MESSAGE,
+} from "./liveMode.js";
 import { importAndStoreResolvedPolymarketBenchmarks } from "./polymarketImport.js";
 import {
   getEvaluationRunById,
@@ -81,6 +85,7 @@ export function registerEvaluationRoutes(
     }
 
     try {
+      assertLiveEvaluationMode(args.env);
       const markets = await importAndStoreResolvedPolymarketBenchmarks({
         pool: args.pool,
         baseUrl: args.env.POLYMARKET_GAMMA_URL,
@@ -95,6 +100,13 @@ export function registerEvaluationRoutes(
         markets,
       };
     } catch (error) {
+      if (error instanceof Error && error.message === LIVE_EVALUATION_REQUIRED_MESSAGE) {
+        reply.code(409);
+        return {
+          error: error.message,
+        };
+      }
+
       if (
         error instanceof Error &&
         error.message.startsWith("Benchmark market ") &&
@@ -122,10 +134,18 @@ export function registerEvaluationRoutes(
     }
 
     try {
+      assertLiveEvaluationMode(args.env);
       const run = await runEvaluation(parsed.data);
       reply.code(201);
       return run;
     } catch (error) {
+      if (error instanceof Error && error.message === LIVE_EVALUATION_REQUIRED_MESSAGE) {
+        reply.code(409);
+        return {
+          error: error.message,
+        };
+      }
+
       if (
         error instanceof Error &&
         (error.message === "No benchmark markets available for evaluation" ||

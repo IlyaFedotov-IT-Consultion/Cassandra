@@ -131,6 +131,27 @@ interface JudgmentEvidenceItem {
   metadata: Record<string, unknown>;
 }
 
+function mapEvidenceForJudge(evidence: EvidenceItem[]): JudgmentEvidenceItem[] {
+  return evidence.map((item) => ({
+    id: item.id,
+    eventId: item.eventId,
+    title: item.title,
+    url: item.url,
+    summary: item.summary,
+    publishedAt: item.publishedAt,
+    sourceFamily: item.sourceFamily,
+    sourceType: item.sourceType,
+    publisher: item.publisher,
+    retrievedAt: item.retrievedAt,
+    rawText: item.rawText,
+    entities: item.entities,
+    claims: item.claims,
+    stance: item.stance,
+    qualitySignals: item.qualitySignals,
+    metadata: item.metadata,
+  }));
+}
+
 function buildJudgmentExecutionLogEntry(args: {
   stage: JudgmentExecutionStage;
   message: string;
@@ -265,6 +286,13 @@ function assessLiveCoverage(
       hasAuthoritativeCitation,
     missingEvidence: buildMissingEvidence(event, evidence),
   };
+}
+
+export function assessLiveCoverageForEvidence(
+  event: EventRecord,
+  evidence: EvidenceItem[],
+): LiveCoverageResult {
+  return assessLiveCoverage(event, mapEvidenceForJudge(evidence));
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -570,6 +598,22 @@ function buildInsufficientEvidenceVerdictTrace(args: {
     weightVersion: args.calibrationSnapshot.id,
     calibrationVersion: args.calibrationSnapshot.id,
     status: "insufficient_evidence",
+  });
+}
+
+export function buildInsufficientEvidenceVerdictTraceForEvidence(args: {
+  env: AppEnv;
+  event: EventRecord;
+  evidence: EvidenceItem[];
+  evaluationTime: string;
+  calibrationSnapshot: CalibrationSnapshot;
+}): VerdictTrace {
+  return buildInsufficientEvidenceVerdictTrace({
+    env: args.env,
+    event: args.event,
+    evidence: mapEvidenceForJudge(args.evidence),
+    evaluationTime: args.evaluationTime,
+    calibrationSnapshot: args.calibrationSnapshot,
   });
 }
 
@@ -883,24 +927,7 @@ export async function evaluateEventForecast(
 ): Promise<VerdictTrace> {
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
   const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
-  const evidenceForJudge: JudgmentEvidenceItem[] = args.evidence.map((item) => ({
-    id: item.id,
-    eventId: item.eventId,
-    title: item.title,
-    url: item.url,
-    summary: item.summary,
-    publishedAt: item.publishedAt,
-    sourceFamily: item.sourceFamily,
-    sourceType: item.sourceType,
-    publisher: item.publisher,
-    retrievedAt: item.retrievedAt,
-    rawText: item.rawText,
-    entities: item.entities,
-    claims: item.claims,
-    stance: item.stance,
-    qualitySignals: item.qualitySignals,
-    metadata: item.metadata,
-  }));
+  const evidenceForJudge = mapEvidenceForJudge(args.evidence);
 
   const cached = await getOrCreateCachedJudgeResult({
     cacheStore: judgeCacheStore,

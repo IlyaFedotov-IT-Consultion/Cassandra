@@ -19,6 +19,8 @@ import type { EvidenceProvider } from "../evidence/types.js";
 import type { EventRecord } from "../events/repository.js";
 import { InMemoryJudgeCacheStore, type JudgeCacheStore } from "../judgments/judgeCache.js";
 import {
+  assessLiveCoverageForEvidence,
+  buildInsufficientEvidenceVerdictTraceForEvidence,
   createDefaultEvidenceProviders as createDefaultJudgmentEvidenceProviders,
   evaluateEventForecast,
 } from "../judgments/service.js";
@@ -36,6 +38,7 @@ import {
   winRateVsReference,
   type EvaluationPair,
 } from "./metrics.js";
+import { assertLiveEvaluationMode } from "./liveMode.js";
 import {
   createEvaluationRunWithPredictions as persistEvaluationRunWithPredictions,
   listBenchmarkMarkets as loadBenchmarkMarkets,
@@ -95,10 +98,12 @@ export interface EvaluateModelBaselineArgs {
   market: BenchmarkMarket;
   cutoff: ReplayCutoff;
   baseline: "model_without_polymarket" | "model_with_polymarket";
+  polymarketSnapshot: BenchmarkPriceSnapshotRecord | null;
   calibrationSnapshot: CalibrationSnapshot;
   evidenceProviders: EvidenceProvider[];
   evidenceCacheStore: EvidenceCacheStore;
   judgeCacheStore: JudgeCacheStore;
+  sharedEvidenceStore: Map<string, EvidenceItem[]>;
 }
 
 export interface RunHistoricalEvaluationArgs {
@@ -263,51 +268,71 @@ export async function collectReplayEvidence(args: {
   cutoffAt: string;
   providers: EvidenceProvider[];
   evidenceCacheStore: EvidenceCacheStore;
+  sharedEvidenceStore?: Map<string, EvidenceItem[]>;
+  warningCollector?: (warning: string) => void;
 }): Promise<EvidenceItem[]> {
-  const rawItems: EvidenceItem[] = [];
+  const rawItems = (
+    await Promise.all(
+      args.providers.map(async (provider) => {
+        try {
+          let providerItems: EvidenceItem[];
 
-  for (const provider of args.providers) {
-    let providerItems: EvidenceItem[];
+          if (args.env.CASSANDRA_ADAPTER_MODE === "fixture") {
+            providerItems = await provider.collect({
+              event: args.event,
+              evaluationTime: args.cutoffAt,
+              mode: args.env.CASSANDRA_ADAPTER_MODE,
+            });
+          } else {
+            const sharedCacheKey = `${args.event.id}:${provider.name}`;
+            const sharedEvidence = args.sharedEvidenceStore?.get(sharedCacheKey);
 
-    if (args.env.CASSANDRA_ADAPTER_MODE === "fixture") {
-      providerItems = await provider.collect({
-        event: args.event,
-        evaluationTime: args.cutoffAt,
-        mode: args.env.CASSANDRA_ADAPTER_MODE,
-      });
-    } else {
-      const cacheKey = buildReplayEvidenceCacheKey({
-        eventId: args.event.id,
-        question: args.event.question,
-        cutoffAt: args.cutoffAt,
-        providerName: provider.name,
-      });
-      const cached = await args.evidenceCacheStore.get(cacheKey);
+            if (sharedEvidence) {
+              providerItems = sharedEvidence;
+            } else {
+              const cacheKey = buildReplayEvidenceCacheKey({
+                eventId: args.event.id,
+                question: args.event.question,
+                cutoffAt: args.cutoffAt,
+                providerName: provider.name,
+              });
+              const cached = await args.evidenceCacheStore.get(cacheKey);
 
-      if (cached) {
-        providerItems = JSON.parse(cached) as EvidenceItem[];
-      } else {
-        providerItems = await provider.collect({
-          event: args.event,
-          evaluationTime: args.cutoffAt,
-          mode: args.env.CASSANDRA_ADAPTER_MODE,
-        });
+              if (cached) {
+                providerItems = JSON.parse(cached) as EvidenceItem[];
+              } else {
+                providerItems = await provider.collect({
+                  event: args.event,
+                  evaluationTime: args.cutoffAt,
+                  mode: args.env.CASSANDRA_ADAPTER_MODE,
+                });
 
-        await args.evidenceCacheStore.set(
-          cacheKey,
-          JSON.stringify(providerItems),
-          DEFAULT_EVIDENCE_CACHE_TTL_SECONDS,
-        );
-      }
-    }
+                await args.evidenceCacheStore.set(
+                  cacheKey,
+                  JSON.stringify(providerItems),
+                  DEFAULT_EVIDENCE_CACHE_TTL_SECONDS,
+                );
+              }
 
-    rawItems.push(
-      ...filterEvidenceForCutoff(providerItems, args.cutoffAt).map((item) => ({
-        ...item,
-        eventId: args.event.id,
-      })),
-    );
-  }
+              args.sharedEvidenceStore?.set(sharedCacheKey, providerItems);
+            }
+          }
+
+          return filterEvidenceForCutoff(providerItems, args.cutoffAt).map((item) => ({
+            ...item,
+            eventId: args.event.id,
+          }));
+        } catch (error) {
+          args.warningCollector?.(
+            `Provider ${provider.name} failed for ${args.event.id} at ${args.cutoffAt}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return [];
+        }
+      }),
+    )
+  ).flat();
 
   return normalizeEvidenceItems(rawItems).map((item) => ({
     ...item,
@@ -315,39 +340,100 @@ export async function collectReplayEvidence(args: {
   }));
 }
 
+export function buildHistoricalPolymarketEvidenceItem(args: {
+  event: EventRecord;
+  market: BenchmarkMarket;
+  snapshot: BenchmarkPriceSnapshotRecord;
+}): EvidenceItem {
+  return {
+    id: `historical-polymarket:${args.snapshot.id}`,
+    eventId: args.event.id,
+    sourceFamily: "prediction_market",
+    sourceType: "quote_snapshot",
+    title: `${args.market.title} (historical Polymarket snapshot)`,
+    url: args.market.marketUrl,
+    publisher: "Polymarket benchmark snapshot",
+    publishedAt: new Date(args.snapshot.cutoffAt).toISOString(),
+    retrievedAt: new Date(args.snapshot.createdAt).toISOString(),
+    summary: `Historical Polymarket probability at cutoff: ${args.snapshot.probability}`,
+    rawText: null,
+    entities: args.event.entities,
+    claims: [args.market.resolutionCriteria],
+    stance: "unknown",
+    qualitySignals: {},
+    metadata: {
+      archivedRetrieval: true,
+      benchmarkPriceSnapshotId: args.snapshot.id,
+      benchmarkSnapshotSource: args.snapshot.source,
+      liquidity: args.snapshot.liquidity,
+      probability: args.snapshot.probability,
+      provider: "benchmarkPolymarket",
+      volume: args.snapshot.volume,
+    },
+  };
+}
+
 async function defaultEvaluateModelBaseline(
   args: EvaluateModelBaselineArgs,
 ): Promise<ModelBaselineEvaluationResult> {
+  const replayWarnings: string[] = [];
   const evidence = await collectReplayEvidence({
     env: args.env,
     event: args.event,
     cutoffAt: args.cutoff.cutoffAt,
     providers: providersForBaseline(args.baseline, args.evidenceProviders),
     evidenceCacheStore: args.evidenceCacheStore,
+    sharedEvidenceStore: args.sharedEvidenceStore,
+    warningCollector: (warning) => replayWarnings.push(warning),
   });
+  const replayEvidence =
+    args.baseline === "model_with_polymarket" && args.polymarketSnapshot
+      ? [
+          ...evidence,
+          buildHistoricalPolymarketEvidenceItem({
+            event: args.event,
+            market: args.market,
+            snapshot: args.polymarketSnapshot,
+          }),
+        ]
+      : evidence;
 
-  assertNoPolymarketLeak(args.baseline, evidence);
+  assertNoPolymarketLeak(args.baseline, replayEvidence);
 
-  const replayFidelity = inferReplayFidelity(evidence);
-  const verdictTrace = await evaluateEventForecast({
-    env: args.env,
-    event: args.event,
-    evaluationTime: args.cutoff.cutoffAt,
-    evidence,
-    calibrationSnapshot: args.calibrationSnapshot,
-    judgeCacheStore: args.judgeCacheStore,
-  });
+  const replayFidelity = inferReplayFidelity(replayEvidence);
+  const liveCoverage =
+    args.env.CASSANDRA_ADAPTER_MODE === "live"
+      ? assessLiveCoverageForEvidence(args.event, replayEvidence)
+      : null;
+  const verdictTrace =
+    liveCoverage && !liveCoverage.hasEnoughCitationCoverage
+      ? buildInsufficientEvidenceVerdictTraceForEvidence({
+          env: args.env,
+          event: args.event,
+          evidence: replayEvidence,
+          evaluationTime: args.cutoff.cutoffAt,
+          calibrationSnapshot: args.calibrationSnapshot,
+        })
+      : await evaluateEventForecast({
+          env: args.env,
+          event: args.event,
+          evaluationTime: args.cutoff.cutoffAt,
+          evidence: replayEvidence,
+          calibrationSnapshot: args.calibrationSnapshot,
+          judgeCacheStore: args.judgeCacheStore,
+        });
 
   return {
     probability: verdictTrace.finalProbability,
     replayFidelity,
-    leakageWarnings: [],
+    leakageWarnings: replayWarnings,
   };
 }
 
 export async function runHistoricalEvaluation(
   args: RunHistoricalEvaluationArgs,
 ): Promise<EvaluationRun> {
+  assertLiveEvaluationMode(args.env);
   const listBenchmarks = args.listBenchmarkMarkets ?? loadBenchmarkMarkets;
   const listSnapshots = args.listPriceSnapshotsForBenchmark ?? loadPriceSnapshotsForBenchmark;
   const getCalibrationSnapshot = args.getCalibrationSnapshot ?? getLatestCalibrationSnapshot;
@@ -380,6 +466,7 @@ export async function runHistoricalEvaluation(
     args.evidenceProviders ?? createDefaultJudgmentEvidenceProviders(args.env);
   const evidenceCacheStore = args.evidenceCacheStore ?? new InMemoryEvidenceCacheStore();
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
+  const sharedEvidenceStore = new Map<string, EvidenceItem[]>();
   const predictions: EvaluationPredictionInput[] = [];
   const leakageWarnings = new Set<string>();
   let replayFidelity: EvaluationRun["replayFidelity"] = "exact";
@@ -418,10 +505,12 @@ export async function runHistoricalEvaluation(
               market,
               cutoff,
               baseline,
+              polymarketSnapshot,
               calibrationSnapshot,
               evidenceProviders,
               evidenceCacheStore,
               judgeCacheStore,
+              sharedEvidenceStore,
             });
             predictedProbability = evaluated.probability;
 

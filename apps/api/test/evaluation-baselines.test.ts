@@ -43,6 +43,19 @@ describe("evaluation baselines", () => {
     expect(filtered.map((provider) => provider.name)).toEqual(["perplexity", "marketProvider"]);
   });
 
+  it("filters live Polymarket providers for model_with_polymarket replay", () => {
+    const providers = [
+      { name: "officialSearch", collect: async () => [] },
+      { name: "web", collect: async () => [] },
+      { name: "polymarketGamma", collect: async () => [] },
+      { name: "polymarketClob", collect: async () => [] },
+    ] satisfies EvidenceProvider[];
+
+    const filtered = providersForBaseline("model_with_polymarket", providers);
+
+    expect(filtered.map((provider) => provider.name)).toEqual(["officialSearch", "web"]);
+  });
+
   it("fails closed when Polymarket evidence leaks into model_without_polymarket", () => {
     const leakedEvidence: EvidenceItem[] = [
       {

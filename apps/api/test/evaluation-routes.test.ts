@@ -92,55 +92,17 @@ describe("evaluation routes", () => {
     }
   });
 
-  it("imports fixture benchmark markets without calling Polymarket in fixture mode", async () => {
-    const captured: unknown[][] = [];
-    const pool = {
-      async query(_text: string, params?: unknown[]) {
-        captured.push(params ?? []);
-
-        const [
-          id,
-          benchmarkSetId,
-          title,
-          resolutionCriteria,
-          theme,
-          volume,
-          liquidity,
-          resolvedAt,
-          resolvedValue,
-          marketUrl,
-        ] = params ?? [];
-
-        return {
-          rows: [
-            {
-              id,
-              benchmark_set_id: benchmarkSetId,
-              title,
-              resolution_criteria: resolutionCriteria,
-              theme,
-              volume,
-              liquidity,
-              resolved_at: new Date(String(resolvedAt)),
-              resolved_value: resolvedValue,
-              market_url: marketUrl,
-            },
-          ],
-        };
-      },
-    } as never;
-
+  it("rejects benchmark imports when evaluation is running in fixture mode", async () => {
     const app = buildApp({
-      dbPool: pool,
+      dbPool: {
+        query: async () => ({ rows: [] }),
+      } as never,
       env: getEnv({
         DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
       }),
-      fetchImpl: async () => {
-        throw new Error("fixture import should not hit the network");
-      },
     });
 
     try {
@@ -149,28 +111,10 @@ describe("evaluation routes", () => {
         url: "/evaluation/benchmarks/import/polymarket",
       });
 
-      expect(response.statusCode).toBe(201);
+      expect(response.statusCode).toBe(409);
       expect(response.json()).toEqual({
-        imported: 3,
-        markets: [
-          expect.objectContaining({
-            benchmarkSetId: "polymarket_recent_resolved",
-            id: "fixture-market-fed-hold",
-            theme: "macro",
-          }),
-          expect.objectContaining({
-            benchmarkSetId: "polymarket_recent_resolved",
-            id: "fixture-market-eu-fine",
-            theme: "policy",
-          }),
-          expect.objectContaining({
-            benchmarkSetId: "polymarket_recent_resolved",
-            id: "fixture-market-launch-delay",
-            theme: "technology",
-          }),
-        ],
+        error: "Real evaluations require CASSANDRA_ADAPTER_MODE=live",
       });
-      expect(captured).toHaveLength(3);
     } finally {
       await app.close();
     }
@@ -386,7 +330,7 @@ describe("evaluation routes", () => {
         DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
     });
 
@@ -440,7 +384,7 @@ describe("evaluation routes", () => {
         DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
       runEvaluation: async (input) => {
         expect(input).toEqual({
@@ -466,7 +410,7 @@ describe("evaluation routes", () => {
     }
   });
 
-  it("rejects invalid evaluation run input", async () => {
+  it("rejects evaluation runs when adapter mode is fixture", async () => {
     const app = buildApp({
       dbPool: {
         query: async () => ({ rows: [] }),
@@ -476,6 +420,40 @@ describe("evaluation routes", () => {
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+      runEvaluation: async () => {
+        throw new Error("route should reject fixture-mode evaluation runs before execution");
+      },
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/evaluation/runs",
+        payload: {
+          benchmarkSetId: "benchmark-set-1",
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error: "Real evaluations require CASSANDRA_ADAPTER_MODE=live",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects invalid evaluation run input", async () => {
+    const app = buildApp({
+      dbPool: {
+        query: async () => ({ rows: [] }),
+      } as never,
+      env: getEnv({
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://localhost:8000",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
     });
 
@@ -507,7 +485,7 @@ describe("evaluation routes", () => {
         DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
       runEvaluation: async () => {
         throw new Error("No benchmark markets available for evaluation");
@@ -541,7 +519,7 @@ describe("evaluation routes", () => {
         DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
-        CASSANDRA_ADAPTER_MODE: "fixture",
+        CASSANDRA_ADAPTER_MODE: "live",
       }),
       runEvaluation: async () => {
         throw new Error("Benchmark markets not found: missing-market");
