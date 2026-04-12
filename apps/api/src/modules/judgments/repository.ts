@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 
-import type { JudgeOpinion, VerdictTrace } from "@cassandra/shared";
+import type {
+  JudgeOpinion,
+  JudgmentExecutionLogEntry,
+  VerdictTrace,
+} from "@cassandra/shared";
 import type { Pool } from "pg";
 
 export interface JudgmentRecord {
@@ -8,6 +12,7 @@ export interface JudgmentRecord {
   eventId: string;
   status: string;
   verdictTrace: VerdictTrace | null;
+  executionLog: JudgmentExecutionLogEntry[];
   createdAt: string;
   updatedAt: string;
 }
@@ -25,6 +30,9 @@ function mapJudgmentRow(row: Record<string, unknown>): JudgmentRecord {
       row.verdict_trace && typeof row.verdict_trace === "object"
         ? (row.verdict_trace as VerdictTrace)
         : null,
+    executionLog: Array.isArray(row.execution_log)
+      ? (row.execution_log as JudgmentExecutionLogEntry[])
+      : [],
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -55,14 +63,15 @@ function mapJudgeOpinionRow(row: Record<string, unknown>): JudgeOpinion {
 export async function createJudgmentRun(
   pool: Pool,
   eventId: string,
+  executionLog: JudgmentExecutionLogEntry[] = [],
 ): Promise<JudgmentRecord> {
   const result = await pool.query(
     `
-      INSERT INTO judgments (id, event_id, status)
-      VALUES ($1, $2, 'queued')
+      INSERT INTO judgments (id, event_id, status, execution_log)
+      VALUES ($1, $2, 'queued', $3::jsonb)
       RETURNING *
     `,
-    [randomUUID(), eventId],
+    [randomUUID(), eventId, JSON.stringify(executionLog)],
   );
 
   return mapJudgmentRow(result.rows[0] as Record<string, unknown>);
@@ -152,6 +161,24 @@ export async function appendJudgmentTrace(
     await pool.query("ROLLBACK");
     throw error;
   }
+}
+
+export async function appendJudgmentExecutionLog(
+  pool: Pool,
+  judgmentId: string,
+  entries: JudgmentExecutionLogEntry | JudgmentExecutionLogEntry[],
+): Promise<void> {
+  const payload = Array.isArray(entries) ? entries : [entries];
+
+  await pool.query(
+    `
+      UPDATE judgments
+      SET execution_log = COALESCE(execution_log, '[]'::jsonb) || $2::jsonb,
+          updated_at = NOW()
+      WHERE id = $1
+    `,
+    [judgmentId, JSON.stringify(payload)],
+  );
 }
 
 export async function getJudgmentById(

@@ -178,6 +178,20 @@ describe("judgment routes and service", () => {
         id: queued.id,
         eventId: event.id,
         status: "completed",
+        executionLog: expect.arrayContaining([
+          expect.objectContaining({
+            stage: "queue",
+            message: expect.stringMatching(/queued/i),
+          }),
+          expect.objectContaining({
+            stage: "evidence",
+            message: expect.stringMatching(/evidence collection finished/i),
+          }),
+          expect.objectContaining({
+            stage: "storage",
+            message: expect.stringMatching(/persisted/i),
+          }),
+        ]),
         verdictTrace: expect.objectContaining({
           eventId: event.id,
           status: "completed",
@@ -290,6 +304,70 @@ describe("judgment routes and service", () => {
     expect(completed.verdictTrace?.finalProbability).toBeGreaterThanOrEqual(0.4);
     expect(completed.verdictTrace?.finalProbability).toBeLessThanOrEqual(0.6);
     expect(completed.verdictTrace?.citations.length).toBeGreaterThan(0);
+    expect(completed.executionLog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: "judge",
+          level: "warn",
+        }),
+      ]),
+    );
+  });
+
+  it("persists execution logs when a judgment run fails", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp secure approval by 2026-12-31?",
+      resolutionCriteria: "Approval must be announced by the regulator.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp"],
+      referenceClass: "regulatory_approval",
+      marketSymbols: [],
+    });
+
+    const queued = await createJudgmentRun(pool, event.id);
+
+    await expect(
+      runJudgment({
+        pool,
+        env: createFixtureEnv({
+          CASSANDRA_ADAPTER_MODE: "live",
+        }),
+        input: {
+          judgmentId: queued.id,
+          eventId: event.id,
+          evaluationTime: "2026-10-11T12:00:00Z",
+        },
+        evidenceProviders: [
+          {
+            name: "broken-provider",
+            async collect() {
+              throw new Error("upstream provider timeout");
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow("All 1 evidence provider(s) failed in live mode");
+
+    const stored = await getJudgmentById(pool, queued.id);
+
+    expect(stored?.status).toBe("failed");
+    expect(stored?.executionLog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: "run",
+          level: "info",
+          message: expect.stringMatching(/started/i),
+        }),
+        expect.objectContaining({
+          stage: "run",
+          level: "error",
+          message: expect.stringMatching(/failed/i),
+          details: expect.objectContaining({
+            error: expect.stringMatching(/All 1 evidence provider\(s\) failed in live mode/i),
+          }),
+        }),
+      ]),
+    );
   });
 
   it("lists recent judgments in reverse chronological order", async () => {

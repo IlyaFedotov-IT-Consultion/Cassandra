@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveApiBaseUrl } from "../src/api";
+import { extractApiErrorMessage, resolveApiBaseUrl } from "../src/api";
 
 describe("resolveApiBaseUrl", () => {
   it("maps Docker-internal api host to the browser host", () => {
@@ -31,5 +31,27 @@ describe("resolveApiBaseUrl", () => {
         protocol: "http:",
       }),
     ).toBe("http://192.168.1.50:3000");
+  });
+});
+
+describe("extractApiErrorMessage", () => {
+  it("prefers structured error and message fields", () => {
+    expect(extractApiErrorMessage({ error: "Bad request" }, 400)).toBe("Bad request");
+    expect(extractApiErrorMessage({ message: "Validation failed" }, 422)).toBe("Validation failed");
+  });
+
+  it("extracts first detail message from array-style payloads", () => {
+    expect(
+      extractApiErrorMessage(
+        {
+          detail: [{ msg: "Field required" }],
+        },
+        422,
+      ),
+    ).toBe("Field required");
+  });
+
+  it("falls back to the http status when no detail is available", () => {
+    expect(extractApiErrorMessage({}, 503)).toBe("Request failed with 503");
   });
 });

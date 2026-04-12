@@ -137,6 +137,7 @@ export function buildApp(checks: ReadinessChecks = {}) {
 
   app.get("/health", async () => ({
     status: "ok",
+    adapterMode: env.CASSANDRA_ADAPTER_MODE,
   }));
 
   app.get("/ready", async (request, reply) => {

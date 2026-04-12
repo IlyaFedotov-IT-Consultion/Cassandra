@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   type EvidenceItem,
+  type JudgmentExecutionLogEntry,
   VerdictTraceSchema,
   type CalibrationSnapshot,
   type JudgeOpinion,
@@ -40,6 +41,7 @@ import {
   type JudgeCacheStore,
 } from "./judgeCache.js";
 import {
+  appendJudgmentExecutionLog,
   appendJudgmentTrace,
   createJudgmentRun,
   getJudgmentById,
@@ -84,6 +86,7 @@ type SourceFamily = CitationRecord["sourceFamily"];
 type ConflictRecord = VerdictTrace["conflicts"][number];
 type MissingEvidenceRecord = VerdictTrace["missingEvidence"][number];
 type CacheTraceRecord = VerdictTrace["cacheEvents"][number];
+type JudgmentExecutionStage = JudgmentExecutionLogEntry["stage"];
 
 export interface JudgmentRecordDetails extends JudgmentRecord {
   judgeOpinions: JudgeOpinion[];
@@ -118,6 +121,50 @@ interface JudgmentEvidenceItem {
   metadata: Record<string, unknown>;
 }
 
+function buildJudgmentExecutionLogEntry(args: {
+  stage: JudgmentExecutionStage;
+  message: string;
+  level?: JudgmentExecutionLogEntry["level"];
+  details?: Record<string, unknown>;
+}): JudgmentExecutionLogEntry {
+  return {
+    timestamp: new Date().toISOString(),
+    stage: args.stage,
+    level: args.level ?? "info",
+    message: args.message,
+    details: args.details ?? {},
+  };
+}
+
+async function recordJudgmentExecutionLog(args: {
+  pool: Pool;
+  judgmentId: string;
+  logger?: AppLogger;
+  entry: JudgmentExecutionLogEntry;
+}): Promise<void> {
+  await appendJudgmentExecutionLog(args.pool, args.judgmentId, args.entry);
+
+  const payload = {
+    event: "judgment_execution_log",
+    stage: args.entry.stage,
+    level: args.entry.level,
+    timestamp: args.entry.timestamp,
+    details: args.entry.details,
+  };
+
+  if (args.entry.level === "error") {
+    args.logger?.error(payload, args.entry.message);
+    return;
+  }
+
+  if (args.entry.level === "warn") {
+    args.logger?.warn(payload, args.entry.message);
+    return;
+  }
+
+  args.logger?.info(payload, args.entry.message);
+}
+
 export interface JudgmentServiceDeps {
   pool: Pool;
   env: AppEnv;
@@ -148,6 +195,7 @@ export interface EvaluateEventForecastArgs {
 }
 
 interface LiveCoverageResult {
+  uniqueCitationCount: number;
   hasEnoughCitationCoverage: boolean;
   missingEvidence: MissingEvidenceRecord[];
 }
@@ -201,6 +249,7 @@ function assessLiveCoverage(
   });
 
   return {
+    uniqueCitationCount: uniqueCitationUrls.size,
     hasEnoughCitationCoverage:
       uniqueCitationUrls.size >= MIN_COMPLETED_LIVE_CITATIONS &&
       hasAuthoritativeCitation,
@@ -899,6 +948,20 @@ export async function runJudgment(args: JudgmentServiceDeps & {
 
   if (!event || event.id !== args.input.eventId) {
     await updateJudgmentStatus(args.pool, args.input.judgmentId, "failed");
+    await recordJudgmentExecutionLog({
+      pool: args.pool,
+      judgmentId: args.input.judgmentId,
+      logger: args.logger,
+      entry: buildJudgmentExecutionLogEntry({
+        stage: "run",
+        level: "error",
+        message: "Judgment failed because the event could not be loaded.",
+        details: {
+          expectedEventId: args.input.eventId,
+          storedEventId: judgment.eventId,
+        },
+      }),
+    });
     throw new Error(`Event not found: ${args.input.eventId}`);
   }
 
@@ -913,6 +976,19 @@ export async function runJudgment(args: JudgmentServiceDeps & {
     evaluationTime,
   });
   await updateJudgmentStatus(args.pool, judgment.id, "running");
+  await recordJudgmentExecutionLog({
+    pool: args.pool,
+    judgmentId: judgment.id,
+    logger,
+    entry: buildJudgmentExecutionLogEntry({
+      stage: "run",
+      message: "Judgment worker started.",
+      details: {
+        adapterMode: args.env.CASSANDRA_ADAPTER_MODE,
+        evaluationTime,
+      },
+    }),
+  });
 
   try {
     logger?.info(
@@ -931,6 +1007,25 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       logger,
     });
     const failedProviders = collected.providerRuns.filter((run) => run.error);
+    await recordJudgmentExecutionLog({
+      pool: args.pool,
+      judgmentId: judgment.id,
+      logger,
+      entry: buildJudgmentExecutionLogEntry({
+        stage: "evidence",
+        message: "Evidence collection finished.",
+        details: {
+          evidenceCount: collected.items.length,
+          providerRuns: collected.providerRuns.map((run) => ({
+            providerName: run.providerName,
+            rawCount: run.rawCount,
+            normalizedCount: run.normalizedCount,
+            cacheStatus: run.cacheStatus,
+            error: run.error ?? null,
+          })),
+        },
+      }),
+    });
     logger?.info(
       {
         event: "judgment_evidence_ready",
@@ -947,6 +1042,22 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       "judgment evidence ready",
     );
     if (failedProviders.length > 0) {
+      await recordJudgmentExecutionLog({
+        pool: args.pool,
+        judgmentId: judgment.id,
+        logger,
+        entry: buildJudgmentExecutionLogEntry({
+          stage: "evidence",
+          level: "warn",
+          message: "One or more evidence providers failed during the run.",
+          details: {
+            failedProviders: failedProviders.map((run) => ({
+              providerName: run.providerName,
+              error: run.error ?? null,
+            })),
+          },
+        }),
+      });
       logger?.warn(
         {
           event: "judgment_providers_degraded",
@@ -959,6 +1070,21 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       );
     }
     const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
+    await recordJudgmentExecutionLog({
+      pool: args.pool,
+      judgmentId: judgment.id,
+      logger,
+      entry: buildJudgmentExecutionLogEntry({
+        stage: "calibration",
+        message: "Calibration snapshot loaded.",
+        details: {
+          calibrationSnapshotId: calibrationSnapshot.id,
+          weightRegime: calibrationSnapshot.weightRegime,
+          approved: calibrationSnapshot.approved,
+          resolvedOutcomeCount: calibrationSnapshot.resolvedOutcomeCount,
+        },
+      }),
+    });
     const evidenceForCoverage: JudgmentEvidenceItem[] = collected.items.map((item) => ({
       id: item.id,
       eventId: item.eventId,
@@ -981,6 +1107,24 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       args.env.CASSANDRA_ADAPTER_MODE === "live"
         ? assessLiveCoverage(event, evidenceForCoverage)
         : null;
+    if (liveCoverage) {
+      await recordJudgmentExecutionLog({
+        pool: args.pool,
+        judgmentId: judgment.id,
+        logger,
+        entry: buildJudgmentExecutionLogEntry({
+          stage: "coverage",
+          level: liveCoverage.hasEnoughCitationCoverage ? "info" : "warn",
+          message: liveCoverage.hasEnoughCitationCoverage
+            ? "Live evidence coverage passed the minimum citation threshold."
+            : "Live evidence coverage was too weak for a normal completed verdict.",
+          details: {
+            uniqueCitationCount: liveCoverage.uniqueCitationCount,
+            hasEnoughCitationCoverage: liveCoverage.hasEnoughCitationCoverage,
+          },
+        }),
+      });
+    }
     const verdictTrace =
       liveCoverage && !liveCoverage.hasEnoughCitationCoverage
         ? buildInsufficientEvidenceVerdictTrace({
@@ -999,8 +1143,38 @@ export async function runJudgment(args: JudgmentServiceDeps & {
             judgeCacheStore,
             judgeClient,
           });
+    await recordJudgmentExecutionLog({
+      pool: args.pool,
+      judgmentId: judgment.id,
+      logger,
+      entry: buildJudgmentExecutionLogEntry({
+        stage: "judge",
+        message: "Judge output is ready.",
+        level: verdictTrace.status === "failed" ? "error" : verdictTrace.status === "insufficient_evidence" ? "warn" : "info",
+        details: {
+          judgmentStatus: verdictTrace.status,
+          finalProbability: verdictTrace.finalProbability,
+          citationCount: verdictTrace.citations.length,
+          judgeOpinionCount: verdictTrace.judgeOpinions.length,
+          cacheEvents: verdictTrace.cacheEvents,
+        },
+      }),
+    });
 
     await appendJudgmentTrace(args.pool, judgment.id, verdictTrace);
+    await recordJudgmentExecutionLog({
+      pool: args.pool,
+      judgmentId: judgment.id,
+      logger,
+      entry: buildJudgmentExecutionLogEntry({
+        stage: "storage",
+        message: "Judgment trace and opinions were persisted.",
+        details: {
+          verdictStatus: verdictTrace.status,
+          storedJudgeOpinionCount: verdictTrace.judgeOpinions.length,
+        },
+      }),
+    });
 
     const stored = await loadJudgmentDetails(args.pool, judgment.id);
 
@@ -1020,6 +1194,24 @@ export async function runJudgment(args: JudgmentServiceDeps & {
     return stored;
   } catch (error) {
     await updateJudgmentStatus(args.pool, judgment.id, "failed");
+    await recordJudgmentExecutionLog({
+      pool: args.pool,
+      judgmentId: judgment.id,
+      logger,
+      entry: buildJudgmentExecutionLogEntry({
+        stage: "run",
+        level: "error",
+        message: "Judgment run failed.",
+        details: {
+          error:
+            error instanceof Error
+              ? error.message
+              : typeof error === "string"
+                ? error
+                : "Unknown error",
+        },
+      }),
+    });
     logger?.error(
       {
         event: "judgment_failed",
@@ -1048,7 +1240,15 @@ export async function enqueueJudgmentRun(
     throw new Error(`Event not found: ${eventId}`);
   }
 
-  return createJudgmentRun(pool, eventId);
+  return createJudgmentRun(pool, eventId, [
+    buildJudgmentExecutionLogEntry({
+      stage: "queue",
+      message: "Judgment was queued for background processing.",
+      details: {
+        eventId,
+      },
+    }),
+  ]);
 }
 
 export function createEvidenceCacheStore(

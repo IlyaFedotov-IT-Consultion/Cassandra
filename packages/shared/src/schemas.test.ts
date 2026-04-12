@@ -357,6 +357,18 @@ describe("workspace response schemas", () => {
     });
 
     expect(
+      JudgmentRecordDetailsSchema.parse({
+        id: "judgment-2",
+        eventId: "event-1",
+        status: "failed",
+        verdictTrace: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        judgeOpinions: [],
+      }).executionLog,
+    ).toEqual([]);
+
+    expect(
       BenchmarkSetSummarySchema.parse({
         benchmarkSetId: "polymarket_recent_resolved",
         marketCount: 42,

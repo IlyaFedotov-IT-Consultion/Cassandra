@@ -26,6 +26,7 @@ describe("GET /health", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       status: "ok",
+      adapterMode: "fixture",
     });
   });
 

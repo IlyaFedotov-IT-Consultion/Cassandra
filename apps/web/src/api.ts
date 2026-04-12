@@ -42,6 +42,11 @@ interface BenchmarkImportResult {
   markets: BenchmarkMarket[];
 }
 
+interface HealthResponse {
+  status: string;
+  adapterMode: string | null;
+}
+
 const defaultApiBaseUrl = String(import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000");
 
 export function resolveApiBaseUrl(
@@ -71,6 +76,50 @@ export function resolveApiBaseUrl(
 
 export const apiBaseUrl = resolveApiBaseUrl(defaultApiBaseUrl);
 
+export function extractApiErrorMessage(payload: unknown, status: number) {
+  if (typeof payload === "string" && payload.trim().length > 0) {
+    return payload;
+  }
+
+  if (payload && typeof payload === "object") {
+    if ("error" in payload && typeof payload.error === "string" && payload.error.trim().length > 0) {
+      return payload.error;
+    }
+
+    if ("message" in payload && typeof payload.message === "string" && payload.message.trim().length > 0) {
+      return payload.message;
+    }
+
+    if ("detail" in payload) {
+      const { detail } = payload;
+
+      if (typeof detail === "string" && detail.trim().length > 0) {
+        return detail;
+      }
+
+      if (Array.isArray(detail) && detail.length > 0) {
+        const [firstDetail] = detail;
+
+        if (typeof firstDetail === "string" && firstDetail.trim().length > 0) {
+          return firstDetail;
+        }
+
+        if (
+          firstDetail &&
+          typeof firstDetail === "object" &&
+          "msg" in firstDetail &&
+          typeof firstDetail.msg === "string" &&
+          firstDetail.msg.trim().length > 0
+        ) {
+          return firstDetail.msg;
+        }
+      }
+    }
+  }
+
+  return `Request failed with ${status}`;
+}
+
 async function requestJson<T>(
   path: string,
   schema: { parse(value: unknown): T },
@@ -91,11 +140,7 @@ async function requestJson<T>(
   const payload = contentType.includes("application/json") ? await response.json() : await response.text();
 
   if (!response.ok) {
-    const errorMessage =
-      payload && typeof payload === "object" && "error" in payload
-        ? String(payload.error)
-        : `Request failed with ${response.status}`;
-    throw new Error(errorMessage);
+    throw new Error(extractApiErrorMessage(payload, response.status));
   }
 
   return schema.parse(payload);
@@ -126,7 +171,11 @@ export async function fetchHealth() {
 
       return {
         status: String(value.status),
-      };
+        adapterMode:
+          "adapterMode" in value && typeof value.adapterMode === "string"
+            ? value.adapterMode
+            : null,
+      } satisfies HealthResponse;
     },
   });
 }

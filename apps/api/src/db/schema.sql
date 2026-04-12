@@ -71,9 +71,13 @@ CREATE TABLE IF NOT EXISTS judgments (
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'queued',
   verdict_trace JSONB,
+  execution_log JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE judgments
+  ADD COLUMN IF NOT EXISTS execution_log JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS judge_opinions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

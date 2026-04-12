@@ -215,6 +215,26 @@ export const CacheTraceEntrySchema = z
   })
   .strict();
 
+export const JudgmentExecutionLogLevelSchema = z.enum(["info", "warn", "error"]);
+export const JudgmentExecutionStageSchema = z.enum([
+  "queue",
+  "run",
+  "evidence",
+  "coverage",
+  "calibration",
+  "judge",
+  "storage",
+]);
+export const JudgmentExecutionLogEntrySchema = z
+  .object({
+    timestamp: TimestampSchema,
+    level: JudgmentExecutionLogLevelSchema,
+    stage: JudgmentExecutionStageSchema,
+    message: z.string().min(1),
+    details: JsonMapSchema.default({}),
+  })
+  .strict();
+
 export const CitationSchema = z
   .object({
     title: z.string().min(1),
@@ -416,6 +436,7 @@ export const JudgmentRecordSummarySchema = z
     eventId: IdSchema,
     status: JudgmentStatusSchema,
     verdictTrace: VerdictTraceSchema.nullable(),
+    executionLog: z.array(JudgmentExecutionLogEntrySchema).default([]),
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
   })
@@ -436,6 +457,7 @@ export const CassandraSchemaBundleSchema = z
     EvidenceItem: EvidenceItemSchema,
     JudgeOpinion: JudgeOpinionSchema,
     VerdictTrace: VerdictTraceSchema,
+    JudgmentExecutionLogEntry: JudgmentExecutionLogEntrySchema,
     JudgmentRecordSummary: JudgmentRecordSummarySchema,
     JudgmentRecordDetails: JudgmentRecordDetailsSchema,
     OutcomeInput: OutcomeInputSchema,
@@ -459,6 +481,7 @@ export type CandidateEventRecord = z.infer<typeof CandidateEventRecordSchema>;
 export type EvidenceItem = z.infer<typeof EvidenceItemSchema>;
 export type JudgeOpinion = z.infer<typeof JudgeOpinionSchema>;
 export type VerdictTrace = z.infer<typeof VerdictTraceSchema>;
+export type JudgmentExecutionLogEntry = z.infer<typeof JudgmentExecutionLogEntrySchema>;
 export type JudgmentRecordSummary = z.infer<typeof JudgmentRecordSummarySchema>;
 export type JudgmentRecordDetails = z.infer<typeof JudgmentRecordDetailsSchema>;
 export type OutcomeInput = z.infer<typeof OutcomeInputSchema>;

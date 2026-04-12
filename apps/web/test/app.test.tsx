@@ -47,6 +47,7 @@ describe("workspace app", () => {
       if (method === "GET" && url.endsWith("/health")) {
         return createResponse({
           status: "ok",
+          adapterMode: "live",
         });
       }
 
@@ -99,6 +100,35 @@ describe("workspace app", () => {
             id: "judgment-1",
             eventId: "event-1",
             status: "completed",
+            executionLog: [
+              {
+                timestamp: "2026-01-03T00:00:00Z",
+                level: "info",
+                stage: "queue",
+                message: "Judgment was queued for background processing.",
+                details: {
+                  eventId: "event-1",
+                },
+              },
+              {
+                timestamp: "2026-01-03T00:01:00Z",
+                level: "info",
+                stage: "evidence",
+                message: "Evidence collection finished.",
+                details: {
+                  evidenceCount: 9,
+                  providerRuns: [
+                    {
+                      providerName: "officialSearch",
+                      rawCount: 3,
+                      normalizedCount: 3,
+                      cacheStatus: "miss",
+                      error: null,
+                    },
+                  ],
+                },
+              },
+            ],
             verdictTrace: {
               id: "trace-1",
               eventId: "event-1",
@@ -244,6 +274,35 @@ describe("workspace app", () => {
           id: "judgment-1",
           eventId: "event-1",
           status: "completed",
+          executionLog: [
+            {
+              timestamp: "2026-01-03T00:00:00Z",
+              level: "info",
+              stage: "queue",
+              message: "Judgment was queued for background processing.",
+              details: {
+                eventId: "event-1",
+              },
+            },
+            {
+              timestamp: "2026-01-03T00:01:00Z",
+              level: "info",
+              stage: "evidence",
+              message: "Evidence collection finished.",
+              details: {
+                evidenceCount: 9,
+                providerRuns: [
+                  {
+                    providerName: "officialSearch",
+                    rawCount: 3,
+                    normalizedCount: 3,
+                    cacheStatus: "miss",
+                    error: null,
+                  },
+                ],
+              },
+            },
+          ],
           verdictTrace: {
             id: "trace-1",
             eventId: "event-1",
@@ -352,6 +411,148 @@ describe("workspace app", () => {
         });
       }
 
+      if (method === "GET" && url.endsWith("/judgments/judgment-failed")) {
+        return createResponse({
+          id: "judgment-failed",
+          eventId: "event-1",
+          status: "failed",
+          verdictTrace: null,
+          executionLog: [
+            {
+              timestamp: "2026-01-03T00:10:00Z",
+              level: "info",
+              stage: "run",
+              message: "Judgment worker started.",
+              details: {
+                adapterMode: "live",
+              },
+            },
+            {
+              timestamp: "2026-01-03T00:11:00Z",
+              level: "error",
+              stage: "run",
+              message: "Judgment run failed.",
+              details: {
+                error: "Judge service returned invalid response",
+              },
+            },
+          ],
+          createdAt: "2026-01-03T00:10:00Z",
+          updatedAt: "2026-01-03T00:11:00Z",
+          judgeOpinions: [],
+        });
+      }
+
+      if (method === "GET" && url.endsWith("/judgments/judgment-insufficient")) {
+        return createResponse({
+          id: "judgment-insufficient",
+          eventId: "event-1",
+          status: "insufficient_evidence",
+          executionLog: [
+            {
+              timestamp: "2026-01-03T00:10:00Z",
+              level: "warn",
+              stage: "coverage",
+              message: "Live evidence coverage was too weak for a normal completed verdict.",
+              details: {
+                usableCitationCount: 1,
+                hasEnoughCitationCoverage: false,
+              },
+            },
+          ],
+          verdictTrace: {
+            id: "trace-insufficient",
+            eventId: "event-1",
+            evaluationTime: "2026-01-03T00:00:00Z",
+            referenceClass: "product_launch",
+            referenceClassFallback: null,
+            priorProbability: 0.42,
+            rawPosteriorProbability: 0.5,
+            finalProbability: 0.5,
+            confidenceLow: 0.44,
+            confidenceHigh: 0.56,
+            dependencyMatrix: [],
+            disagreementShrinkage: 0.02,
+            judgeOpinions: [
+              {
+                judgeName: "official_records",
+                probability: 0.5,
+                confidence: 0.55,
+                evidenceStrength: "neutral",
+                rationale: "Coverage is too thin to move off the base rate.",
+                evidenceIds: [],
+                warnings: ["Coverage is limited."],
+                logBayesFactor: 0,
+                baseWeight: 0.4,
+                dependencyDiscount: 1,
+                freshnessDecay: 1,
+                effectiveLogOddsContribution: 0,
+                missingEvidence: ["Independent confirmation"],
+              },
+            ],
+            weightBreakdown: [
+              {
+                source: "official_records",
+                weight: 0.4,
+                details: {},
+              },
+            ],
+            ensembleMethod: "logarithmic_opinion_pool",
+            calibrationMethod: "identity",
+            uncertaintyMethod: "bootstrap",
+            weightRegime: "warming",
+            replayFidelity: "exact",
+            conflicts: [],
+            missingEvidence: [
+              {
+                claim: "Independent confirmation of the launch timeline",
+                sourceFamily: "web",
+                reason: "Only one source family produced usable evidence.",
+              },
+            ],
+            citations: [
+              {
+                title: "Single source report",
+                url: "https://example.com/single-source",
+                sourceFamily: "official",
+              },
+            ],
+            cacheEvents: [
+              {
+                layer: "judge_output",
+                target: "panel",
+                status: "miss",
+              },
+            ],
+            modelVersion: "judge-v1",
+            weightVersion: "weights-v1",
+            calibrationVersion: "cal-v1",
+            status: "insufficient_evidence",
+          },
+          createdAt: "2026-01-03T00:10:00Z",
+          updatedAt: "2026-01-03T00:11:00Z",
+          judgeOpinions: [
+            {
+              id: "opinion-insufficient",
+              judgmentId: "judgment-insufficient",
+              judgeName: "official_records",
+              probability: 0.5,
+              confidence: 0.55,
+              evidenceStrength: "neutral",
+              rationale: "Coverage is too thin to move off the base rate.",
+              evidenceIds: [],
+              warnings: ["Coverage is limited."],
+              logBayesFactor: 0,
+              baseWeight: 0.4,
+              dependencyDiscount: 1,
+              freshnessDecay: 1,
+              effectiveLogOddsContribution: 0,
+              missingEvidence: ["Independent confirmation"],
+            },
+          ],
+        });
+      }
+
       if (method === "POST" && url.endsWith("/judgments")) {
         return createResponse(
           {
@@ -359,12 +560,50 @@ describe("workspace app", () => {
             eventId: "event-1",
             status: "queued",
             verdictTrace: null,
+            executionLog: [],
             createdAt: "2026-01-03T00:10:00Z",
             updatedAt: "2026-01-03T00:10:00Z",
             judgeOpinions: [],
           },
           {
             status: 202,
+          },
+        );
+      }
+
+      if (method === "POST" && url.endsWith("/events")) {
+        const body =
+          init?.body && typeof init.body === "string"
+            ? (JSON.parse(init.body) as { question?: string })
+            : {};
+
+        if (body.question === "Fail event creation") {
+          return createResponse(
+            {
+              error: "Question rejected by policy",
+            },
+            {
+              status: 400,
+            },
+          );
+        }
+
+        return createResponse(
+          {
+            id: "event-new",
+            question: body.question ?? "New event",
+            resolutionCriteria: "Launch must be publicly announced.",
+            deadline: "2026-12-31T23:59:59Z",
+            status: "draft",
+            entities: ["Example Corp"],
+            referenceClass: null,
+            marketSymbols: [],
+            polymarketMarketId: null,
+            createdAt: "2026-01-03T00:10:00Z",
+            updatedAt: "2026-01-03T00:10:00Z",
+          },
+          {
+            status: 201,
           },
         );
       }
@@ -689,8 +928,11 @@ describe("workspace app", () => {
     expect(screen.getByRole("link", { name: "Calibration" })).toBeVisible();
 
     expect(await screen.findByRole("heading", { name: /events workspace/i })).toBeVisible();
+    expect(screen.getByText(/workspace mode/i)).toBeVisible();
+    expect(screen.getByText(/^Live$/i)).toBeVisible();
     expect(screen.getByText(/Will Example Corp launch Product X/i)).toBeVisible();
     expect(screen.getAllByText("63.0%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/evidence collection finished/i).length).toBeGreaterThan(0);
   });
 
   it("renders the structured judgment trace view", async () => {
@@ -706,6 +948,28 @@ describe("workspace app", () => {
       "href",
       "https://example.com/release",
     );
+    expect(screen.getByRole("heading", { name: /execution logs/i })).toBeVisible();
+    expect(screen.getByText(/evidence collection finished/i)).toBeVisible();
+    expect(screen.getByText(/officialSearch/i)).toBeVisible();
+  });
+
+  it("shows a failure-specific state when a judgment run fails without a trace", async () => {
+    renderApp(["/judgments/judgment-failed"]);
+
+    expect(await screen.findByRole("heading", { name: /judgment trace/i })).toBeVisible();
+    expect(screen.getByText(/judgment failed/i)).toBeVisible();
+    expect(screen.getAllByText(/failed before a complete trace could be persisted/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/trace unavailable/i)).toBeVisible();
+    expect(screen.getByText(/judge service returned invalid response/i)).toBeVisible();
+  });
+
+  it("shows an insufficient-evidence banner for degraded completed judgments", async () => {
+    renderApp(["/judgments/judgment-insufficient"]);
+
+    expect(await screen.findByRole("heading", { name: /judgment trace/i })).toBeVisible();
+    expect(screen.getAllByText(/insufficient evidence/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/coverage was too weak/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/single source report/i)).toBeVisible();
   });
 
   it("shows watchlist candidate review and pre-fills the event seed panel", async () => {
@@ -763,6 +1027,55 @@ describe("workspace app", () => {
 
     expect(await screen.findByRole("heading", { name: /event detail/i })).toBeVisible();
     expect(screen.getByRole("link", { name: /back to events/i })).toHaveAttribute("href", "/events");
+    expect(screen.getByText(/evidence collection finished/i)).toBeVisible();
+  });
+
+  it("shows a runtime activity feed in the judgments workspace", async () => {
+    renderApp(["/judgments"]);
+
+    expect(await screen.findByRole("heading", { name: /judgments workspace/i })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /live activity feed/i })).toBeVisible();
+    expect(screen.getAllByText(/evidence collection finished/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/judgment judgment-1/i).length).toBeGreaterThan(0);
+  });
+
+  it("filters the dedicated runtime console", async () => {
+    const user = userEvent.setup();
+
+    renderApp(["/runtime"]);
+
+    expect(await screen.findByRole("heading", { name: /runtime console/i })).toBeVisible();
+    expect(screen.getByText(/evidence collection finished/i)).toBeVisible();
+
+    await user.selectOptions(screen.getByLabelText(/runtime stage filter/i), "queue");
+
+    expect(screen.getByText(/judgment was queued for background processing/i)).toBeVisible();
+    expect(screen.queryByText(/evidence collection finished/i)).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/runtime stage filter/i), "all");
+    await user.type(screen.getByLabelText(/search runtime logs/i), "background processing");
+
+    expect(screen.getByText(/judgment was queued for background processing/i)).toBeVisible();
+    expect(screen.queryByText(/evidence collection finished/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps create-event failures visible inside the dialog", async () => {
+    const user = userEvent.setup();
+
+    renderApp(["/events"]);
+
+    expect(await screen.findByRole("heading", { name: /events workspace/i })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /create event/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /create event/i });
+    await user.type(within(dialog).getByLabelText(/^Question$/i), "Fail event creation");
+    await user.type(within(dialog).getByLabelText(/^Deadline$/i), "2026-12-31T23:59");
+    await user.type(within(dialog).getByLabelText(/^Resolution Criteria$/i), "Launch must be announced.");
+    await user.type(within(dialog).getByLabelText(/^Entities$/i), "Example Corp");
+
+    await user.click(within(dialog).getByRole("button", { name: /^Create event$/i }));
+
+    expect(await within(dialog).findByText(/question rejected by policy/i)).toBeVisible();
   });
 
   it("loads calibration history and retrains a new snapshot", async () => {

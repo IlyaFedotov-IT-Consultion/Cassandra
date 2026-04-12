@@ -51,6 +51,7 @@ import {
   type CandidateEventRecord,
   type EvaluationRun,
   type EventRecord,
+  type JudgmentRecordDetails,
   type JudgmentRecordSummary,
 } from "./api";
 import { formatDateTime, humanizeToken } from "./format";
@@ -71,6 +72,7 @@ const navItems = [
   { to: "/events", label: "Events" },
   { to: "/watchlists", label: "Watchlists" },
   { to: "/judgments", label: "Judgments" },
+  { to: "/runtime", label: "Runtime" },
   { to: "/evaluation", label: "Evaluation" },
   { to: "/calibration", label: "Calibration" },
 ] as const;
@@ -86,6 +88,30 @@ const referenceClassValues = [
 ] as const;
 
 type EventReferenceClass = (typeof referenceClassValues)[number];
+type JudgmentState = JudgmentRecordSummary["status"];
+type StatusTone = "good" | "bad" | "warn" | "neutral";
+type ExecutionLogLevel = JudgmentRecordSummary["executionLog"][number]["level"];
+type ExecutionLogStage = JudgmentRecordSummary["executionLog"][number]["stage"];
+
+const executionLogLevelValues = ["all", "info", "warn", "error"] as const;
+const executionLogStageValues = [
+  "all",
+  "queue",
+  "run",
+  "evidence",
+  "coverage",
+  "calibration",
+  "judge",
+  "storage",
+] as const;
+const judgmentStatusFilterValues = [
+  "all",
+  "queued",
+  "running",
+  "completed",
+  "insufficient_evidence",
+  "failed",
+] as const;
 
 function formatProbability(value?: number | null) {
   return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "Pending";
@@ -93,6 +119,70 @@ function formatProbability(value?: number | null) {
 
 function formatDecimal(value: number) {
   return value.toFixed(2);
+}
+
+function getStatusTone(value: string): StatusTone {
+  switch (value) {
+    case "ok":
+    case "ready":
+    case "completed":
+    case "active":
+    case "approved":
+    case "promoted":
+    case "hit":
+    case "yes":
+      return "good";
+    case "failed":
+    case "not_ready":
+    case "error":
+      return "bad";
+    case "queued":
+    case "running":
+    case "pending":
+    case "insufficient_evidence":
+    case "miss":
+    case "bypass":
+      return "warn";
+    default:
+      return "neutral";
+  }
+}
+
+function describeJudgmentState(status: JudgmentState) {
+  switch (status) {
+    case "queued":
+      return {
+        tone: "neutral" as const,
+        title: "Judgment queued",
+        body: "This run is waiting for the worker to pick it up. The page will refresh automatically.",
+      };
+    case "running":
+      return {
+        tone: "warn" as const,
+        title: "Judgment running",
+        body: "Evidence collection and judging are in progress. The page will keep polling until the run reaches a terminal state.",
+      };
+    case "insufficient_evidence":
+      return {
+        tone: "warn" as const,
+        title: "Insufficient evidence",
+        body: "The run completed, but the evidence coverage was too weak to support a normal completed verdict.",
+      };
+    case "failed":
+      return {
+        tone: "bad" as const,
+        title: "Judgment failed",
+        body: "This run failed before a complete trace could be persisted. Check the API logs for the underlying error and retry after the issue is fixed.",
+      };
+    default:
+      return null;
+  }
+}
+
+function getLatestExecutionLogEntry(
+  judgment: Pick<JudgmentRecordSummary, "executionLog">,
+) {
+  return judgment.executionLog.at(-1) ?? null;
 }
 
 function buildEventSeedDefaults(candidate: CandidateEventRecord) {
@@ -226,21 +316,40 @@ function ServiceStatusStrip() {
     queryFn: fetchReady,
     retry: false,
   });
+  const healthErrorMessage =
+    healthQuery.error instanceof Error ? healthQuery.error.message : null;
+  const readinessErrorMessage =
+    readyQuery.error instanceof Error ? readyQuery.error.message : null;
 
   return (
-    <section className="service-strip">
-      <StatusCard
-        label="Service Health"
-        value={healthQuery.data?.status ?? "Checking"}
-        tone={healthQuery.data?.status === "ok" ? "good" : healthQuery.isError ? "bad" : "neutral"}
-      />
-      <StatusCard
-        label="Readiness"
-        value={readyQuery.data?.status ?? "Checking"}
-        tone={readyQuery.data?.status === "ready" ? "good" : readyQuery.isError ? "bad" : "neutral"}
-      />
-      <StatusCard label="Workspace Mode" value="Fixture-ready" tone="neutral" />
-    </section>
+    <>
+      <section className="service-strip">
+        <StatusCard
+          label="Service Health"
+          value={healthQuery.data?.status ?? (healthQuery.isError ? "Unavailable" : "Checking")}
+          tone={healthQuery.data?.status === "ok" ? "good" : healthQuery.isError ? "bad" : "neutral"}
+        />
+        <StatusCard
+          label="Readiness"
+          value={readyQuery.data?.status ?? (readyQuery.isError ? "Unavailable" : "Checking")}
+          tone={readyQuery.data?.status === "ready" ? "good" : readyQuery.isError ? "bad" : "neutral"}
+        />
+        <StatusCard
+          label="Workspace Mode"
+          value={healthQuery.data?.adapterMode ? humanizeToken(healthQuery.data.adapterMode) : "Unknown"}
+          tone={healthQuery.data?.adapterMode ? getStatusTone(healthQuery.data.adapterMode) : "neutral"}
+        />
+      </section>
+      {healthErrorMessage || readinessErrorMessage ? (
+        <InlineError
+          message={
+            healthErrorMessage && readinessErrorMessage
+              ? `Health: ${healthErrorMessage} | Readiness: ${readinessErrorMessage}`
+              : healthErrorMessage ?? readinessErrorMessage ?? "Workspace status is unavailable"
+          }
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -251,7 +360,7 @@ function StatusCard({
 }: {
   label: string;
   value: string;
-  tone: "good" | "bad" | "neutral";
+  tone: StatusTone;
 }) {
   return (
     <div className={`status-card status-card--${tone}`}>
@@ -349,8 +458,254 @@ function InlineError({ message }: { message: string }) {
   return <div className="inline-error">{message}</div>;
 }
 
+function StatusBanner({
+  title,
+  body,
+  tone,
+}: {
+  title: string;
+  body: string;
+  tone: StatusTone;
+}) {
+  return (
+    <section className={`status-banner status-banner--${tone}`} role="status">
+      <strong>{title}</strong>
+      <p>{body}</p>
+    </section>
+  );
+}
+
 function StatusPill({ value }: { value: string }) {
-  return <span className="status-pill">{humanizeToken(value)}</span>;
+  return <span className={`status-pill status-pill--${getStatusTone(value)}`}>{humanizeToken(value)}</span>;
+}
+
+function RuntimeActivitySummary({
+  judgment,
+}: {
+  judgment: Pick<JudgmentRecordSummary, "status" | "updatedAt" | "executionLog">;
+}) {
+  const latestEntry = getLatestExecutionLogEntry(judgment);
+
+  return (
+    <div className="runtime-activity">
+      <p className="runtime-activity__message">
+        {latestEntry ? latestEntry.message : "No structured execution events recorded yet."}
+      </p>
+      <div className="runtime-activity__meta">
+        <StatusPill value={judgment.status} />
+        {latestEntry ? <StatusPill value={latestEntry.stage} /> : null}
+        {latestEntry ? <StatusPill value={latestEntry.level} /> : null}
+        <span>{formatDateTime(latestEntry?.timestamp ?? judgment.updatedAt)}</span>
+      </div>
+    </div>
+  );
+}
+
+function RuntimePage() {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<(typeof judgmentStatusFilterValues)[number]>("all");
+  const [stageFilter, setStageFilter] = useState<(typeof executionLogStageValues)[number]>("all");
+  const [levelFilter, setLevelFilter] = useState<(typeof executionLogLevelValues)[number]>("all");
+  const deferredSearch = useDeferredValue(search);
+  const judgmentsQuery = useQuery({
+    queryKey: ["judgments"],
+    queryFn: () => listJudgments(),
+  });
+
+  if (judgmentsQuery.isLoading) {
+    return <LoadingState label="Loading runtime activity…" />;
+  }
+
+  if (judgmentsQuery.isError) {
+    return <InlineError message={judgmentsQuery.error.message} />;
+  }
+
+  const judgments = judgmentsQuery.data ?? [];
+  const runtimeEntries = judgments
+    .flatMap((judgment) =>
+      judgment.executionLog.map((entry) => ({
+        judgmentId: judgment.id,
+        eventId: judgment.eventId,
+        judgmentStatus: judgment.status,
+        finalProbability: judgment.verdictTrace?.finalProbability ?? null,
+        entry,
+      })),
+    )
+    .sort((left, right) => right.entry.timestamp.localeCompare(left.entry.timestamp));
+
+  const normalizedSearch = deferredSearch.trim().toLowerCase();
+  const filteredEntries = runtimeEntries.filter((item) => {
+    if (statusFilter !== "all" && item.judgmentStatus !== statusFilter) {
+      return false;
+    }
+
+    if (stageFilter !== "all" && item.entry.stage !== stageFilter) {
+      return false;
+    }
+
+    if (levelFilter !== "all" && item.entry.level !== levelFilter) {
+      return false;
+    }
+
+    if (!normalizedSearch) {
+      return true;
+    }
+
+    const haystack = [
+      item.entry.message,
+      item.judgmentId,
+      item.eventId,
+      JSON.stringify(item.entry.details),
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(normalizedSearch);
+  });
+
+  const failureCount = runtimeEntries.filter((item) => item.entry.level === "error").length;
+  const warningCount = runtimeEntries.filter((item) => item.entry.level === "warn").length;
+
+  return (
+    <div className="page-stack">
+      <PageIntro
+        title="Runtime Console"
+        description="Inspect the live execution timeline across all judgment runs, with filters for status, stage, severity, and search terms."
+      />
+      <section className="metric-grid">
+        <MetricTile label="Runtime events" value={String(runtimeEntries.length)} />
+        <MetricTile label="Warnings" value={String(warningCount)} />
+        <MetricTile label="Errors" value={String(failureCount)} />
+      </section>
+      <SectionCard title="Activity Explorer" kicker="Runtime">
+        <div className="runtime-filters">
+          <input
+            aria-label="Search runtime logs"
+            className="search-input"
+            placeholder="Filter by message, judgment id, event id, or detail text"
+            value={search}
+            onChange={(event: ChangeEvent<HTMLInputElement>) => setSearch(event.target.value)}
+          />
+          <label>
+            <span>Status</span>
+            <select
+              aria-label="Runtime status filter"
+              value={statusFilter}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                setStatusFilter(event.target.value as (typeof judgmentStatusFilterValues)[number])
+              }
+            >
+              {judgmentStatusFilterValues.map((value) => (
+                <option key={value} value={value}>
+                  {value === "all" ? "All statuses" : humanizeToken(value)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Stage</span>
+            <select
+              aria-label="Runtime stage filter"
+              value={stageFilter}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                setStageFilter(event.target.value as (typeof executionLogStageValues)[number])
+              }
+            >
+              {executionLogStageValues.map((value) => (
+                <option key={value} value={value}>
+                  {value === "all" ? "All stages" : humanizeToken(value)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Severity</span>
+            <select
+              aria-label="Runtime severity filter"
+              value={levelFilter}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                setLevelFilter(event.target.value as (typeof executionLogLevelValues)[number])
+              }
+            >
+              {executionLogLevelValues.map((value) => (
+                <option key={value} value={value}>
+                  {value === "all" ? "All severities" : humanizeToken(value)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {filteredEntries.length === 0 ? (
+          <EmptyState
+            title="No runtime events match these filters"
+            body="Broaden the current search or clear one of the filters to see more activity."
+          />
+        ) : (
+          <div className="list-stack">
+            {filteredEntries.map((item, index) => (
+              <Link
+                key={`${item.judgmentId}-${item.entry.timestamp}-${index}`}
+                to={`/judgments/${item.judgmentId}`}
+                className="list-row list-row--runtime"
+              >
+                <div>
+                  <strong>{item.entry.message}</strong>
+                  <p>Judgment {item.judgmentId}</p>
+                  <p>Event {item.eventId}</p>
+                  {item.finalProbability !== null ? <p>Final probability {formatProbability(item.finalProbability)}</p> : null}
+                </div>
+                <div className="list-row__tail">
+                  <StatusPill value={item.judgmentStatus} />
+                  <StatusPill value={item.entry.stage} />
+                  <StatusPill value={item.entry.level} />
+                  <span>{formatDateTime(item.entry.timestamp)}</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
+function ExecutionLogTimeline({
+  entries,
+}: {
+  entries: JudgmentRecordDetails["executionLog"];
+}) {
+  return (
+    <SectionCard title="Execution Logs" kicker="Runtime">
+      {entries.length === 0 ? (
+        <EmptyState
+          title="No execution logs yet"
+          body="This judgment has not recorded any structured runtime events yet."
+        />
+      ) : (
+        <div className="log-timeline">
+          {entries.map((entry, index) => {
+            const hasDetails = Object.keys(entry.details).length > 0;
+
+            return (
+              <article key={`${entry.timestamp}-${entry.stage}-${index}`} className={`log-entry log-entry--${entry.level}`}>
+                <div className="log-entry__meta">
+                  <StatusPill value={entry.level} />
+                  <strong>{humanizeToken(entry.stage)}</strong>
+                  <span>{formatDateTime(entry.timestamp)}</span>
+                </div>
+                <p className="log-entry__message">{entry.message}</p>
+                {hasDetails ? (
+                  <pre className="json-block log-entry__details">
+                    {JSON.stringify(entry.details, null, 2)}
+                  </pre>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </SectionCard>
+  );
 }
 
 function DialogFrame({
@@ -491,6 +846,7 @@ function EventsPage() {
                   </div>
                   <h3>{event.question}</h3>
                   <p>{event.resolutionCriteria}</p>
+                  {latestJudgment ? <RuntimeActivitySummary judgment={latestJudgment} /> : null}
                   <div className="record-card__details">
                     <span>Deadline {formatDateTime(event.deadline)}</span>
                     <span>{event.entities.join(", ")}</span>
@@ -507,6 +863,13 @@ function EventsPage() {
       </SectionCard>
       <DialogFrame title="Create Event" open={isCreateOpen} onClose={() => setIsCreateOpen(false)}>
         <EventComposerForm
+          errorMessage={
+            createEventMutation.isError
+              ? createEventMutation.error instanceof Error
+                ? createEventMutation.error.message
+                : "Unable to create event"
+              : null
+          }
           submitLabel={createEventMutation.isPending ? "Creating…" : "Create event"}
           onSubmit={(payload) => createEventMutation.mutate(payload)}
         />
@@ -576,11 +939,24 @@ function EventDetailPage() {
           label: "Back to events",
         }}
         actions={
-          <button type="button" onClick={() => runJudgmentMutation.mutate()}>
+          <button
+            type="button"
+            disabled={runJudgmentMutation.isPending}
+            onClick={() => runJudgmentMutation.mutate()}
+          >
             {runJudgmentMutation.isPending ? "Queueing…" : "Run judgment"}
           </button>
         }
       />
+      {runJudgmentMutation.isError ? (
+        <InlineError
+          message={
+            runJudgmentMutation.error instanceof Error
+              ? runJudgmentMutation.error.message
+              : "Unable to queue judgment"
+          }
+        />
+      ) : null}
       <section className="metric-grid">
         <MetricTile label="Latest probability" value={formatProbability(latestTrace?.finalProbability)} />
         <MetricTile
@@ -613,7 +989,7 @@ function EventDetailPage() {
               <Link key={judgment.id} to={`/judgments/${judgment.id}`} className="list-row">
                 <div>
                   <strong>{judgment.id}</strong>
-                  <p>{formatDateTime(judgment.updatedAt)}</p>
+                  <RuntimeActivitySummary judgment={judgment} />
                 </div>
                 <div className="list-row__tail">
                   <span>{formatProbability(judgment.verdictTrace?.finalProbability)}</span>
@@ -711,6 +1087,13 @@ function WatchlistsPage() {
       </SectionCard>
       <DialogFrame title="Create Watchlist" open={isCreateOpen} onClose={() => setIsCreateOpen(false)}>
         <WatchlistComposerForm
+          errorMessage={
+            createWatchlistMutation.isError
+              ? createWatchlistMutation.error instanceof Error
+                ? createWatchlistMutation.error.message
+                : "Unable to create watchlist"
+              : null
+          }
           submitLabel={createWatchlistMutation.isPending ? "Creating…" : "Create watchlist"}
           onSubmit={(payload) => createWatchlistMutation.mutate(payload)}
         />
@@ -842,6 +1225,13 @@ function WatchlistDetailPage() {
         {selectedCandidate ? (
           <EventComposerForm
             defaults={buildEventSeedDefaults(selectedCandidate)}
+            errorMessage={
+              createEventMutation.isError
+                ? createEventMutation.error instanceof Error
+                  ? createEventMutation.error.message
+                  : "Unable to create seeded event"
+                : null
+            }
             submitLabel={createEventMutation.isPending ? "Creating…" : "Create event"}
             onSubmit={(payload) => createEventMutation.mutate(payload)}
           />
@@ -866,6 +1256,16 @@ function JudgmentsPage() {
   }
 
   const judgments = judgmentsQuery.data ?? [];
+  const recentActivity = judgments
+    .flatMap((judgment) =>
+      judgment.executionLog.map((entry) => ({
+        judgmentId: judgment.id,
+        eventId: judgment.eventId,
+        entry,
+      })),
+    )
+    .sort((left, right) => right.entry.timestamp.localeCompare(left.entry.timestamp))
+    .slice(0, 8);
 
   return (
     <div className="page-stack">
@@ -873,6 +1273,31 @@ function JudgmentsPage() {
         title="Judgments Workspace"
         description="Scan the run queue, jump into trace detail, and spot stalled or inconclusive forecasts quickly."
       />
+      <SectionCard title="Live Activity Feed" kicker="Runtime">
+        {recentActivity.length === 0 ? (
+          <EmptyState
+            title="No runtime activity yet"
+            body="Queue a judgment run to start collecting structured execution events."
+          />
+        ) : (
+          <div className="list-stack">
+            {recentActivity.map(({ judgmentId, eventId, entry }, index) => (
+              <Link key={`${judgmentId}-${entry.timestamp}-${index}`} to={`/judgments/${judgmentId}`} className="list-row">
+                <div>
+                  <strong>{entry.message}</strong>
+                  <p>Judgment {judgmentId}</p>
+                  <p>Event {eventId}</p>
+                </div>
+                <div className="list-row__tail">
+                  <StatusPill value={entry.stage} />
+                  <StatusPill value={entry.level} />
+                  <span>{formatDateTime(entry.timestamp)}</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </SectionCard>
       <SectionCard title="Recent Runs" kicker="Judgments">
         {judgments.length === 0 ? (
           <EmptyState title="No judgments yet" body="Queue a run from an event detail page to populate this list." />
@@ -883,6 +1308,7 @@ function JudgmentsPage() {
                 <div>
                   <strong>{judgment.id}</strong>
                   <p>Event {judgment.eventId}</p>
+                  <RuntimeActivitySummary judgment={judgment} />
                 </div>
                 <div className="list-row__tail">
                   <span>{formatProbability(judgment.verdictTrace?.finalProbability)}</span>
@@ -939,6 +1365,7 @@ function JudgmentDetailPage() {
   }
 
   const trace = judgment.verdictTrace;
+  const statusDetail = describeJudgmentState(judgment.status);
 
   return (
     <div className="page-stack">
@@ -950,6 +1377,14 @@ function JudgmentDetailPage() {
           label: "Back to judgments",
         }}
       />
+      {statusDetail ? (
+        <StatusBanner
+          title={statusDetail.title}
+          body={statusDetail.body}
+          tone={statusDetail.tone}
+        />
+      ) : null}
+      <ExecutionLogTimeline entries={judgment.executionLog} />
       <section className="metric-grid">
         <MetricTile label="Final probability" value={formatProbability(trace?.finalProbability)} />
         <MetricTile label="Prior" value={formatProbability(trace?.priorProbability)} />
@@ -1121,7 +1556,13 @@ function JudgmentDetailPage() {
         </>
       ) : (
         <SectionCard title="Run State" kicker="Queue">
-          <EmptyState title="Trace not available yet" body="This judgment is still queued or running." />
+          <EmptyState
+            title={judgment.status === "failed" ? "Trace unavailable" : "Trace not available yet"}
+            body={
+              statusDetail?.body ??
+              "This judgment has not produced a trace yet."
+            }
+          />
         </SectionCard>
       )}
     </div>
@@ -1209,6 +1650,16 @@ function EvaluationPage() {
         title="Evaluation Workspace"
         description="Review benchmark sets, launch replay runs, and inspect the most recent scorecards."
       />
+      {runMutation.isError ? (
+        <InlineError
+          message={runMutation.error instanceof Error ? runMutation.error.message : "Unable to create evaluation run"}
+        />
+      ) : null}
+      {importMutation.isError ? (
+        <InlineError
+          message={importMutation.error instanceof Error ? importMutation.error.message : "Unable to import benchmarks"}
+        />
+      ) : null}
       <section className="two-up">
         <SectionCard title="Benchmark Sets" kicker="Replay scope">
           <div className="section-card__toolbar">
@@ -1513,11 +1964,20 @@ function CalibrationPage() {
         title="Calibration Workspace"
         description="Track snapshot history, inspect calibration parameters, and retrain the active snapshot when new outcomes land."
         actions={
-          <button type="button" onClick={() => retrainMutation.mutate()}>
+          <button type="button" disabled={retrainMutation.isPending} onClick={() => retrainMutation.mutate()}>
             {retrainMutation.isPending ? "Retraining…" : "Retrain snapshot"}
           </button>
         }
       />
+      {retrainMutation.isError ? (
+        <InlineError
+          message={
+            retrainMutation.error instanceof Error
+              ? retrainMutation.error.message
+              : "Unable to retrain calibration"
+          }
+        />
+      ) : null}
       <section className="two-up">
         <SectionCard title="Snapshot History" kicker="Calibration">
           {snapshots.length === 0 ? (
@@ -1574,6 +2034,7 @@ function CalibrationPage() {
 
 function EventComposerForm({
   defaults,
+  errorMessage,
   onSubmit,
   submitLabel,
 }: {
@@ -1586,6 +2047,7 @@ function EventComposerForm({
     marketSymbols?: string;
     polymarketMarketId?: string;
   };
+  errorMessage?: string | null;
   onSubmit: (payload: Parameters<typeof createEvent>[0]) => void;
   submitLabel: string;
 }) {
@@ -1612,6 +2074,7 @@ function EventComposerForm({
         });
       }}
     >
+      {errorMessage ? <InlineError message={errorMessage} /> : null}
       <label>
         <span>Question</span>
         <input defaultValue={defaults?.question ?? ""} name="question" required />
@@ -1660,9 +2123,11 @@ function EventComposerForm({
 }
 
 function WatchlistComposerForm({
+  errorMessage,
   onSubmit,
   submitLabel,
 }: {
+  errorMessage?: string | null;
   onSubmit: (payload: Parameters<typeof createWatchlist>[0]) => void;
   submitLabel: string;
 }) {
@@ -1688,6 +2153,7 @@ function WatchlistComposerForm({
         });
       }}
     >
+      {errorMessage ? <InlineError message={errorMessage} /> : null}
       <label>
         <span>Name</span>
         <input name="name" required />
@@ -1744,6 +2210,7 @@ export function App() {
             <Route path="/watchlists" element={<WatchlistsPage />} />
             <Route path="/watchlists/:watchlistId" element={<WatchlistDetailPage />} />
             <Route path="/judgments" element={<JudgmentsPage />} />
+            <Route path="/runtime" element={<RuntimePage />} />
             <Route path="/judgments/:judgmentId" element={<JudgmentDetailPage />} />
             <Route path="/evaluation" element={<EvaluationPage />} />
             <Route path="/evaluation/runs/:runId" element={<EvaluationRunPage />} />
