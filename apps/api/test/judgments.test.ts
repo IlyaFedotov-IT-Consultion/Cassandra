@@ -12,6 +12,7 @@ import { createLogger } from "../src/lib/logger.js";
 import { createEvent } from "../src/modules/events/repository.js";
 import { InMemoryJudgeCacheStore } from "../src/modules/judgments/judgeCache.js";
 import {
+  appendJudgmentExecutionLog,
   appendJudgmentTrace,
   createJudgmentRun,
   getJudgmentById,
@@ -513,6 +514,65 @@ describe("judgment routes and service", () => {
         expect.objectContaining({
           id: firstJudgment.id,
           eventId: firstEvent.id,
+        }),
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns filtered runtime events from the runtime route", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const judgment = await createJudgmentRun(pool, event.id);
+    await appendJudgmentExecutionLog(pool, judgment.id, [
+      {
+        timestamp: "2026-01-01T00:00:00Z",
+        level: "info",
+        stage: "queue",
+        message: "Judgment was queued for background processing.",
+        details: {
+          eventId: event.id,
+        },
+      },
+      {
+        timestamp: "2026-01-01T00:01:00Z",
+        level: "warn",
+        stage: "evidence",
+        message: "Evidence collection finished with degraded provider coverage.",
+        details: {
+          failedProviders: ["web"],
+        },
+      },
+    ]);
+
+    const app = buildApp({
+      dbPool: pool,
+      env: createFixtureEnv(),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/runtime?stage=evidence&level=warn&search=degraded",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual([
+        expect.objectContaining({
+          judgmentId: judgment.id,
+          eventId: event.id,
+          judgmentStatus: "queued",
+          entry: expect.objectContaining({
+            stage: "evidence",
+            level: "warn",
+          }),
         }),
       ]);
     } finally {

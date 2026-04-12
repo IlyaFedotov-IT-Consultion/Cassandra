@@ -9,6 +9,7 @@ import {
   EventRecordSchema,
   JudgmentRecordDetailsSchema,
   JudgmentRecordSummarySchema,
+  RuntimeEventRecordSchema,
   BenchmarkSetSummarySchema,
   SourceFamilySchema,
   VerdictTraceSchema,
@@ -367,6 +368,29 @@ describe("workspace response schemas", () => {
         judgeOpinions: [],
       }).executionLog,
     ).toEqual([]);
+
+    expect(
+      RuntimeEventRecordSchema.parse({
+        judgmentId: "judgment-1",
+        eventId: "event-1",
+        judgmentStatus: "running",
+        finalProbability: null,
+        entry: {
+          timestamp: "2026-01-01T00:00:00Z",
+          level: "warn",
+          stage: "evidence",
+          message: "Provider degraded.",
+          details: {
+            providerName: "web",
+          },
+        },
+      }),
+    ).toMatchObject({
+      judgmentStatus: "running",
+      entry: expect.objectContaining({
+        stage: "evidence",
+      }),
+    });
 
     expect(
       BenchmarkSetSummarySchema.parse({

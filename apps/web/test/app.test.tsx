@@ -39,10 +39,52 @@ function renderApp(initialEntries: string[] = ["/"]) {
 describe("workspace app", () => {
   beforeEach(() => {
     let importedBenchmarkSetId: string | null = null;
+    const runtimeEvents = [
+      {
+        judgmentId: "judgment-1",
+        eventId: "event-1",
+        judgmentStatus: "completed",
+        finalProbability: 0.63,
+        entry: {
+          timestamp: "2026-01-03T00:01:00Z",
+          level: "info",
+          stage: "evidence",
+          message: "Evidence collection finished.",
+          details: {
+            evidenceCount: 9,
+            providerRuns: [
+              {
+                providerName: "officialSearch",
+                rawCount: 3,
+                normalizedCount: 3,
+                cacheStatus: "miss",
+                error: null,
+              },
+            ],
+          },
+        },
+      },
+      {
+        judgmentId: "judgment-1",
+        eventId: "event-1",
+        judgmentStatus: "completed",
+        finalProbability: 0.63,
+        entry: {
+          timestamp: "2026-01-03T00:00:00Z",
+          level: "info",
+          stage: "queue",
+          message: "Judgment was queued for background processing.",
+          details: {
+            eventId: "event-1",
+          },
+        },
+      },
+    ] as const;
 
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = init?.method ?? "GET";
+      const parsedUrl = new URL(url, "http://localhost");
 
       if (method === "GET" && url.endsWith("/health")) {
         return createResponse({
@@ -100,35 +142,7 @@ describe("workspace app", () => {
             id: "judgment-1",
             eventId: "event-1",
             status: "completed",
-            executionLog: [
-              {
-                timestamp: "2026-01-03T00:00:00Z",
-                level: "info",
-                stage: "queue",
-                message: "Judgment was queued for background processing.",
-                details: {
-                  eventId: "event-1",
-                },
-              },
-              {
-                timestamp: "2026-01-03T00:01:00Z",
-                level: "info",
-                stage: "evidence",
-                message: "Evidence collection finished.",
-                details: {
-                  evidenceCount: 9,
-                  providerRuns: [
-                    {
-                      providerName: "officialSearch",
-                      rawCount: 3,
-                      normalizedCount: 3,
-                      cacheStatus: "miss",
-                      error: null,
-                    },
-                  ],
-                },
-              },
-            ],
+            executionLog: runtimeEvents.map((item) => item.entry),
             verdictTrace: {
               id: "trace-1",
               eventId: "event-1",
@@ -217,6 +231,47 @@ describe("workspace app", () => {
             updatedAt: "2026-01-03T00:05:00Z",
           },
         ]);
+      }
+
+      if (method === "GET" && parsedUrl.pathname === "/runtime") {
+        let filtered = [...runtimeEvents];
+        const search = parsedUrl.searchParams.get("search")?.toLowerCase() ?? "";
+        const judgmentStatus = parsedUrl.searchParams.get("judgmentStatus");
+        const stage = parsedUrl.searchParams.get("stage");
+        const level = parsedUrl.searchParams.get("level");
+        const limit = Number(parsedUrl.searchParams.get("limit") ?? "");
+
+        if (judgmentStatus) {
+          filtered = filtered.filter((item) => item.judgmentStatus === judgmentStatus);
+        }
+
+        if (stage) {
+          filtered = filtered.filter((item) => item.entry.stage === stage);
+        }
+
+        if (level) {
+          filtered = filtered.filter((item) => item.entry.level === level);
+        }
+
+        if (search) {
+          filtered = filtered.filter((item) =>
+            [
+              item.judgmentId,
+              item.eventId,
+              item.entry.message,
+              JSON.stringify(item.entry.details),
+            ]
+              .join(" ")
+              .toLowerCase()
+              .includes(search),
+          );
+        }
+
+        if (Number.isFinite(limit) && limit > 0) {
+          filtered = filtered.slice(0, limit);
+        }
+
+        return createResponse(filtered);
       }
 
       if (method === "GET" && url.endsWith("/events/event-1")) {

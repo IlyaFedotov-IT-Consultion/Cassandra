@@ -43,6 +43,7 @@ import {
   listEvaluationRuns,
   listEvents,
   listJudgments,
+  listRuntimeEvents,
   listWatchlists,
   retrainCalibrationSnapshot,
   runJudgment,
@@ -182,7 +183,13 @@ function describeJudgmentState(status: JudgmentState) {
 function getLatestExecutionLogEntry(
   judgment: Pick<JudgmentRecordSummary, "executionLog">,
 ) {
-  return judgment.executionLog.at(-1) ?? null;
+  if (judgment.executionLog.length === 0) {
+    return null;
+  }
+
+  return judgment.executionLog.reduce((latest, entry) =>
+    entry.timestamp.localeCompare(latest.timestamp) > 0 ? entry : latest,
+  );
 }
 
 function buildEventSeedDefaults(candidate: CandidateEventRecord) {
@@ -507,64 +514,29 @@ function RuntimePage() {
   const [stageFilter, setStageFilter] = useState<(typeof executionLogStageValues)[number]>("all");
   const [levelFilter, setLevelFilter] = useState<(typeof executionLogLevelValues)[number]>("all");
   const deferredSearch = useDeferredValue(search);
-  const judgmentsQuery = useQuery({
-    queryKey: ["judgments"],
-    queryFn: () => listJudgments(),
+  const runtimeQuery = useQuery({
+    queryKey: ["runtime-events", deferredSearch, statusFilter, stageFilter, levelFilter],
+    queryFn: () =>
+      listRuntimeEvents({
+        search: deferredSearch.trim() ? deferredSearch : undefined,
+        judgmentStatus: statusFilter === "all" ? undefined : statusFilter,
+        stage: stageFilter === "all" ? undefined : stageFilter,
+        level: levelFilter === "all" ? undefined : levelFilter,
+        limit: 200,
+      }),
   });
 
-  if (judgmentsQuery.isLoading) {
+  if (runtimeQuery.isLoading) {
     return <LoadingState label="Loading runtime activity…" />;
   }
 
-  if (judgmentsQuery.isError) {
-    return <InlineError message={judgmentsQuery.error.message} />;
+  if (runtimeQuery.isError) {
+    return <InlineError message={runtimeQuery.error.message} />;
   }
 
-  const judgments = judgmentsQuery.data ?? [];
-  const runtimeEntries = judgments
-    .flatMap((judgment) =>
-      judgment.executionLog.map((entry) => ({
-        judgmentId: judgment.id,
-        eventId: judgment.eventId,
-        judgmentStatus: judgment.status,
-        finalProbability: judgment.verdictTrace?.finalProbability ?? null,
-        entry,
-      })),
-    )
-    .sort((left, right) => right.entry.timestamp.localeCompare(left.entry.timestamp));
-
-  const normalizedSearch = deferredSearch.trim().toLowerCase();
-  const filteredEntries = runtimeEntries.filter((item) => {
-    if (statusFilter !== "all" && item.judgmentStatus !== statusFilter) {
-      return false;
-    }
-
-    if (stageFilter !== "all" && item.entry.stage !== stageFilter) {
-      return false;
-    }
-
-    if (levelFilter !== "all" && item.entry.level !== levelFilter) {
-      return false;
-    }
-
-    if (!normalizedSearch) {
-      return true;
-    }
-
-    const haystack = [
-      item.entry.message,
-      item.judgmentId,
-      item.eventId,
-      JSON.stringify(item.entry.details),
-    ]
-      .join(" ")
-      .toLowerCase();
-
-    return haystack.includes(normalizedSearch);
-  });
-
-  const failureCount = runtimeEntries.filter((item) => item.entry.level === "error").length;
-  const warningCount = runtimeEntries.filter((item) => item.entry.level === "warn").length;
+  const filteredEntries = runtimeQuery.data ?? [];
+  const failureCount = filteredEntries.filter((item) => item.entry.level === "error").length;
+  const warningCount = filteredEntries.filter((item) => item.entry.level === "warn").length;
 
   return (
     <div className="page-stack">
@@ -573,7 +545,7 @@ function RuntimePage() {
         description="Inspect the live execution timeline across all judgment runs, with filters for status, stage, severity, and search terms."
       />
       <section className="metric-grid">
-        <MetricTile label="Runtime events" value={String(runtimeEntries.length)} />
+        <MetricTile label="Runtime events" value={String(filteredEntries.length)} />
         <MetricTile label="Warnings" value={String(warningCount)} />
         <MetricTile label="Errors" value={String(failureCount)} />
       </section>

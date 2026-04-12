@@ -235,6 +235,16 @@ export const JudgmentExecutionLogEntrySchema = z
   })
   .strict();
 
+export const RuntimeEventRecordSchema = z
+  .object({
+    judgmentId: IdSchema,
+    eventId: IdSchema,
+    judgmentStatus: JudgmentStatusSchema,
+    finalProbability: ProbabilitySchema.nullable().default(null),
+    entry: JudgmentExecutionLogEntrySchema,
+  })
+  .strict();
+
 export const CitationSchema = z
   .object({
     title: z.string().min(1),
@@ -458,6 +468,7 @@ export const CassandraSchemaBundleSchema = z
     JudgeOpinion: JudgeOpinionSchema,
     VerdictTrace: VerdictTraceSchema,
     JudgmentExecutionLogEntry: JudgmentExecutionLogEntrySchema,
+    RuntimeEventRecord: RuntimeEventRecordSchema,
     JudgmentRecordSummary: JudgmentRecordSummarySchema,
     JudgmentRecordDetails: JudgmentRecordDetailsSchema,
     OutcomeInput: OutcomeInputSchema,
@@ -482,6 +493,7 @@ export type EvidenceItem = z.infer<typeof EvidenceItemSchema>;
 export type JudgeOpinion = z.infer<typeof JudgeOpinionSchema>;
 export type VerdictTrace = z.infer<typeof VerdictTraceSchema>;
 export type JudgmentExecutionLogEntry = z.infer<typeof JudgmentExecutionLogEntrySchema>;
+export type RuntimeEventRecord = z.infer<typeof RuntimeEventRecordSchema>;
 export type JudgmentRecordSummary = z.infer<typeof JudgmentRecordSummarySchema>;
 export type JudgmentRecordDetails = z.infer<typeof JudgmentRecordDetailsSchema>;
 export type OutcomeInput = z.infer<typeof OutcomeInputSchema>;

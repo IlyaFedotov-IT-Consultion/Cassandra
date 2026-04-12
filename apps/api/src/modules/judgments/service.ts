@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   type EvidenceItem,
   type JudgmentExecutionLogEntry,
+  type RuntimeEventRecord,
   VerdictTraceSchema,
   type CalibrationSnapshot,
   type JudgeOpinion,
@@ -46,6 +47,7 @@ import {
   createJudgmentRun,
   getJudgmentById,
   listJudgeOpinionsForJudgment,
+  listJudgments,
   type JudgmentRecord,
   updateJudgmentStatus,
 } from "./repository.js";
@@ -90,6 +92,14 @@ type JudgmentExecutionStage = JudgmentExecutionLogEntry["stage"];
 
 export interface JudgmentRecordDetails extends JudgmentRecord {
   judgeOpinions: JudgeOpinion[];
+}
+
+export interface ListRuntimeEventsFilters {
+  search?: string;
+  judgmentStatus?: JudgmentRecord["status"];
+  stage?: JudgmentExecutionLogEntry["stage"];
+  level?: JudgmentExecutionLogEntry["level"];
+  limit?: number;
 }
 
 export interface JudgeClient {
@@ -1228,6 +1238,56 @@ export async function getJudgmentDetails(
   judgmentId: string,
 ): Promise<JudgmentRecordDetails | null> {
   return loadJudgmentDetails(pool, judgmentId);
+}
+
+export async function listRuntimeEvents(
+  pool: Pool,
+  filters: ListRuntimeEventsFilters = {},
+): Promise<RuntimeEventRecord[]> {
+  const judgments = await listJudgments(pool);
+  const normalizedSearch = filters.search?.trim().toLowerCase();
+  const runtimeEvents = judgments
+    .flatMap((judgment) =>
+      judgment.executionLog.map((entry) => ({
+        judgmentId: judgment.id,
+        eventId: judgment.eventId,
+        judgmentStatus: judgment.status as RuntimeEventRecord["judgmentStatus"],
+        finalProbability: judgment.verdictTrace?.finalProbability ?? null,
+        entry,
+      })),
+    )
+    .filter((item) => {
+      if (filters.judgmentStatus && item.judgmentStatus !== filters.judgmentStatus) {
+        return false;
+      }
+
+      if (filters.stage && item.entry.stage !== filters.stage) {
+        return false;
+      }
+
+      if (filters.level && item.entry.level !== filters.level) {
+        return false;
+      }
+
+      if (!normalizedSearch) {
+        return true;
+      }
+
+      const haystack = [
+        item.judgmentId,
+        item.eventId,
+        item.entry.message,
+        JSON.stringify(item.entry.details),
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(normalizedSearch);
+    })
+    .sort((left, right) => right.entry.timestamp.localeCompare(left.entry.timestamp));
+
+  const limit = filters.limit && filters.limit > 0 ? filters.limit : undefined;
+  return typeof limit === "number" ? runtimeEvents.slice(0, limit) : runtimeEvents;
 }
 
 export async function enqueueJudgmentRun(

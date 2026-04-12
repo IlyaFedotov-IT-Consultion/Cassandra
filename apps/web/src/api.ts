@@ -11,6 +11,7 @@ import {
   EventRecordSchema,
   JudgmentRecordDetailsSchema,
   JudgmentRecordSummarySchema,
+  RuntimeEventRecordSchema,
   WatchlistInputSchema,
   WatchlistRecordSchema,
   type CalibrationSnapshot,
@@ -23,6 +24,7 @@ import {
   type EventRecord,
   type JudgmentRecordDetails,
   type JudgmentRecordSummary,
+  type RuntimeEventRecord,
   type WatchlistInput,
   type WatchlistRecord,
 } from "@cassandra/shared";
@@ -31,6 +33,7 @@ const eventListSchema = EventRecordSchema.array();
 const watchlistListSchema = WatchlistRecordSchema.array();
 const candidateListSchema = CandidateEventRecordSchema.array();
 const judgmentListSchema = JudgmentRecordSummarySchema.array();
+const runtimeEventListSchema = RuntimeEventRecordSchema.array();
 const benchmarkSetListSchema = BenchmarkSetSummarySchema.array();
 const benchmarkMarketListSchema = BenchmarkMarketSchema.array();
 const evaluationRunSummaryListSchema = EvaluationRunSummarySchema.array();
@@ -241,6 +244,39 @@ export function fetchJudgment(judgmentId: string) {
     `/judgments/${encodeURIComponent(judgmentId)}`,
     JudgmentRecordDetailsSchema,
   );
+}
+
+export function listRuntimeEvents(filters?: {
+  search?: string;
+  judgmentStatus?: JudgmentRecordSummary["status"];
+  stage?: RuntimeEventRecord["entry"]["stage"];
+  level?: RuntimeEventRecord["entry"]["level"];
+  limit?: number;
+}) {
+  const query = new URLSearchParams();
+
+  if (filters?.search?.trim()) {
+    query.set("search", filters.search.trim());
+  }
+
+  if (filters?.judgmentStatus) {
+    query.set("judgmentStatus", filters.judgmentStatus);
+  }
+
+  if (filters?.stage) {
+    query.set("stage", filters.stage);
+  }
+
+  if (filters?.level) {
+    query.set("level", filters.level);
+  }
+
+  if (typeof filters?.limit === "number") {
+    query.set("limit", String(filters.limit));
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return requestJson(`/runtime${suffix}`, runtimeEventListSchema);
 }
 
 export async function runJudgment(eventId: string) {

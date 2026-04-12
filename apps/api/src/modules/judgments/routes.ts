@@ -2,6 +2,11 @@ import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import type { Redis } from "ioredis";
 import { z } from "zod";
+import {
+  JudgmentExecutionLogLevelSchema,
+  JudgmentExecutionStageSchema,
+  JudgmentStatusSchema,
+} from "@cassandra/shared";
 
 import type { AppEnv } from "../../config/env.js";
 import { runJudgmentWorker } from "../../workers/judgmentWorker.js";
@@ -11,12 +16,23 @@ import {
   createJudgeCacheStore,
   enqueueJudgmentRun,
   getJudgmentDetails,
+  listRuntimeEvents,
 } from "./service.js";
 
 const CreateJudgmentInputSchema = z
   .object({
     eventId: z.string().min(1),
     evaluationTime: z.string().min(1).optional(),
+  })
+  .strict();
+
+const RuntimeQuerySchema = z
+  .object({
+    search: z.string().trim().optional(),
+    judgmentStatus: JudgmentStatusSchema.optional(),
+    stage: JudgmentExecutionStageSchema.optional(),
+    level: JudgmentExecutionLogLevelSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(500).optional(),
   })
   .strict();
 
@@ -37,6 +53,20 @@ export function registerJudgmentRoutes(
   app.get("/judgments", async (request) => {
     const query = request.query as { eventId?: string };
     return listJudgments(args.pool, query.eventId);
+  });
+
+  app.get("/runtime", async (request, reply) => {
+    const parsed = RuntimeQuerySchema.safeParse(request.query);
+
+    if (!parsed.success) {
+      reply.code(400);
+      return {
+        error: "Invalid runtime query",
+        issues: parsed.error.issues,
+      };
+    }
+
+    return listRuntimeEvents(args.pool, parsed.data);
   });
 
   app.get("/judgments/:id", async (request, reply) => {
