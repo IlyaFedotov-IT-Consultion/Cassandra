@@ -344,11 +344,15 @@ export function listEvaluationPredictions(runId: string) {
   );
 }
 
-export async function createEvaluationRun(benchmarkSetId: string) {
+export async function createEvaluationRun(args: {
+  benchmarkSetId: string;
+  baselines?: string[];
+}) {
   return requestJson(`/evaluation/runs`, EvaluationRunSchema, {
     method: "POST",
     body: JSON.stringify({
-      benchmarkSetId,
+      benchmarkSetId: args.benchmarkSetId,
+      ...(args.baselines && args.baselines.length > 0 ? { baselines: args.baselines } : {}),
     }),
   });
 }

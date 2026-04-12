@@ -99,7 +99,10 @@ export async function collectEvidenceForEventWithCache(
       const cached = await args.cacheStore.get(cacheKey);
 
       if (cached) {
-        const providerItems = JSON.parse(cached);
+        const providerItems = (JSON.parse(cached) as Array<{ eventId?: string }>).map((item) => ({
+          ...item,
+          eventId: args.event.id,
+        }));
         rawItems.push(...providerItems);
         providerRuns.push({
           providerName: provider.name,

@@ -794,7 +794,17 @@ describe("workspace app", () => {
             cutoffs: ["30d"],
             baselines: ["model_with_polymarket"],
             overallMetrics: {
-              brierScore: 0.19,
+              benchmarkCount: 1,
+              predictionCount: 4,
+              byBaseline: {
+                model_with_polymarket: {
+                  brierScore: 0.19,
+                  logLoss: 0.48,
+                  averageAbsoluteError: 0.21,
+                  winRateVsPolymarket: 0,
+                  sampleSize: 4,
+                },
+              },
             },
             replayFidelity: "exact",
             leakageWarnings: [],
@@ -811,7 +821,17 @@ describe("workspace app", () => {
             cutoffs: ["30d"],
             baselines: ["model_with_polymarket"],
             overallMetrics: {
-              brierScore: 0.21,
+              benchmarkCount: 1,
+              predictionCount: 4,
+              byBaseline: {
+                model_with_polymarket: {
+                  brierScore: 0.21,
+                  logLoss: 0.50,
+                  averageAbsoluteError: 0.23,
+                  winRateVsPolymarket: 0,
+                  sampleSize: 4,
+                },
+              },
             },
             sliceResults: [],
             replayFidelity: "exact",
@@ -831,7 +851,17 @@ describe("workspace app", () => {
           cutoffs: ["30d"],
           baselines: ["model_with_polymarket"],
           overallMetrics: {
-            brierScore: 0.19,
+            benchmarkCount: 1,
+            predictionCount: 4,
+            byBaseline: {
+              model_with_polymarket: {
+                brierScore: 0.19,
+                logLoss: 0.48,
+                averageAbsoluteError: 0.21,
+                winRateVsPolymarket: 0,
+                sampleSize: 4,
+              },
+            },
           },
           sliceResults: [
             {

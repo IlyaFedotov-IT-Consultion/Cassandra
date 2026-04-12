@@ -1619,12 +1619,22 @@ function JudgmentDetailPage() {
   );
 }
 
+const ALL_BASELINES = [
+  { value: "base_rate_only", label: "Base rate only" },
+  { value: "polymarket_only", label: "Polymarket only" },
+  { value: "model_without_polymarket", label: "Model without Polymarket" },
+  { value: "model_with_polymarket", label: "Model with Polymarket" },
+] as const;
+
 function EvaluationPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [benchmarkImportDraft, setBenchmarkImportDraft] = useState("");
   const [selectedBenchmarkSetId, setSelectedBenchmarkSetId] = useState("");
+  const [selectedBaselines, setSelectedBaselines] = useState<string[]>(
+    ALL_BASELINES.map((b) => b.value),
+  );
   const benchmarkSetsQuery = useQuery({
     queryKey: ["benchmark-sets"],
     queryFn: listBenchmarkSets,
@@ -1762,10 +1772,29 @@ function EvaluationPage() {
               ))}
             </div>
           )}
+          <div className="baseline-picker">
+            <p className="helper-text">Select baselines to include in the evaluation run:</p>
+            {ALL_BASELINES.map((baseline) => (
+              <label key={baseline.value} className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={selectedBaselines.includes(baseline.value)}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                    setSelectedBaselines((current) =>
+                      event.target.checked
+                        ? [...current, baseline.value]
+                        : current.filter((b) => b !== baseline.value),
+                    );
+                  }}
+                />
+                <span>{baseline.label}</span>
+              </label>
+            ))}
+          </div>
           <button
             type="button"
-            disabled={!selectedBenchmarkSetId || runMutation.isPending || importMutation.isPending}
-            onClick={() => runMutation.mutate(selectedBenchmarkSetId)}
+            disabled={!selectedBenchmarkSetId || selectedBaselines.length === 0 || runMutation.isPending || importMutation.isPending}
+            onClick={() => runMutation.mutate({ benchmarkSetId: selectedBenchmarkSetId, baselines: selectedBaselines })}
           >
             {runMutation.isPending ? "Launching…" : "Run evaluation"}
           </button>
@@ -1775,17 +1804,25 @@ function EvaluationPage() {
             <EmptyState title="No evaluation runs yet" body="Launch a run from the selected benchmark set." />
           ) : (
             <div className="list-stack">
-              {runs.map((run) => (
-                <Link key={run.id} className="list-row" to={`/evaluation/runs/${run.id}`}>
-                  <div>
-                    <strong>{run.id}</strong>
-                    <p>{run.benchmarkSetId}</p>
-                  </div>
-                  <div className="list-row__tail">
-                    <span>{JSON.stringify(run.overallMetrics)}</span>
-                  </div>
-                </Link>
-              ))}
+              {runs.map((run) => {
+                const metrics = run.overallMetrics as Record<string, unknown> | undefined;
+                const benchmarkCount = metrics && "benchmarkCount" in metrics ? Number(metrics.benchmarkCount) : 0;
+                const predictionCount = metrics && "predictionCount" in metrics ? Number(metrics.predictionCount) : 0;
+                return (
+                  <Link key={run.id} className="list-row" to={`/evaluation/runs/${run.id}`}>
+                    <div>
+                      <strong>{formatDateTime(run.createdAt)}</strong>
+                      <p>
+                        {run.baselines.map(humanizeToken).join(", ")}
+                      </p>
+                    </div>
+                    <div className="list-row__tail">
+                      <span>{benchmarkCount} benchmarks · {predictionCount} predictions</span>
+                      <small>{humanizeToken(run.replayFidelity)}</small>
+                    </div>
+                  </Link>
+                );
+              })}
             </div>
           )}
         </SectionCard>
@@ -1849,6 +1886,11 @@ function EvaluationRunPage() {
     queryFn: () => listEvaluationPredictions(runId ?? ""),
     enabled: Boolean(runId),
   });
+  const marketsQuery = useQuery({
+    queryKey: ["benchmark-markets", runQuery.data?.benchmarkSetId],
+    queryFn: () => listBenchmarkMarkets(runQuery.data?.benchmarkSetId ?? ""),
+    enabled: Boolean(runQuery.data?.benchmarkSetId),
+  });
 
   if (!runId) {
     return <InlineError message="Missing evaluation run id" />;
@@ -1874,6 +1916,41 @@ function EvaluationRunPage() {
 
   const run = runQuery.data as EvaluationRun;
   const predictions = predictionsQuery.data ?? [];
+  const marketTitleMap = new Map(
+    (marketsQuery.data ?? []).map((m) => [m.id, m.title]),
+  );
+
+  const byBaseline =
+    run.overallMetrics &&
+    typeof run.overallMetrics === "object" &&
+    "byBaseline" in run.overallMetrics &&
+    run.overallMetrics.byBaseline &&
+    typeof run.overallMetrics.byBaseline === "object"
+      ? (run.overallMetrics.byBaseline as Record<
+          string,
+          {
+            brierScore: number;
+            logLoss: number;
+            averageAbsoluteError: number;
+            winRateVsPolymarket: number;
+            sampleSize: number;
+          }
+        >)
+      : null;
+
+  const benchmarkCount =
+    run.overallMetrics &&
+    typeof run.overallMetrics === "object" &&
+    "benchmarkCount" in run.overallMetrics
+      ? Number(run.overallMetrics.benchmarkCount)
+      : 0;
+
+  const predictionCount =
+    run.overallMetrics &&
+    typeof run.overallMetrics === "object" &&
+    "predictionCount" in run.overallMetrics
+      ? Number(run.overallMetrics.predictionCount)
+      : predictions.length;
 
   return (
     <div className="page-stack">
@@ -1888,11 +1965,55 @@ function EvaluationRunPage() {
       <section className="metric-grid">
         <MetricTile label="Benchmark set" value={run.benchmarkSetId} />
         <MetricTile label="Replay fidelity" value={humanizeToken(run.replayFidelity)} />
-        <MetricTile
-          label="Brier score"
-          value={typeof run.overallMetrics.brierScore === "number" ? formatDecimal(run.overallMetrics.brierScore) : "n/a"}
-        />
+        <MetricTile label="Benchmarks" value={String(benchmarkCount)} />
+        <MetricTile label="Predictions" value={String(predictionCount)} />
+        <MetricTile label="Cutoffs" value={run.cutoffs.join(", ")} />
+        <MetricTile label="Baselines" value={run.baselines.map(humanizeToken).join(", ")} />
       </section>
+
+      <SectionCard title="Overall Metrics by Baseline" kicker="Scorecard">
+        {byBaseline ? (
+          <div className="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Baseline</th>
+                  <th>Brier score</th>
+                  <th>Log loss</th>
+                  <th>Avg abs error</th>
+                  <th>Win rate vs Polymarket</th>
+                  <th>Sample size</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(byBaseline).map(([baseline, metrics]) => (
+                  <tr key={baseline}>
+                    <td>{humanizeToken(baseline)}</td>
+                    <td>{formatDecimal(metrics.brierScore)}</td>
+                    <td>{formatDecimal(metrics.logLoss)}</td>
+                    <td>{formatDecimal(metrics.averageAbsoluteError)}</td>
+                    <td>{formatDecimal(metrics.winRateVsPolymarket)}</td>
+                    <td>{metrics.sampleSize}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState title="No baseline metrics" body="This run did not record per-baseline aggregate metrics." />
+        )}
+      </SectionCard>
+
+      {run.leakageWarnings.length > 0 ? (
+        <SectionCard title="Leakage Warnings" kicker="Integrity">
+          <div className="list-stack">
+            {run.leakageWarnings.map((warning, index) => (
+              <div key={index} className="inline-error">{warning}</div>
+            ))}
+          </div>
+        </SectionCard>
+      ) : null}
+
       <section className="two-up">
         <SectionCard title="Slice Metrics" kicker="Performance">
           {run.sliceResults.length === 0 ? (
@@ -1907,16 +2028,20 @@ function EvaluationRunPage() {
                     <th>Brier</th>
                     <th>Log loss</th>
                     <th>Avg abs error</th>
+                    <th>Win rate</th>
+                    <th>N</th>
                   </tr>
                 </thead>
                 <tbody>
                   {run.sliceResults.map((slice) => (
                     <tr key={`${slice.sliceKey}-${slice.baseline}`}>
-                      <td>{slice.sliceKey}</td>
-                      <td>{slice.baseline}</td>
+                      <td>{humanizeToken(slice.sliceKey)}</td>
+                      <td>{humanizeToken(slice.baseline)}</td>
                       <td>{formatDecimal(slice.brierScore)}</td>
                       <td>{formatDecimal(slice.logLoss)}</td>
                       <td>{formatDecimal(slice.averageAbsoluteError)}</td>
+                      <td>{slice.winRateVsPolymarket !== undefined ? formatDecimal(slice.winRateVsPolymarket) : "n/a"}</td>
+                      <td>{slice.sampleSize}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1934,6 +2059,7 @@ function EvaluationRunPage() {
                   <tr>
                     <th>Market</th>
                     <th>Theme</th>
+                    <th>Horizon</th>
                     <th>Baseline</th>
                     <th>Prediction</th>
                     <th>Outcome</th>
@@ -1942,11 +2068,12 @@ function EvaluationRunPage() {
                 <tbody>
                   {predictions.map((prediction) => (
                     <tr key={prediction.id}>
-                      <td>{prediction.benchmarkMarketId}</td>
-                      <td>{prediction.theme ?? "n/a"}</td>
-                      <td>{prediction.baseline}</td>
+                      <td>{marketTitleMap.get(prediction.benchmarkMarketId) ?? prediction.benchmarkMarketId}</td>
+                      <td>{prediction.theme ? humanizeToken(prediction.theme) : "n/a"}</td>
+                      <td>{prediction.horizon ?? "n/a"}</td>
+                      <td>{humanizeToken(prediction.baseline)}</td>
                       <td>{formatDecimal(prediction.predictedProbability)}</td>
-                      <td>{String(prediction.outcome)}</td>
+                      <td>{prediction.outcome === null ? "n/a" : prediction.outcome ? "Yes" : "No"}</td>
                     </tr>
                   ))}
                 </tbody>

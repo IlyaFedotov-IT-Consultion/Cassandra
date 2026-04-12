@@ -962,6 +962,12 @@ th {
   width: auto;
 }
 
+.baseline-picker {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
 .toast-stack {
   position: fixed;
   right: 18px;
