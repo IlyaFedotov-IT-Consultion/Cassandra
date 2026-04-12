@@ -40,13 +40,23 @@ export async function loadProviderFixture<T>(
 }
 
 export async function fetchProviderJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
 
-  if (!response.ok) {
-    throw new Error(`Provider request failed with ${response.status} ${response.statusText}: ${url}`);
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: init?.signal ?? controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Provider request failed with ${response.status} ${response.statusText}: ${url}`);
+    }
+
+    return (await response.json()) as T;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return (await response.json()) as T;
 }
 
 export function createProviderEvidenceItem(args: {

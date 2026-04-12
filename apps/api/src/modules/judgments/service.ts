@@ -930,27 +930,36 @@ class DefaultJudgeClient implements JudgeClient {
       });
     }
 
-    const response = await fetch(`${this.env.JUDGE_BASE_URL}/judge`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        eventId: input.event.id,
-        event: {
-          question: input.event.question,
-          resolutionCriteria: input.event.resolutionCriteria,
-          deadline: input.event.deadline,
-          entities: input.event.entities,
-          referenceClass: input.event.referenceClass,
-          marketSymbols: input.event.marketSymbols,
-          polymarketMarketId: input.event.polymarketMarketId,
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+
+    let response: Response;
+    try {
+      response = await fetch(`${this.env.JUDGE_BASE_URL}/judge`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
         },
-        evaluationTime: input.evaluationTime,
-        evidence: input.evidence,
-        calibrationSnapshot: input.calibrationSnapshot,
-      }),
-    });
+        signal: controller.signal,
+        body: JSON.stringify({
+          eventId: input.event.id,
+          event: {
+            question: input.event.question,
+            resolutionCriteria: input.event.resolutionCriteria,
+            deadline: input.event.deadline,
+            entities: input.event.entities,
+            referenceClass: input.event.referenceClass,
+            marketSymbols: input.event.marketSymbols,
+            polymarketMarketId: input.event.polymarketMarketId,
+          },
+          evaluationTime: input.evaluationTime,
+          evidence: input.evidence,
+          calibrationSnapshot: input.calibrationSnapshot,
+        }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!response.ok) {
       throw new Error(`Judge service returned ${response.status} ${response.statusText}`);
