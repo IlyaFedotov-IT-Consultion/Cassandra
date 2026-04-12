@@ -38,12 +38,14 @@ import {
   EventRecordSchema,
   WatchlistRecordSchema,
   CalibrationSnapshotSchema,
+  CalibrationSnapshotSummarySchema,
   BenchmarkSetSummarySchema,
   EvaluationRunSchema,
   type VerdictTrace,
   type EventRecord,
   type WatchlistRecord,
   type CalibrationSnapshot,
+  type CalibrationSnapshotSummary,
 } from "@cassandra/shared";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -179,8 +181,91 @@ const shared: {
   watchlistId?: string;
   benchmarkSetId?: string;
   calibrationSnapshotId?: string;
+  approvedCalibrationSnapshotId?: string;
+  latestUnapprovedCalibrationSnapshotId?: string;
   evaluationRunId?: string;
 } = {};
+
+interface JudgmentDetails {
+  id: string;
+  status: string;
+  verdictTrace?: unknown;
+  executionLog?: Array<{
+    level: string;
+    stage: string;
+    message: string;
+    details?: Record<string, unknown>;
+  }>;
+}
+
+function parseSnapshotSummaries(list: unknown[], failures: string[]): CalibrationSnapshotSummary[] {
+  const snapshots: CalibrationSnapshotSummary[] = [];
+
+  for (const snapshot of list) {
+    const parsed = CalibrationSnapshotSummarySchema.safeParse(snapshot);
+    if (!parsed.success) {
+      failures.push(`calibration snapshot list schema invalid: ${parsed.error.issues[0]?.message}`);
+      break;
+    }
+    snapshots.push(parsed.data);
+  }
+
+  return snapshots;
+}
+
+function findCalibrationSnapshotLogId(judgment: JudgmentDetails): string | null {
+  const calibrationEntry = judgment.executionLog?.find((entry) => entry.stage === "calibration");
+  const snapshotId = calibrationEntry?.details?.calibrationSnapshotId;
+
+  return typeof snapshotId === "string" && snapshotId.length > 0 ? snapshotId : null;
+}
+
+function findJudgmentFailureReason(judgment: JudgmentDetails): string | null {
+  const runError = [...(judgment.executionLog ?? [])]
+    .reverse()
+    .find((entry) => entry.stage === "run" && entry.level === "error");
+  const error = runError?.details?.error;
+
+  return typeof error === "string" && error.length > 0 ? error : null;
+}
+
+async function enqueueAndPollJudgment(
+  eventId: string,
+  steps: StepRecord[],
+  label?: string,
+): Promise<JudgmentDetails> {
+  const suffix = label ? ` (${label})` : "";
+  const enqueued = await timed(
+    `POST /judgments${suffix}`,
+    () =>
+      apiRequest<{ id: string; status: string }>("POST", "/judgments", {
+        eventId,
+      }),
+    steps,
+  );
+
+  const deadline = Date.now() + TIMEOUT_MS;
+  const terminal = await timed(
+    `poll /judgments/:id until terminal${suffix}`,
+    async () => {
+      while (Date.now() < deadline) {
+        const details = await apiRequest<JudgmentDetails>("GET", `/judgments/${enqueued.id}`);
+        if (
+          details.status === "completed"
+          || details.status === "failed"
+          || details.status === "insufficient_evidence"
+        ) {
+          return details;
+        }
+        await sleep(POLL_INTERVAL_MS);
+      }
+      throw new Error(`timed out after ${TIMEOUT_MS}ms waiting for judgment ${enqueued.id}`);
+    },
+    steps,
+  );
+
+  return terminal;
+}
 
 // -- Scenario runners ---------------------------------------------------------
 
@@ -276,45 +361,16 @@ async function scenarioJudgmentFlow(): Promise<ScenarioResult> {
       throw new Error("scenarioJudgmentFlow requires shared.eventId from scenarioEventCrud");
     }
 
-    const enqueued = await timed(
-      "POST /judgments",
-      () =>
-        apiRequest<{ id: string; status: string }>("POST", "/judgments", {
-          eventId: shared.eventId,
-        }),
-      steps,
-    );
-    shared.judgmentId = enqueued.id;
-
-    if (!enqueued.id) {
-      failures.push("POST /judgments did not return an id");
-    }
-
-    const deadline = Date.now() + TIMEOUT_MS;
-    const trace = await timed(
-      "poll /judgments/:id until terminal",
-      async () => {
-        while (Date.now() < deadline) {
-          const details = await apiRequest<{
-            status: string;
-            verdictTrace?: unknown;
-          }>("GET", `/judgments/${enqueued.id}`);
-          if (
-            details.status === "completed" ||
-            details.status === "failed" ||
-            details.status === "insufficient_evidence"
-          ) {
-            return details;
-          }
-          await sleep(POLL_INTERVAL_MS);
-        }
-        throw new Error(`timed out after ${TIMEOUT_MS}ms waiting for judgment ${enqueued.id}`);
-      },
-      steps,
-    );
+    const trace = await enqueueAndPollJudgment(shared.eventId, steps);
+    shared.judgmentId = trace.id;
 
     if (trace.status === "failed") {
-      failures.push("judgment reached terminal status 'failed'");
+      const reason = findJudgmentFailureReason(trace);
+      failures.push(
+        reason
+          ? `judgment reached terminal status 'failed': ${reason}`
+          : "judgment reached terminal status 'failed'",
+      );
       return finalize("judgment-flow", failures, steps, startedAt, start);
     }
 
@@ -542,13 +598,7 @@ async function scenarioLearningLoop(): Promise<ScenarioResult> {
     if (!Array.isArray(snapshotList)) {
       failures.push("GET /backtests/calibration-snapshots did not return an array");
     } else {
-      for (const s of snapshotList) {
-        const p = CalibrationSnapshotSchema.safeParse(s);
-        if (!p.success) {
-          failures.push(`calibration snapshot list schema invalid: ${p.error.issues[0]?.message}`);
-          break;
-        }
-      }
+      parseSnapshotSummaries(snapshotList, failures);
     }
 
     if (shared.calibrationSnapshotId) {
@@ -568,6 +618,102 @@ async function scenarioLearningLoop(): Promise<ScenarioResult> {
       }
     }
 
+    if (shared.calibrationSnapshotId) {
+      const approvedSnapshot = await timed(
+        "POST /backtests/calibration-snapshots/:id/approve",
+        () =>
+          apiRequest<CalibrationSnapshot>(
+            "POST",
+            `/backtests/calibration-snapshots/${shared.calibrationSnapshotId}/approve`,
+          ),
+        steps,
+      );
+
+      const parsedApproved = CalibrationSnapshotSchema.safeParse(approvedSnapshot);
+      if (!parsedApproved.success) {
+        failures.push(`POST calibration snapshot approve schema invalid: ${parsedApproved.error.issues[0]?.message}`);
+      } else {
+        shared.approvedCalibrationSnapshotId = parsedApproved.data.id;
+        if (!parsedApproved.data.approved) {
+          failures.push("approved snapshot response did not mark snapshot approved");
+        }
+      }
+    }
+
+    const listAfterApprove = await timed(
+      "GET /backtests/calibration-snapshots (after approve)",
+      () => apiRequest<unknown[]>("GET", "/backtests/calibration-snapshots"),
+      steps,
+    );
+
+    if (!Array.isArray(listAfterApprove)) {
+      failures.push("GET /backtests/calibration-snapshots after approve did not return an array");
+    } else {
+      const summaries = parseSnapshotSummaries(listAfterApprove, failures);
+      if (shared.approvedCalibrationSnapshotId) {
+        const approvedIndex = summaries.findIndex((snapshot) => snapshot.id === shared.approvedCalibrationSnapshotId);
+        const firstUnapprovedIndex = summaries.findIndex((snapshot) => !snapshot.approved);
+        if (approvedIndex === -1) {
+          failures.push("approved snapshot missing from snapshot list after approve");
+        } else if (firstUnapprovedIndex !== -1 && approvedIndex > firstUnapprovedIndex) {
+          failures.push("approved snapshot was not ordered before unapproved snapshots");
+        }
+      }
+    }
+
+    const newerSnapshot = await timed(
+      "POST /backtests/retrain (newer unapproved snapshot)",
+      () => apiRequest<CalibrationSnapshot>("POST", "/backtests/retrain"),
+      steps,
+    );
+
+    const parsedNewerSnapshot = CalibrationSnapshotSchema.safeParse(newerSnapshot);
+    if (!parsedNewerSnapshot.success) {
+      failures.push(`POST /backtests/retrain newer snapshot schema invalid: ${parsedNewerSnapshot.error.issues[0]?.message}`);
+    } else {
+      shared.latestUnapprovedCalibrationSnapshotId = parsedNewerSnapshot.data.id;
+      if (parsedNewerSnapshot.data.approved) {
+        failures.push("new retrained snapshot should start unapproved");
+      }
+    }
+
+    const orderedSnapshotList = await timed(
+      "GET /backtests/calibration-snapshots (ordering check)",
+      () => apiRequest<unknown[]>("GET", "/backtests/calibration-snapshots"),
+      steps,
+    );
+
+    if (!Array.isArray(orderedSnapshotList)) {
+      failures.push("GET /backtests/calibration-snapshots ordering check did not return an array");
+    } else {
+      const summaries = parseSnapshotSummaries(orderedSnapshotList, failures);
+      if (shared.approvedCalibrationSnapshotId && shared.latestUnapprovedCalibrationSnapshotId) {
+        const approvedIndex = summaries.findIndex((snapshot) => snapshot.id === shared.approvedCalibrationSnapshotId);
+        const newerIndex = summaries.findIndex((snapshot) => snapshot.id === shared.latestUnapprovedCalibrationSnapshotId);
+        if (approvedIndex === -1 || newerIndex === -1) {
+          failures.push("snapshot ordering check could not find approved and newer snapshot ids");
+        } else if (approvedIndex > newerIndex) {
+          failures.push("newer unapproved snapshot was ordered ahead of the approved snapshot");
+        }
+      }
+    }
+
+    if (shared.eventId && shared.approvedCalibrationSnapshotId) {
+      const approvalSelectionJudgment = await enqueueAndPollJudgment(
+        shared.eventId,
+        steps,
+        "approval-selection",
+      );
+      const selectedSnapshotId = findCalibrationSnapshotLogId(approvalSelectionJudgment);
+      if (!selectedSnapshotId) {
+        failures.push("approval-selection judgment did not log the loaded calibration snapshot id");
+      } else if (selectedSnapshotId !== shared.approvedCalibrationSnapshotId) {
+        failures.push(
+          `approval-selection judgment loaded snapshot ${selectedSnapshotId} instead of approved snapshot ${shared.approvedCalibrationSnapshotId}`,
+        );
+      }
+    }
+
     const notFound = await timed(
       "GET /backtests/calibration-snapshots/:id (404)",
       () => apiRequestStatus("GET", "/backtests/calibration-snapshots/00000000-0000-0000-0000-000000000002"),
@@ -575,6 +721,19 @@ async function scenarioLearningLoop(): Promise<ScenarioResult> {
     );
     if (notFound.status !== 404) {
       failures.push(`GET calibration snapshot 404 returned ${notFound.status}, expected 404`);
+    }
+
+    const approveNotFound = await timed(
+      "POST /backtests/calibration-snapshots/:id/approve (404)",
+      () =>
+        apiRequestStatus(
+          "POST",
+          "/backtests/calibration-snapshots/00000000-0000-0000-0000-000000000002/approve",
+        ),
+      steps,
+    );
+    if (approveNotFound.status !== 404) {
+      failures.push(`POST calibration snapshot approve 404 returned ${approveNotFound.status}, expected 404`);
     }
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error));

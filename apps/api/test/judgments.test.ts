@@ -936,6 +936,71 @@ describe("judgment routes and service", () => {
     });
   });
 
+  it("uses the configured judge request timeout for live judge calls", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        if (!signal) {
+          reject(new Error("missing abort signal"));
+          return;
+        }
+
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("This operation was aborted", "AbortError")),
+          { once: true },
+        );
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    try {
+      const event = await createEvent(pool, {
+        question: "Will Example Corp launch Product X by 2026-12-31?",
+        resolutionCriteria: "Launch must be publicly announced.",
+        deadline: "2026-12-31T23:59:59Z",
+        entities: ["Example Corp", "Product X"],
+        referenceClass: "product_launch",
+        marketSymbols: [],
+      });
+      const pending = evaluateEventForecast({
+        env: createFixtureEnv({
+          CASSANDRA_ADAPTER_MODE: "live",
+          JUDGE_BASE_URL: "http://judge.local",
+          JUDGE_REQUEST_TIMEOUT_MS: "50",
+        }),
+        event,
+        evaluationTime: "2026-10-11T12:00:00Z",
+        evidence: [
+          buildEvidenceItem({
+            eventId: event.id,
+            sourceFamily: "official",
+            sourceType: "press_release",
+            title: "Official launch update",
+          }),
+        ],
+        calibrationSnapshot: buildCalibrationSnapshot(),
+        judgeCacheStore: new InMemoryJudgeCacheStore(),
+      });
+      const outcome = pending.then(
+        () => null,
+        (error) => error,
+      );
+
+      await vi.advanceTimersByTimeAsync(60);
+
+      const error = await outcome;
+      expect(error).toBeInstanceOf(DOMException);
+      expect((error as Error).message).toContain("aborted");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it("marks the queued run as failed when processing cannot complete", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",

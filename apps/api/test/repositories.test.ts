@@ -121,6 +121,66 @@ describe("repository layer", () => {
     expect(evidence[0]?.url).toBe("https://news.example.com/product-x");
   });
 
+  it("remaps colliding evidence ids so distinct urls can both persist", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria:
+        "Counts only if Example Corp posts a general availability announcement on its official site.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+
+    await insertEvidenceItems(pool, [
+      {
+        id: "provider-collision",
+        eventId: event.id,
+        sourceFamily: "web",
+        sourceType: "web_article",
+        title: "Example Corp launch report A",
+        url: "https://news.example.com/product-x-a",
+        publisher: "Example News",
+        publishedAt: "2026-10-10T09:00:00Z",
+        retrievedAt: "2026-10-10T10:00:00Z",
+        summary: "First article.",
+        rawText: null,
+        entities: ["Example Corp", "Product X"],
+        claims: ["Product X may launch this year"],
+        stance: "supports",
+        qualitySignals: {},
+        metadata: {},
+      },
+      {
+        id: "provider-collision",
+        eventId: event.id,
+        sourceFamily: "web",
+        sourceType: "web_article",
+        title: "Example Corp launch report B",
+        url: "https://news.example.com/product-x-b",
+        publisher: "Example News",
+        publishedAt: "2026-10-10T11:00:00Z",
+        retrievedAt: "2026-10-10T12:00:00Z",
+        summary: "Second article with the same provider id.",
+        rawText: null,
+        entities: ["Example Corp", "Product X"],
+        claims: ["Product X may launch this year"],
+        stance: "supports",
+        qualitySignals: {},
+        metadata: {},
+      },
+    ]);
+
+    const evidence = await listEvidenceForEvent(pool, event.id);
+
+    expect(evidence).toHaveLength(2);
+    expect(new Set(evidence.map((item) => item.id)).size).toBe(2);
+    expect(evidence.map((item) => item.url)).toEqual([
+      "https://news.example.com/product-x-a",
+      "https://news.example.com/product-x-b",
+    ]);
+  });
+
   it("appends judgment trace history and persists judge opinions", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",

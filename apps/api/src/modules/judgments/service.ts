@@ -1178,7 +1178,7 @@ class DefaultJudgeClient implements JudgeClient {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    const timeout = setTimeout(() => controller.abort(), this.env.JUDGE_REQUEST_TIMEOUT_MS);
 
     let response: Response;
     try {

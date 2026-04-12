@@ -1,9 +1,23 @@
+import { createHash } from "node:crypto";
+
 import type { EvidenceItem } from "@cassandra/shared";
 import type { Pool } from "pg";
 
 export interface EvidenceRecord extends EvidenceItem {
   createdAt: string;
   updatedAt: string;
+}
+
+function buildEvidenceStorageId(item: Pick<EvidenceItem, "eventId" | "url">): string {
+  const hex = createHash("sha1").update(`${item.eventId}:${item.url}`).digest("hex");
+
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `5${hex.slice(13, 16)}`,
+    `8${hex.slice(17, 20)}`,
+    hex.slice(20, 32),
+  ].join("-");
 }
 
 function toIsoString(value: unknown): string {
@@ -89,7 +103,7 @@ export async function insertEvidenceItems(
         RETURNING *
       `,
       [
-        item.id,
+        buildEvidenceStorageId(item),
         item.eventId,
         item.sourceFamily,
         item.sourceType,
