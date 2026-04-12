@@ -988,6 +988,29 @@ describe("workspace app", () => {
         );
       }
 
+      if (method === "POST" && url.endsWith("/backtests/calibration-snapshots/snapshot-1/approve")) {
+        return createResponse({
+          id: "snapshot-1",
+          createdAt: "2026-01-02T00:00:00Z",
+          trainingWindow: "all_time",
+          judgeWeights: {
+            official_records: 0.5,
+          },
+          baseRateParams: {},
+          marketPriorParams: {},
+          calibrationParams: {
+            method: "logistic",
+          },
+          onlineLearningParams: {},
+          metrics: {
+            ece: 0.08,
+          },
+          weightRegime: "warming",
+          resolvedOutcomeCount: 25,
+          approved: true,
+        });
+      }
+
       return createResponse(
         {
           error: `Unhandled request: ${method} ${url}`,
@@ -1176,6 +1199,24 @@ describe("workspace app", () => {
 
     await waitFor(() => {
       expect(screen.getAllByText(/snapshot-2/i).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("approves a calibration snapshot from the calibration workspace", async () => {
+    const user = userEvent.setup();
+
+    renderApp(["/calibration"]);
+
+    expect(await screen.findByRole("heading", { name: /calibration workspace/i })).toBeVisible();
+    expect(screen.getByText(/snapshot-1/i)).toBeVisible();
+
+    const approveButton = await screen.findByRole("button", { name: /approve snapshot/i });
+    expect(approveButton).toBeVisible();
+
+    await user.click(approveButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^approved$/i })).toBeVisible();
     });
   });
 });

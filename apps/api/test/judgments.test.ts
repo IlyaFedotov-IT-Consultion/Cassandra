@@ -360,6 +360,122 @@ describe("judgment routes and service", () => {
     );
   });
 
+  it("uses calibration snapshot prior parameters in fixture mode", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: ["EXMPL"],
+      polymarketMarketId: "poly-1",
+    });
+    const evidence = [
+      buildEvidenceItem({
+        eventId: event.id,
+        sourceFamily: "prediction_market",
+        sourceType: "polymarket_market",
+        title: "Polymarket launch market",
+        stance: "neutral",
+        metadata: {
+          price: 0.72,
+          spread: 0.02,
+          depth: 500000,
+          volatility: 0.04,
+        },
+      }),
+      buildEvidenceItem({
+        eventId: event.id,
+        sourceFamily: "official",
+        sourceType: "press_release",
+        title: "Official launch note",
+        stance: "supports",
+      }),
+    ];
+    const calibrationSnapshot: CalibrationSnapshot = {
+      ...buildCalibrationSnapshot(),
+      baseRateParams: {
+        minimumSample: 20,
+        historicalCounts: {
+          product_launch: {
+            successes: 18,
+            total: 20,
+          },
+        },
+      },
+      marketPriorParams: {
+        defaultAlpha: 0.6,
+      },
+    };
+
+    const trace = await evaluateEventForecast({
+      env: createFixtureEnv(),
+      event,
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidence,
+      calibrationSnapshot,
+    });
+
+    expect(trace.priorProbability).toBeGreaterThan(0.7);
+  });
+
+  it("applies calibration parameters in fixture mode", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const evidence = [
+      buildEvidenceItem({
+        eventId: event.id,
+        sourceFamily: "official",
+        sourceType: "press_release",
+        title: "Official launch note",
+        stance: "supports",
+      }),
+      buildEvidenceItem({
+        eventId: event.id,
+        sourceFamily: "web",
+        sourceType: "web_article",
+        title: "Independent launch report",
+        stance: "supports",
+      }),
+    ];
+    const identityTrace = await evaluateEventForecast({
+      env: createFixtureEnv(),
+      event,
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidence,
+      calibrationSnapshot: {
+        ...buildCalibrationSnapshot(),
+        calibrationParams: {
+          method: "identity",
+        },
+      },
+    });
+    const logisticTrace = await evaluateEventForecast({
+      env: createFixtureEnv(),
+      event,
+      evaluationTime: "2026-10-11T12:00:00Z",
+      evidence,
+      calibrationSnapshot: {
+        ...buildCalibrationSnapshot(),
+        calibrationParams: {
+          method: "logistic",
+          slope: 0.4,
+          intercept: -1.2,
+        },
+      },
+    });
+
+    expect(logisticTrace.calibrationMethod).toBe("logistic");
+    expect(logisticTrace.finalProbability).not.toBe(identityTrace.finalProbability);
+    expect(logisticTrace.finalProbability).toBeLessThan(identityTrace.finalProbability);
+  });
+
   it("persists execution logs when a judgment run fails", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp secure approval by 2026-12-31?",

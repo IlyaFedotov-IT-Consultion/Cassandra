@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { getEnv } from "../src/config/env.js";
+import { getLatestCalibrationSnapshot } from "../src/modules/backtests/repository.js";
 
 const verdictTrace = {
   id: "trace-1",
@@ -315,7 +316,7 @@ describe("backtest retrain route", () => {
   it("lists calibration snapshots and fetches a snapshot by id", async () => {
     const pool = {
       async query(text: string, params?: unknown[]) {
-        if (text.includes("FROM calibration_snapshots") && text.includes("ORDER BY created_at DESC")) {
+        if (text.includes("FROM calibration_snapshots") && text.includes("ORDER BY approved DESC")) {
           return {
             rowCount: 2,
             rows: [
@@ -435,5 +436,128 @@ describe("backtest retrain route", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("approves a calibration snapshot and marks it as the preferred snapshot", async () => {
+    const capturedQueries: Array<{ text: string; params?: unknown[] }> = [];
+    const query = async (text: string, params?: unknown[]) => {
+      capturedQueries.push({ text, params });
+
+      if (text.trim() === "BEGIN" || text.trim() === "COMMIT" || text.trim() === "ROLLBACK") {
+        return {
+          rowCount: null,
+          rows: [],
+        };
+      }
+
+      if (text.includes("UPDATE calibration_snapshots") && text.includes("SET approved = TRUE")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              id: "snapshot-1",
+              created_at: new Date("2026-01-02T00:00:00Z"),
+              training_window: "all_time",
+              judge_weights: { official_records: 0.5 },
+              base_rate_params: {},
+              market_prior_params: {},
+              calibration_params: { method: "logistic" },
+              online_learning_params: { enabled: true },
+              metrics: { ece: 0.08 },
+              weight_regime: "warming",
+              resolved_outcome_count: 25,
+              approved: true,
+            },
+          ],
+        };
+      }
+
+      if (text.includes("UPDATE calibration_snapshots") && text.includes("SET approved = FALSE")) {
+        return {
+          rowCount: 1,
+          rows: [],
+        };
+      }
+
+      throw new Error(`Unexpected query: ${text}`);
+    };
+    const pool = {
+      query,
+      async connect() {
+        return {
+          query,
+          release() {},
+        };
+      },
+    } as never;
+
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://judge.local",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/backtests/calibration-snapshots/snapshot-1/approve",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        id: "snapshot-1",
+        approved: true,
+      });
+
+      expect(
+        capturedQueries.some((entry) => entry.text.includes("UPDATE calibration_snapshots") && entry.text.includes("SET approved = FALSE")),
+      ).toBe(true);
+      expect(
+        capturedQueries.some((entry) => entry.text.includes("UPDATE calibration_snapshots") && entry.text.includes("SET approved = TRUE")),
+      ).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("prefers the latest approved calibration snapshot when selecting the active snapshot", async () => {
+    const pool = {
+      async query(text: string) {
+        if (text.includes("FROM calibration_snapshots") && text.includes("ORDER BY approved DESC")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                id: "snapshot-2",
+                created_at: new Date("2026-01-03T00:00:00Z"),
+                training_window: "rolling_90d",
+                judge_weights: { official_records: 0.6 },
+                base_rate_params: {},
+                market_prior_params: {},
+                calibration_params: { method: "isotonic" },
+                online_learning_params: { enabled: true },
+                metrics: { ece: 0.04 },
+                weight_regime: "steady",
+                resolved_outcome_count: 120,
+                approved: true,
+              },
+            ],
+          };
+        }
+
+        throw new Error(`Unexpected query: ${text}`);
+      },
+    } as never;
+
+    const snapshot = await getLatestCalibrationSnapshot(pool);
+
+    expect(snapshot).toMatchObject({
+      id: "snapshot-2",
+      approved: true,
+    });
   });
 });

@@ -34,6 +34,7 @@ import {
   fetchJudgment,
   fetchReady,
   fetchWatchlist,
+  approveCalibrationSnapshot,
   importPolymarketBenchmarks,
   listBenchmarkMarkets,
   listBenchmarkSets,
@@ -2107,6 +2108,25 @@ function CalibrationPage() {
     queryFn: () => fetchCalibrationSnapshot(selectedSnapshotId),
     enabled: Boolean(selectedSnapshotId),
   });
+  const approveMutation = useMutation({
+    mutationFn: approveCalibrationSnapshot,
+    onSuccess(snapshot) {
+      queryClient.setQueryData(
+        ["calibration-snapshots"],
+        (current: ReturnType<typeof listCalibrationSnapshots> extends Promise<infer T> ? T | undefined : never) => {
+          const summary = summarizeCalibrationSnapshot(snapshot);
+          const remaining = (current ?? []).filter((item) => item.id !== summary.id);
+          return [summary, ...remaining];
+        },
+      );
+      queryClient.setQueryData(["calibration-snapshot", snapshot.id], snapshot);
+      setSelectedSnapshotId(snapshot.id);
+      pushToast("Calibration snapshot approved.");
+    },
+    onError(error) {
+      pushToast(error instanceof Error ? error.message : "Unable to approve calibration", "error");
+    },
+  });
   const retrainMutation = useMutation({
     mutationFn: retrainCalibrationSnapshot,
     onSuccess(snapshot) {
@@ -2142,6 +2162,7 @@ function CalibrationPage() {
   }
 
   const snapshots = snapshotsQuery.data ?? [];
+  const selectedSnapshot = snapshotDetailQuery.data ?? snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? null;
 
   return (
     <div className="page-stack">
@@ -2185,6 +2206,7 @@ function CalibrationPage() {
                   <div className="list-row__tail">
                     <span>{snapshot.resolvedOutcomeCount} outcomes</span>
                     <StatusPill value={snapshot.weightRegime} />
+                    <StatusPill value={snapshot.approved ? "approved" : "pending"} />
                   </div>
                 </button>
               ))}
@@ -2196,17 +2218,34 @@ function CalibrationPage() {
             <LoadingState label="Loading snapshot detail…" />
           ) : snapshotDetailQuery.isError ? (
             <InlineError message={snapshotDetailQuery.error.message} />
-          ) : snapshotDetailQuery.data ? (
+          ) : selectedSnapshot ? (
             <div className="detail-stack">
               <div className="detail-grid">
-                <MetricTile label="Training window" value={snapshotDetailQuery.data.trainingWindow} />
+                <MetricTile label="Training window" value={selectedSnapshot.trainingWindow} />
                 <MetricTile
                   label="Weight regime"
-                  value={humanizeToken(snapshotDetailQuery.data.weightRegime)}
+                  value={humanizeToken(selectedSnapshot.weightRegime)}
                 />
-                <MetricTile label="Resolved outcomes" value={String(snapshotDetailQuery.data.resolvedOutcomeCount)} />
+                <MetricTile label="Resolved outcomes" value={String(selectedSnapshot.resolvedOutcomeCount)} />
+                <MetricTile
+                  label="Approval status"
+                  value={selectedSnapshot.approved ? "Approved" : "Needs approval"}
+                />
               </div>
-              <pre className="json-block">{JSON.stringify(snapshotDetailQuery.data.calibrationParams, null, 2)}</pre>
+              <div className="detail-actions">
+                <button
+                  type="button"
+                  disabled={approveMutation.isPending || selectedSnapshot.approved}
+                  onClick={() => approveMutation.mutate(selectedSnapshot.id)}
+                >
+                  {approveMutation.isPending
+                    ? "Approving…"
+                    : selectedSnapshot.approved
+                      ? "Approved"
+                      : "Approve snapshot"}
+                </button>
+              </div>
+              <pre className="json-block">{JSON.stringify(selectedSnapshot.calibrationParams, null, 2)}</pre>
             </div>
           ) : (
             <EmptyState title="Pick a snapshot" body="Select a snapshot from the history column." />

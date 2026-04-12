@@ -381,6 +381,63 @@ class VerdictTrace(BaseModel):
     status: Status1
 
 
+class Level(StrEnum):
+    info = 'info'
+    warn = 'warn'
+    error = 'error'
+
+
+class Stage(StrEnum):
+    queue = 'queue'
+    run = 'run'
+    evidence = 'evidence'
+    coverage = 'coverage'
+    calibration = 'calibration'
+    judge = 'judge'
+    storage = 'storage'
+
+
+class JudgmentExecutionLogEntry(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    timestamp: constr(min_length=1)
+    level: Level
+    stage: Stage
+    message: constr(min_length=1)
+    details: dict[str, Any]
+
+
+class JudgmentStatus(StrEnum):
+    queued = 'queued'
+    running = 'running'
+    completed = 'completed'
+    insufficient_evidence = 'insufficient_evidence'
+    failed = 'failed'
+
+
+class Entry(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    timestamp: constr(min_length=1)
+    level: Level
+    stage: Stage
+    message: constr(min_length=1)
+    details: dict[str, Any]
+
+
+class RuntimeEventRecord(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    judgmentId: constr(min_length=1)
+    eventId: constr(min_length=1)
+    judgmentStatus: JudgmentStatus
+    finalProbability: confloat(ge=0.0, le=1.0) | None
+    entry: Entry
+
+
 class JudgeOpinion2(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -489,6 +546,17 @@ class VerdictTrace1(BaseModel):
     status: Status4
 
 
+class ExecutionLogItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    timestamp: constr(min_length=1)
+    level: Level
+    stage: Stage
+    message: constr(min_length=1)
+    details: dict[str, Any]
+
+
 class JudgmentRecordSummary(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -497,6 +565,7 @@ class JudgmentRecordSummary(BaseModel):
     eventId: constr(min_length=1)
     status: Status1
     verdictTrace: VerdictTrace1 | None
+    executionLog: list[ExecutionLogItem] = Field([], validate_default=True)
     createdAt: constr(min_length=1)
     updatedAt: constr(min_length=1)
 
@@ -609,6 +678,17 @@ class VerdictTrace2(BaseModel):
     status: Status7
 
 
+class ExecutionLogItem1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    timestamp: constr(min_length=1)
+    level: Level
+    stage: Stage
+    message: constr(min_length=1)
+    details: dict[str, Any]
+
+
 class JudgeOpinion4(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -638,6 +718,7 @@ class JudgmentRecordDetails(BaseModel):
     eventId: constr(min_length=1)
     status: Status4
     verdictTrace: VerdictTrace2 | None
+    executionLog: list[ExecutionLogItem1] = Field([], validate_default=True)
     createdAt: constr(min_length=1)
     updatedAt: constr(min_length=1)
     judgeOpinions: list[JudgeOpinion4]
@@ -810,6 +891,10 @@ class CassandraSchemaBundle(BaseModel):
     EvidenceItem_1: EvidenceItem = Field(..., alias='EvidenceItem')
     JudgeOpinion_1: JudgeOpinion = Field(..., alias='JudgeOpinion')
     VerdictTrace_1: VerdictTrace = Field(..., alias='VerdictTrace')
+    JudgmentExecutionLogEntry_1: JudgmentExecutionLogEntry = Field(
+        ..., alias='JudgmentExecutionLogEntry'
+    )
+    RuntimeEventRecord_1: RuntimeEventRecord = Field(..., alias='RuntimeEventRecord')
     JudgmentRecordSummary_1: JudgmentRecordSummary = Field(
         ..., alias='JudgmentRecordSummary'
     )

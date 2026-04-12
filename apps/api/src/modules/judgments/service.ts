@@ -361,6 +361,235 @@ function selectCalibrationMethod(snapshot: CalibrationSnapshot): VerdictTrace["c
       : "identity";
 }
 
+function readNumericRecord(
+  value: unknown,
+): Record<string, number> | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const result: Record<string, number> = {};
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "number" && Number.isFinite(entry)) {
+      result[key] = entry;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function computeFixtureBaseRate(args: {
+  referenceClass: string | null;
+  calibrationSnapshot: CalibrationSnapshot;
+}): {
+  probability: number;
+  alpha: number;
+  usedFallback: boolean;
+} {
+  const params = args.calibrationSnapshot.baseRateParams;
+  const minimumSample =
+    typeof params.minimumSample === "number" && Number.isFinite(params.minimumSample)
+      ? Math.max(1, params.minimumSample)
+      : 20;
+  const historicalCounts =
+    params.historicalCounts && typeof params.historicalCounts === "object"
+      ? (params.historicalCounts as Record<string, unknown>)
+      : {};
+
+  if (!args.referenceClass) {
+    return {
+      probability: 0.5,
+      alpha: 0,
+      usedFallback: true,
+    };
+  }
+
+  const counts = historicalCounts[args.referenceClass];
+
+  if (!counts || typeof counts !== "object") {
+    return {
+      probability: 0.5,
+      alpha: 0,
+      usedFallback: true,
+    };
+  }
+
+  const countRecord = counts as Record<string, unknown>;
+  const successes =
+    typeof countRecord.successes === "number" && Number.isFinite(countRecord.successes)
+      ? Math.max(0, countRecord.successes)
+      : 0;
+  const total =
+    typeof countRecord.total === "number" && Number.isFinite(countRecord.total)
+      ? Math.max(0, countRecord.total)
+      : 0;
+
+  if (total <= 0) {
+    return {
+      probability: 0.5,
+      alpha: 0,
+      usedFallback: true,
+    };
+  }
+
+  return {
+    probability: (successes + 1) / (total + 2),
+    alpha: Math.min(total / minimumSample, 1),
+    usedFallback: total < minimumSample,
+  };
+}
+
+function collectFixtureMarketSignals(
+  evidence: JudgmentEvidenceItem[],
+): {
+  price: number;
+  spread: number;
+  depth: number;
+  volatility: number;
+} {
+  for (const item of evidence) {
+    if (item.sourceFamily !== "market" && item.sourceFamily !== "prediction_market") {
+      continue;
+    }
+
+    const metadata = readNumericRecord(item.metadata);
+
+    if (!metadata || typeof metadata.price !== "number") {
+      continue;
+    }
+
+    return {
+      price: metadata.price,
+      spread: typeof metadata.spread === "number" ? metadata.spread : 0.05,
+      depth: typeof metadata.depth === "number" ? metadata.depth : 0,
+      volatility: typeof metadata.volatility === "number" ? metadata.volatility : 0.1,
+    };
+  }
+
+  return {
+    price: 0.5,
+    spread: 0.05,
+    depth: 0,
+    volatility: 0.1,
+  };
+}
+
+function liquidityAdjustedMarketProbability(args: {
+  price: number;
+  spread: number;
+  depth: number;
+  volatility: number;
+}): number {
+  const boundedPrice = clamp(args.price, 1e-6, 1 - 1e-6);
+  const spreadPenalty = Math.max(0, 1 - Math.min(args.spread, 0.9));
+  const volatilityPenalty = Math.max(0, 1 - Math.min(args.volatility, 0.9));
+  const depthSupport = 1 - Math.exp(-Math.max(args.depth, 0) / 50_000);
+  const confidence = clamp(spreadPenalty * volatilityPenalty * depthSupport, 0, 1);
+
+  return 0.5 + confidence * (boundedPrice - 0.5);
+}
+
+function computeFixturePrior(args: {
+  event: EventRecord;
+  evidence: JudgmentEvidenceItem[];
+  calibrationSnapshot: CalibrationSnapshot;
+}): {
+  priorProbability: number;
+  referenceClassFallback: string | null;
+} {
+  const baseRate = computeFixtureBaseRate({
+    referenceClass: args.event.referenceClass,
+    calibrationSnapshot: args.calibrationSnapshot,
+  });
+  const marketSignals = collectFixtureMarketSignals(args.evidence);
+  const marketProbability = liquidityAdjustedMarketProbability(marketSignals);
+  const marketPriorAlpha =
+    typeof args.calibrationSnapshot.marketPriorParams.defaultAlpha === "number" &&
+    Number.isFinite(args.calibrationSnapshot.marketPriorParams.defaultAlpha)
+      ? args.calibrationSnapshot.marketPriorParams.defaultAlpha
+      : 0.6;
+  const alpha = baseRate.usedFallback ? 0 : marketPriorAlpha;
+  const priorLogOdds =
+    alpha * probabilityToLogOdds(baseRate.probability) +
+    (1 - alpha) * probabilityToLogOdds(marketProbability);
+
+  return {
+    priorProbability: logOddsToProbability(priorLogOdds),
+    referenceClassFallback: baseRate.usedFallback ? "global_baseline" : null,
+  };
+}
+
+function applyCalibrationToProbability(args: {
+  probability: number;
+  calibrationSnapshot: CalibrationSnapshot;
+}): number {
+  const method = selectCalibrationMethod(args.calibrationSnapshot);
+  const params = args.calibrationSnapshot.calibrationParams;
+
+  if (method === "identity") {
+    return args.probability;
+  }
+
+  if (method === "isotonic") {
+    const points = Array.isArray(params.thresholds) && Array.isArray(params.outputs)
+      ? params.thresholds.flatMap((threshold, index) => {
+          const output = params.outputs[index];
+
+          return typeof threshold === "number" && typeof output === "number"
+            ? [{ threshold, output: clamp(output, 0, 1) }]
+            : [];
+        }).sort((left, right) => left.threshold - right.threshold)
+      : [];
+
+    if (points.length === 0) {
+      return args.probability;
+    }
+
+    if (args.probability <= points[0]!.threshold) {
+      return points[0]!.output;
+    }
+
+    const lastPoint = points[points.length - 1];
+
+    if (lastPoint && args.probability >= lastPoint.threshold) {
+      return lastPoint.output;
+    }
+
+    for (let index = 1; index < points.length; index += 1) {
+      const left = points[index - 1];
+      const right = points[index];
+
+      if (!left || !right || args.probability > right.threshold) {
+        continue;
+      }
+
+      if (right.threshold <= left.threshold) {
+        return right.output;
+      }
+
+      const ratio =
+        (args.probability - left.threshold) / (right.threshold - left.threshold);
+
+      return clamp(left.output + ratio * (right.output - left.output), 0, 1);
+    }
+
+    return lastPoint?.output ?? args.probability;
+  }
+
+  const slope =
+    typeof params.slope === "number" && Number.isFinite(params.slope)
+      ? params.slope
+      : 1;
+  const intercept =
+    typeof params.intercept === "number" && Number.isFinite(params.intercept)
+      ? params.intercept
+      : 0;
+  const calibratedLogOdds = slope * probabilityToLogOdds(args.probability) + intercept;
+
+  return logOddsToProbability(calibratedLogOdds);
+}
+
 
 function mapEvidenceStrength(score: number): JudgeOpinion["evidenceStrength"] {
   if (score >= 2.5) {
@@ -686,6 +915,11 @@ function buildInsufficientEvidenceVerdictTrace(args: {
   evaluationTime: string;
   calibrationSnapshot: CalibrationSnapshot;
 }): VerdictTrace {
+  const prior = computeFixturePrior({
+    event: args.event,
+    evidence: args.evidence,
+    calibrationSnapshot: args.calibrationSnapshot,
+  });
   const judgeEvidenceSets = PANEL_JUDGES.map((panelJudge) => ({
     judgeName: panelJudge.judgeName,
     evidence: [] as JudgmentEvidenceItem[],
@@ -709,25 +943,29 @@ function buildInsufficientEvidenceVerdictTrace(args: {
   const citations = args.evidence.length > 0
     ? buildCitations(args.evidence)
     : [buildFallbackCitation(args.event)];
+  const finalProbability = applyCalibrationToProbability({
+    probability: prior.priorProbability,
+    calibrationSnapshot: args.calibrationSnapshot,
+  });
 
   return VerdictTraceSchema.parse({
     id: randomUUID(),
     eventId: args.event.id,
     evaluationTime: args.evaluationTime,
     referenceClass: args.event.referenceClass,
-    referenceClassFallback: args.event.referenceClass ? null : "global_baseline",
-    priorProbability: 0.5,
-    rawPosteriorProbability: 0.5,
-    finalProbability: 0.5,
-    confidenceLow: 0.35,
-    confidenceHigh: 0.65,
+    referenceClassFallback: prior.referenceClassFallback,
+    priorProbability: prior.priorProbability,
+    rawPosteriorProbability: prior.priorProbability,
+    finalProbability,
+    confidenceLow: clamp(finalProbability - 0.15, 0, finalProbability),
+    confidenceHigh: clamp(finalProbability + 0.15, finalProbability, 1),
     dependencyMatrix,
     disagreementShrinkage: 0,
     judgeOpinions,
     weightBreakdown: buildWeightBreakdown(judgeOpinions, dependencyMatrix),
     ensembleMethod: "logarithmic_opinion_pool",
     calibrationMethod: selectCalibrationMethod(args.calibrationSnapshot),
-    uncertaintyMethod: "bootstrap",
+    uncertaintyMethod: "none",
     weightRegime: args.calibrationSnapshot.weightRegime,
     replayFidelity: "approximate",
     conflicts: [],
@@ -834,7 +1072,12 @@ function buildFixtureVerdictTrace(args: {
   evaluationTime: string;
   calibrationSnapshot: CalibrationSnapshot;
 }): VerdictTrace {
-  const priorProbability = 0.5;
+  const prior = computeFixturePrior({
+    event: args.event,
+    evidence: args.evidence,
+    calibrationSnapshot: args.calibrationSnapshot,
+  });
+  const priorProbability = prior.priorProbability;
   const judgeEvidenceSets = PANEL_JUDGES.map((panelJudge) => ({
     judgeName: panelJudge.judgeName,
     evidence: args.evidence.filter((item) =>
@@ -868,10 +1111,14 @@ function buildFixtureVerdictTrace(args: {
     judgeOpinions.map((opinion) => opinion.logBayesFactor),
   );
   const priorLogOdds = probabilityToLogOdds(priorProbability);
-  const finalProbability = computePosteriorWithShrinkage({
+  const posteriorProbability = computePosteriorWithShrinkage({
     rawPosteriorLogOdds,
     priorLogOdds,
     shrinkage: disagreementShrinkage,
+  });
+  const finalProbability = applyCalibrationToProbability({
+    probability: posteriorProbability,
+    calibrationSnapshot: args.calibrationSnapshot,
   });
   const noEvidence = args.evidence.length === 0;
   const confidenceHalfWidth = noEvidence
@@ -885,7 +1132,7 @@ function buildFixtureVerdictTrace(args: {
     eventId: args.event.id,
     evaluationTime: args.evaluationTime,
     referenceClass: args.event.referenceClass,
-    referenceClassFallback: args.event.referenceClass ? null : "global_baseline",
+    referenceClassFallback: prior.referenceClassFallback,
     priorProbability,
     rawPosteriorProbability,
     finalProbability,
@@ -897,7 +1144,7 @@ function buildFixtureVerdictTrace(args: {
     weightBreakdown: buildWeightBreakdown(judgeOpinions, dependencyMatrix),
     ensembleMethod: "logarithmic_opinion_pool" as const,
     calibrationMethod: selectCalibrationMethod(args.calibrationSnapshot),
-    uncertaintyMethod: "bootstrap" as const,
+    uncertaintyMethod: "none" as const,
     weightRegime: args.calibrationSnapshot.weightRegime,
     replayFidelity: noEvidence ? "approximate" as const : "exact" as const,
     conflicts: buildConflicts(judgeOpinions),

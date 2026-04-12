@@ -1,5 +1,6 @@
 from app.main import app
 from app.scoring.calibration import (
+    apply_probability_calibration,
     brier_score,
     calibration_error_by_reference_class,
     expected_calibration_error,
@@ -25,6 +26,24 @@ def test_metric_calculations_are_deterministic() -> None:
     assert round(log_loss(pairs), 4) == 0.3618
     assert expected_calibration_error(pairs, bins=2) >= 0.0
     assert reliability_bins(pairs, bins=2)
+
+
+def test_probability_calibration_applies_stored_maps() -> None:
+    logistic = apply_probability_calibration(
+        0.5,
+        {"method": "logistic", "slope": 1.0, "intercept": 1.0},
+    )
+    isotonic = apply_probability_calibration(
+        0.6,
+        {
+            "method": "isotonic",
+            "thresholds": [0.2, 0.5, 0.8],
+            "outputs": [0.1, 0.4, 0.9],
+        },
+    )
+
+    assert logistic > 0.5
+    assert round(isotonic, 3) == 0.567
 
 
 def test_calibration_error_by_reference_class_groups_metrics() -> None:
@@ -53,6 +72,40 @@ def test_cold_start_snapshot_uses_identity_and_uniform_weights() -> None:
         "community_signal": 1 / 3,
         "open_web_research": 1 / 3,
     }
+
+
+def test_snapshot_persists_learned_prior_params() -> None:
+    traces = [
+        {
+            "eventId": f"event-{index}",
+            "referenceClass": "product_launch",
+            "finalProbability": 0.6 if index % 2 == 0 else 0.4,
+            "judgeOpinions": [
+                {"judgeName": "official_records", "probability": 0.6},
+                {"judgeName": "community_signal", "probability": 0.5},
+                {"judgeName": "open_web_research", "probability": 0.55},
+            ],
+        }
+        for index in range(4)
+    ]
+    outcomes = [
+        {"eventId": f"event-{index}", "resolvedValue": index % 2 == 0}
+        for index in range(4)
+    ]
+
+    snapshot = fit_calibration_snapshot(
+        historical_traces=traces,
+        resolved_outcomes=outcomes,
+    )
+
+    assert snapshot.baseRateParams["minimumSample"] == 20
+    assert snapshot.baseRateParams["historicalCounts"]["product_launch"] == {
+        "successes": 2,
+        "total": 4,
+    }
+    assert snapshot.marketPriorParams["sampleSize"] == 4
+    assert snapshot.marketPriorParams["referenceClassCount"] == 1
+    assert 0.0 < snapshot.marketPriorParams["defaultAlpha"] < 1.0
 
 
 def test_warming_snapshot_uses_logistic_style_calibration_and_online_updates() -> None:

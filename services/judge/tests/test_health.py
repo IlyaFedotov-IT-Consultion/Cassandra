@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 
+from app.api import _llm_dependency
 from app.main import app
+from app.llm.fake import FakeLLMClient
 
 
 client = TestClient(app)
@@ -76,6 +78,56 @@ def test_judge_endpoint_validates_and_returns_trace_shape() -> None:
     assert payload["judgeOpinions"]
     assert payload["citations"]
     assert payload["calibrationVersion"] == "33333333-3333-4333-8333-333333333333"
+
+
+def test_judge_endpoint_applies_calibration_map_to_final_probability() -> None:
+    app.dependency_overrides[_llm_dependency] = lambda: FakeLLMClient({})
+    try:
+        response = client.post(
+            "/judge",
+            json={
+                "eventId": "event-calibrated",
+                "event": {
+                    "question": "Will Example Corp launch Product X by 2026-12-31?",
+                    "resolutionCriteria": "Counts only if Example Corp posts a general availability announcement on its official site.",
+                    "deadline": "2026-12-31T23:59:59Z",
+                    "entities": ["Example Corp", "Product X"],
+                    "referenceClass": "product_launch",
+                    "marketSymbols": ["EXMPL"],
+                },
+                "evaluationTime": "2026-10-11T12:00:00Z",
+                "evidence": [],
+                "calibrationSnapshot": {
+                    "id": "snapshot-calibrated",
+                    "createdAt": "2026-10-01T00:00:00Z",
+                    "trainingWindow": "all_time",
+                    "judgeWeights": {
+                        "official_records": 0.33,
+                        "community_signal": 0.33,
+                        "open_web_research": 0.34,
+                    },
+                    "baseRateParams": {},
+                    "marketPriorParams": {},
+                    "calibrationParams": {
+                        "method": "logistic",
+                        "slope": 1.0,
+                        "intercept": 1.0,
+                    },
+                    "onlineLearningParams": {"enabled": False},
+                    "metrics": {},
+                    "weightRegime": "cold_start",
+                    "resolvedOutcomeCount": 0,
+                    "approved": False,
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["rawPosteriorProbability"] == 0.5
+    assert payload["finalProbability"] > payload["rawPosteriorProbability"]
 
 
 def test_judge_endpoint_rejects_invalid_payload() -> None:

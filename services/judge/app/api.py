@@ -8,7 +8,7 @@ from app.llm import LLMClient, get_llm_client
 from app.models import CalibrationRequest, JudgeRequest, VerdictTrace
 from app.models_generated import EvidenceItem
 from app.scoring.aggregate import aggregate_posterior
-from app.scoring.calibration import fit_calibration_snapshot
+from app.scoring.calibration import apply_probability_calibration, fit_calibration_snapshot
 from app.scoring.judges.community_signal import evaluate as evaluate_community_signal
 from app.scoring.judges.cross_examiner import evaluate as evaluate_cross_examiner
 from app.scoring.judges.official_records import evaluate as evaluate_official_records
@@ -182,9 +182,20 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     if calibration_method not in {"identity", "isotonic", "logistic", "beta"}:
         calibration_method = "identity"
 
-    final_probability = aggregate.posterior_probability
-    confidence_low = min(interval.low, final_probability)
-    confidence_high = max(interval.high, final_probability)
+    final_probability = apply_probability_calibration(
+        aggregate.posterior_probability,
+        request.calibration_snapshot.calibrationParams,
+    )
+    calibrated_low = apply_probability_calibration(
+        interval.low,
+        request.calibration_snapshot.calibrationParams,
+    )
+    calibrated_high = apply_probability_calibration(
+        interval.high,
+        request.calibration_snapshot.calibrationParams,
+    )
+    confidence_low = min(calibrated_low, calibrated_high, final_probability)
+    confidence_high = max(calibrated_low, calibrated_high, final_probability)
 
     return VerdictTrace.model_validate(
         {

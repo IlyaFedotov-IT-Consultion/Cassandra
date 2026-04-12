@@ -119,7 +119,7 @@ export async function getLatestCalibrationSnapshot(
   const result = await pool.query(`
     SELECT *
     FROM calibration_snapshots
-    ORDER BY created_at DESC
+    ORDER BY approved DESC, created_at DESC
     LIMIT 1
   `);
 
@@ -149,7 +149,7 @@ export async function listCalibrationSnapshots(pool: Pool): Promise<CalibrationS
   const result = await pool.query(`
     SELECT id, created_at, training_window, metrics, weight_regime, resolved_outcome_count, approved
     FROM calibration_snapshots
-    ORDER BY created_at DESC
+    ORDER BY approved DESC, created_at DESC
   `);
 
   return result.rows.map((row) => {
@@ -297,4 +297,48 @@ export async function retrainCalibrationSnapshot(
     resolvedOutcomeCount,
     approved: false,
   });
+}
+
+export async function approveCalibrationSnapshot(
+  pool: Pool,
+  snapshotId: string,
+): Promise<CalibrationSnapshot | null> {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const result = await client.query(
+      `
+        UPDATE calibration_snapshots
+        SET approved = TRUE
+        WHERE id = $1
+        RETURNING *
+      `,
+      [snapshotId],
+    );
+
+    if (result.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+
+    await client.query(
+      `
+        UPDATE calibration_snapshots
+        SET approved = FALSE
+        WHERE approved = TRUE AND id <> $1
+      `,
+      [snapshotId],
+    );
+
+    await client.query("COMMIT");
+
+    return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

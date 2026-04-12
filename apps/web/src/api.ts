@@ -374,6 +374,16 @@ export async function retrainCalibrationSnapshot(): Promise<CalibrationSnapshot>
   });
 }
 
+export async function approveCalibrationSnapshot(snapshotId: string): Promise<CalibrationSnapshot> {
+  return requestJson(
+    `/backtests/calibration-snapshots/${encodeURIComponent(snapshotId)}/approve`,
+    CalibrationSnapshotSchema,
+    {
+      method: "POST",
+    },
+  );
+}
+
 export type {
   CalibrationSnapshot,
   CandidateEventRecord,

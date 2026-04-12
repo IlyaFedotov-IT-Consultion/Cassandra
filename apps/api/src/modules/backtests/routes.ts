@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 
 import type { AppEnv } from "../../config/env.js";
 import {
+  approveCalibrationSnapshot,
   getCalibrationSnapshotById,
   listCalibrationSnapshots,
   loadCalibrationTrainingData,
@@ -32,6 +33,29 @@ export function registerBacktestRoutes(
     }
 
     const snapshot = await getCalibrationSnapshotById(args.pool, snapshotId);
+
+    if (!snapshot) {
+      reply.code(404);
+      return {
+        error: "Calibration snapshot not found",
+      };
+    }
+
+    return snapshot;
+  });
+
+  app.post("/backtests/calibration-snapshots/:id/approve", async (request, reply) => {
+    const params = request.params as { id?: string };
+    const snapshotId = params.id;
+
+    if (!snapshotId) {
+      reply.code(400);
+      return {
+        error: "Missing calibration snapshot id",
+      };
+    }
+
+    const snapshot = await approveCalibrationSnapshot(args.pool, snapshotId);
 
     if (!snapshot) {
       reply.code(404);

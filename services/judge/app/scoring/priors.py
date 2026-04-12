@@ -49,6 +49,58 @@ def empirical_bayes_base_rate(
     )
 
 
+def build_base_rate_params(
+    joined_pairs: list[dict[str, Any]],
+    *,
+    minimum_sample: int = 20,
+) -> dict[str, Any]:
+    historical_counts: dict[str, dict[str, int]] = {}
+    for pair in joined_pairs:
+        reference_class = str(pair.get("referenceClass") or "unknown")
+        counts = historical_counts.setdefault(reference_class, {"successes": 0, "total": 0})
+        counts["total"] += 1
+        counts["successes"] += int(bool(pair.get("outcome")))
+
+    total_successes = sum(counts["successes"] for counts in historical_counts.values())
+    total_events = sum(counts["total"] for counts in historical_counts.values())
+
+    return {
+        "minimumSample": minimum_sample,
+        "historicalCounts": {
+            reference_class: {
+                "successes": counts["successes"],
+                "total": counts["total"],
+            }
+            for reference_class, counts in sorted(historical_counts.items())
+        },
+        "globalCounts": {
+            "successes": total_successes,
+            "total": total_events,
+        },
+    }
+
+
+def build_market_prior_params(base_rate_params: Mapping[str, Any]) -> dict[str, Any]:
+    historical_counts = base_rate_params.get("historicalCounts", {}) or {}
+    minimum_sample = int(base_rate_params.get("minimumSample", 20))
+    totals = [int(counts.get("total", 0)) for counts in historical_counts.values() if int(counts.get("total", 0)) > 0]
+
+    if totals:
+        weighted_confidence = sum(
+            total * (total / (total + minimum_sample))
+            for total in totals
+        ) / sum(totals)
+    else:
+        weighted_confidence = 0.0
+
+    return {
+        "defaultAlpha": weighted_confidence,
+        "minimumSample": minimum_sample,
+        "sampleSize": sum(totals),
+        "referenceClassCount": len(totals),
+    }
+
+
 def liquidity_adjusted_market_probability(
     price: float,
     *,
@@ -86,7 +138,7 @@ def build_prior_log_odds(
     if base_rate.used_fallback:
         alpha = 0.0
     else:
-        alpha = float(market_prior_params.get("defaultAlpha", 0.6))
+        alpha = min(max(float(market_prior_params.get("defaultAlpha", 0.6)), 0.0), 1.0)
 
     prior_log_odds = alpha * _logit(base_rate.probability) + (1 - alpha) * _logit(market_probability)
     return PriorResult(

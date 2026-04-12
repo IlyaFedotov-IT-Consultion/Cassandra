@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from math import log
+from math import exp, log
 from statistics import mean
 from typing import Any
 from uuid import uuid4
 
 from app.models_generated import CalibrationSnapshot
+from app.scoring.priors import build_base_rate_params, build_market_prior_params
 from app.scoring.weights import default_judge_weights, select_regime, update_expert_weights
 
 
@@ -20,6 +21,83 @@ def _utc_now() -> str:
 
 def _clamp_probability(probability: float) -> float:
     return min(max(probability, 1e-6), 1 - 1e-6)
+
+
+def _logit(probability: float) -> float:
+    bounded = _clamp_probability(probability)
+    return log(bounded / (1 - bounded))
+
+
+def _sigmoid(value: float) -> float:
+    return 1 / (1 + exp(-value))
+
+
+def _apply_isotonic_calibration(
+    probability: float,
+    calibration_params: dict[str, Any],
+) -> float:
+    points: list[tuple[float, float]] = []
+    thresholds = calibration_params.get("thresholds", [])
+    outputs = calibration_params.get("outputs", [])
+    for threshold, output in zip(thresholds, outputs):
+        if isinstance(threshold, int | float) and isinstance(output, int | float):
+            points.append((float(threshold), _clamp_probability(float(output))))
+
+    if not points:
+        return _clamp_probability(probability)
+
+    points.sort(key=lambda point: point[0])
+    bounded = _clamp_probability(probability)
+
+    if bounded <= points[0][0]:
+        return points[0][1]
+    if bounded >= points[-1][0]:
+        return points[-1][1]
+
+    for index in range(1, len(points)):
+        left_threshold, left_output = points[index - 1]
+        right_threshold, right_output = points[index]
+        if bounded > right_threshold:
+            continue
+        if right_threshold <= left_threshold:
+            return right_output
+        ratio = (bounded - left_threshold) / (right_threshold - left_threshold)
+        return _clamp_probability(left_output + ratio * (right_output - left_output))
+
+    return points[-1][1]
+
+
+def apply_probability_calibration(
+    probability: float,
+    calibration_params: dict[str, Any] | None,
+) -> float:
+    params = calibration_params or {}
+    if not isinstance(params, dict):
+        return _clamp_probability(probability)
+
+    method = str(params.get("method", "identity"))
+    bounded = _clamp_probability(probability)
+
+    if method == "identity":
+        return bounded
+    if method == "isotonic":
+        return _apply_isotonic_calibration(bounded, params)
+    if method == "logistic":
+        slope = float(params.get("slope", 1.0))
+        intercept = float(params.get("intercept", 0.0))
+        return _clamp_probability(_sigmoid(slope * _logit(bounded) + intercept))
+    if method == "beta":
+        alpha = params.get("alpha", params.get("a"))
+        beta = params.get("beta", params.get("b"))
+        intercept = float(params.get("intercept", params.get("c", 0.0)))
+        if isinstance(alpha, int | float) and isinstance(beta, int | float):
+            return _clamp_probability(
+                _sigmoid(float(alpha) * log(bounded) + float(beta) * log(1 - bounded) + intercept)
+            )
+        slope = float(params.get("slope", 1.0))
+        return _clamp_probability(_sigmoid(slope * _logit(bounded) + intercept))
+
+    return bounded
 
 
 def brier_score(pairs: list[dict[str, float | int]]) -> float:
@@ -213,6 +291,9 @@ def fit_calibration_snapshot(
                 calibration_params = {"method": "logistic", "slope": 1.0, "intercept": 0.0}
             online_learning_params = {"enabled": True, "stepSizeScale": 1.0}
 
+    base_rate_params = build_base_rate_params(joined_pairs)
+    market_prior_params = build_market_prior_params(base_rate_params)
+
     metrics_pairs = [
         {"predicted": pair["predicted"], "outcome": pair["outcome"]}
         for pair in joined_pairs
@@ -232,8 +313,8 @@ def fit_calibration_snapshot(
             "createdAt": _utc_now(),
             "trainingWindow": "all_time",
             "judgeWeights": judge_weights,
-            "baseRateParams": {},
-            "marketPriorParams": {},
+            "baseRateParams": base_rate_params,
+            "marketPriorParams": market_prior_params,
             "calibrationParams": calibration_params,
             "onlineLearningParams": online_learning_params,
             "metrics": metrics,

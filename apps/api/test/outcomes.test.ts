@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import { getEnv } from "../src/config/env.js";
 import { createDbPool } from "../src/lib/db.js";
 import { createEvent } from "../src/modules/events/repository.js";
 
@@ -50,6 +51,12 @@ describe("outcome and backtest routes", () => {
 
     const app = buildApp({
       dbPool: pool,
+      env: getEnv({
+        DATABASE_URL,
+        REDIS_URL: "redis://localhost:6379",
+        JUDGE_BASE_URL: "http://judge.local",
+        CASSANDRA_ADAPTER_MODE: "fixture",
+      }),
     });
 
     try {
