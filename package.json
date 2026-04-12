@@ -17,6 +17,7 @@
     "test": "pnpm -r --if-present test",
     "lint": "pnpm -r --if-present lint",
     "db:migrate": "sh ./scripts/db-migrate.sh",
+    "db:migrate-test": "POSTGRES_DB=cassandra_test DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cassandra_test sh ./scripts/db-migrate.sh",
     "harness:real": "tsx scripts/harness/real-e2e.mts"
   }
 }

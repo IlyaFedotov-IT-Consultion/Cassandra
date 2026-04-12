@@ -47,58 +47,63 @@ export function createPolymarketClobProvider(config: { baseUrl?: string } = {}):
       }
 
       // Use the sampling-markets endpoint to get market details including token IDs
+      let market: ClobMarketResponse;
       try {
-        const market = await fetchProviderJson<ClobMarketResponse>(
+        market = await fetchProviderJson<ClobMarketResponse>(
           `${baseUrl}/markets/${encodeURIComponent(input.event.polymarketMarketId)}`,
         );
-
-        const tokens = market.tokens ?? [];
-        if (tokens.length === 0) {
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("404")) {
           return [];
         }
-
-        const prices: ProviderDocument[] = [];
-        for (const token of tokens) {
-          const tokenId = token.token_id;
-          if (!tokenId) continue;
-
-          try {
-            const priceData = await fetchProviderJson<{ price: number }>(
-              `${baseUrl}/price?token_id=${encodeURIComponent(tokenId)}&side=BUY`,
-            );
-            prices.push({
-              title: `${input.event.question} — ${String(token.outcome ?? "Yes")}`,
-              url: `https://polymarket.com/event/${input.event.polymarketMarketId}`,
-              publisher: "Polymarket CLOB",
-              publishedAt: new Date().toISOString(),
-              summary: `Current ${String(token.outcome ?? "Yes")} price: ${priceData.price}`,
-              metadata: {
-                provider: "polymarketClob",
-                price: priceData.price,
-                tokenId,
-                outcome: token.outcome,
-              },
-              qualitySignals: {},
-            });
-          } catch {
-            // Skip tokens with no pricing data
-          }
-        }
-
-        return prices.map((document) =>
-          createProviderEvidenceItem({
-            eventId: input.event.id,
-            sourceFamily: "prediction_market",
-            sourceType: "quote_snapshot",
-            document,
-            metadata: { provider: "polymarketClob" },
-          }),
-        );
-      } catch (error) {
         throw new Error(
-          `polymarketClob failed for condition_id "${input.event.polymarketMarketId}": ${error instanceof Error ? error.message : String(error)}`,
+          `polymarketClob failed for condition_id "${input.event.polymarketMarketId}": ${message}`,
         );
       }
+
+      const tokens = market.tokens ?? [];
+      if (tokens.length === 0) {
+        return [];
+      }
+
+      const prices: ProviderDocument[] = [];
+      for (const token of tokens) {
+        const tokenId = token.token_id;
+        if (!tokenId) continue;
+
+        try {
+          const priceData = await fetchProviderJson<{ price: number }>(
+            `${baseUrl}/price?token_id=${encodeURIComponent(tokenId)}&side=BUY`,
+          );
+          prices.push({
+            title: `${input.event.question} — ${String(token.outcome ?? "Yes")}`,
+            url: `https://polymarket.com/event/${input.event.polymarketMarketId}`,
+            publisher: "Polymarket CLOB",
+            publishedAt: new Date().toISOString(),
+            summary: `Current ${String(token.outcome ?? "Yes")} price: ${priceData.price}`,
+            metadata: {
+              provider: "polymarketClob",
+              price: priceData.price,
+              tokenId,
+              outcome: token.outcome,
+            },
+            qualitySignals: {},
+          });
+        } catch {
+          // Skip tokens with no pricing data
+        }
+      }
+
+      return prices.map((document) =>
+        createProviderEvidenceItem({
+          eventId: input.event.id,
+          sourceFamily: "prediction_market",
+          sourceType: "quote_snapshot",
+          document,
+          metadata: { provider: "polymarketClob" },
+        }),
+      );
     },
   };
 }

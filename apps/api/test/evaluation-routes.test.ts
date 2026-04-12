@@ -37,7 +37,7 @@ describe("evaluation routes", () => {
     const app = buildApp({
       dbPool: pool,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
@@ -133,7 +133,7 @@ describe("evaluation routes", () => {
     const app = buildApp({
       dbPool: pool,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
@@ -204,7 +204,7 @@ describe("evaluation routes", () => {
     const app = buildApp({
       dbPool: pool,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
@@ -268,7 +268,7 @@ describe("evaluation routes", () => {
         query: async () => ({ rows: [] }),
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
@@ -312,7 +312,7 @@ describe("evaluation routes", () => {
         query,
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
@@ -383,7 +383,7 @@ describe("evaluation routes", () => {
     const app = buildApp({
       dbPool: pool,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
@@ -437,7 +437,7 @@ describe("evaluation routes", () => {
         query: async () => ({ rows: [] }),
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
@@ -472,7 +472,7 @@ describe("evaluation routes", () => {
         query: async () => ({ rows: [] }),
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
@@ -504,7 +504,7 @@ describe("evaluation routes", () => {
         query: async () => ({ rows: [] }),
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
@@ -538,7 +538,7 @@ describe("evaluation routes", () => {
         query: async () => ({ rows: [] }),
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
@@ -593,7 +593,7 @@ describe("evaluation routes", () => {
         query: async () => ({ rows: [] }),
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",
@@ -704,7 +704,7 @@ describe("evaluation routes", () => {
     const app = buildApp({
       dbPool: pool,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "fixture",

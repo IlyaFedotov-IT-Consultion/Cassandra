@@ -117,7 +117,7 @@ describe("evaluation replay", () => {
 
     const first = await collectReplayEvidence({
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         CASSANDRA_ADAPTER_MODE: "live",
       }),
@@ -128,7 +128,7 @@ describe("evaluation replay", () => {
     });
     const second = await collectReplayEvidence({
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         CASSANDRA_ADAPTER_MODE: "live",
       }),
@@ -296,7 +296,7 @@ describe("evaluation replay", () => {
     const run = await runHistoricalEvaluation({
       pool,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         CASSANDRA_ADAPTER_MODE: "fixture",
       }),
@@ -417,7 +417,7 @@ describe("evaluation replay", () => {
         },
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         CASSANDRA_ADAPTER_MODE: "fixture",
       }),
@@ -449,7 +449,7 @@ describe("evaluation replay", () => {
         },
       } as never,
       env: getEnv({
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
         REDIS_URL: "redis://localhost:6379",
         CASSANDRA_ADAPTER_MODE: "live",
       }),
@@ -508,7 +508,7 @@ describe("evaluation replay", () => {
           },
         } as never,
         env: getEnv({
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+          DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/cassandra_test",
           REDIS_URL: "redis://localhost:6379",
           CASSANDRA_ADAPTER_MODE: "fixture",
         }),

@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
-    "pretest": "pnpm --filter @cassandra/shared build && pnpm --dir ../.. db:migrate",
+    "pretest": "pnpm --filter @cassandra/shared build && pnpm --dir ../.. db:migrate && pnpm --dir ../.. db:migrate-test",
     "test": "vitest run"
   },
   "dependencies": {
