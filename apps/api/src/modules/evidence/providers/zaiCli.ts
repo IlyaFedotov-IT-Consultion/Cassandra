@@ -1,19 +1,20 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
 import type { ProviderDocument } from "./fixtureLoader.js";
 
-const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_ZAI_WEB_SEARCH_URL = "https://api.z.ai/api/paas/v4/web_search";
 
 type ZaiCliRecency = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit";
 
-interface ZaiCliResult {
+interface ZaiWebSearchResult {
   title?: string;
-  url?: string;
-  summary?: string;
-  source?: string;
-  date?: string;
+  link?: string;
+  content?: string;
+  media?: string;
+  publish_date?: string;
+}
+
+interface ZaiWebSearchResponse {
+  search_result?: ZaiWebSearchResult[];
 }
 
 function normalizePublishedAt(value: string | undefined): string {
@@ -27,6 +28,10 @@ function normalizePublishedAt(value: string | undefined): string {
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
 }
 
+function resolveSearchUrl(searchUrl?: string): string {
+  return searchUrl ?? process.env.ZAI_WEB_SEARCH_URL ?? DEFAULT_ZAI_WEB_SEARCH_URL;
+}
+
 export async function searchWithZaiCli(args: {
   apiKey?: string;
   count?: number;
@@ -35,6 +40,7 @@ export async function searchWithZaiCli(args: {
   providerName: string;
   query: string;
   recency?: ZaiCliRecency;
+  searchUrl?: string;
   timeoutMs?: number;
 }): Promise<ProviderDocument[]> {
   if (!args.apiKey) {
@@ -46,56 +52,61 @@ export async function searchWithZaiCli(args: {
   const seenUrls = new Set<string>();
 
   for (const domain of domains) {
-    const cliArgs = ["-y", "zai-cli", "search", args.query];
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
-    if (domain) {
-      cliArgs.push("--domain", domain);
-    }
+    try {
+      const response = await fetch(resolveSearchUrl(args.searchUrl), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${args.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          search_engine: "search-prime",
+          search_query: args.query,
+          count: args.count ?? 5,
+          search_domain_filter: domain,
+          search_recency_filter: args.recency ?? "noLimit",
+          location: args.location,
+        }),
+        signal: controller.signal,
+      });
 
-    if (args.recency) {
-      cliArgs.push("--recency", args.recency);
-    }
-
-    if (args.location) {
-      cliArgs.push("--location", args.location);
-    }
-
-    cliArgs.push("--count", String(args.count ?? 5));
-
-    const { stdout } = await execFileAsync("npx", cliArgs, {
-      env: {
-        ...process.env,
-        ZAI_API_KEY: args.apiKey,
-        Z_AI_API_KEY: args.apiKey,
-      },
-      maxBuffer: 1024 * 1024 * 4,
-      timeout: args.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    });
-
-    const parsed = JSON.parse(stdout) as ZaiCliResult[];
-
-    for (const item of parsed) {
-      const url = item.url?.trim();
-
-      if (!url || seenUrls.has(url)) {
-        continue;
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Z.AI web search failed with ${response.status} ${response.statusText}: ${errorText.slice(0, 500)}`,
+        );
       }
 
-      seenUrls.add(url);
-      documents.push({
-        title: item.title?.trim() || item.summary?.trim() || url,
-        url,
-        publisher: item.source?.trim() || domain || "zai-cli-search",
-        publishedAt: normalizePublishedAt(item.date),
-        summary: item.summary?.trim() || item.title?.trim() || url,
-        metadata: {
-          provider: args.providerName,
-          domain: domain ?? null,
-        },
-        qualitySignals: {
-          domainFiltered: Boolean(domain),
-        },
-      });
+      const payload = (await response.json()) as ZaiWebSearchResponse;
+
+      for (const item of payload.search_result ?? []) {
+        const url = item.link?.trim();
+
+        if (!url || seenUrls.has(url)) {
+          continue;
+        }
+
+        seenUrls.add(url);
+        documents.push({
+          title: item.title?.trim() || item.content?.trim() || url,
+          url,
+          publisher: item.media?.trim() || domain || "zai-web-search",
+          publishedAt: normalizePublishedAt(item.publish_date),
+          summary: item.content?.trim() || item.title?.trim() || url,
+          metadata: {
+            provider: args.providerName,
+            domain: domain ?? null,
+          },
+          qualitySignals: {
+            domainFiltered: Boolean(domain),
+          },
+        });
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

@@ -55,7 +55,7 @@ describe("evaluation replay", () => {
       question: benchmarkMarket.title,
       resolutionCriteria: benchmarkMarket.resolutionCriteria,
       deadline: benchmarkMarket.resolvedAt,
-      entities: [],
+      entities: ["Example Corp launch Product X"],
       referenceClass: null,
       marketSymbols: [],
       polymarketMarketId: benchmarkMarket.id,
@@ -439,6 +439,64 @@ describe("evaluation replay", () => {
     });
 
     expect(requestedBenchmarkSetId).toBe("benchmark-set-1");
+  });
+
+  it("skips failing model baseline predictions instead of aborting the full run", async () => {
+    const run = await runHistoricalEvaluation({
+      pool: {
+        async query(text: string) {
+          throw new Error(`Unexpected query during skipped baseline test: ${text}`);
+        },
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      input: {
+        benchmarkSetId: "benchmark-set-1",
+        baselines: ["base_rate_only", "model_without_polymarket"],
+      },
+      listBenchmarkMarkets: async () => [benchmarkMarket],
+      listPriceSnapshotsForBenchmark: async () => [],
+      getCalibrationSnapshot: async () => ({
+        id: "snapshot-1",
+        createdAt: "2026-10-01T00:00:00Z",
+        trainingWindow: "all_time",
+        judgeWeights: {},
+        baseRateParams: {},
+        marketPriorParams: {},
+        calibrationParams: {
+          method: "identity",
+        },
+        onlineLearningParams: {
+          enabled: false,
+        },
+        metrics: {},
+        weightRegime: "cold_start",
+        resolvedOutcomeCount: 0,
+        approved: false,
+      }),
+      evaluateModelBaseline: async () => {
+        throw new Error("judge contract mismatch");
+      },
+      persistEvaluationRunResult: async (_pool, input) => ({
+        id: "run-2",
+        ...input.run,
+        createdAt: "2026-01-02T00:00:00Z",
+      }),
+    });
+
+    expect(run.overallMetrics.predictionCount).toBe(4);
+    expect(run.overallMetrics.byBaseline.base_rate_only.sampleSize).toBe(4);
+    expect(run.overallMetrics.byBaseline.model_without_polymarket.sampleSize).toBe(0);
+    expect(run.replayFidelity).toBe("approximate");
+    expect(run.leakageWarnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Skipped model_without_polymarket"),
+        expect.stringContaining("judge contract mismatch"),
+      ]),
+    );
   });
 
   it("fails when requested benchmark market ids are missing", async () => {

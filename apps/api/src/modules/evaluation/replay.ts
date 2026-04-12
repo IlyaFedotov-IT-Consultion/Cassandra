@@ -15,14 +15,13 @@ import {
   type EvidenceCacheStore,
 } from "../evidence/cache.js";
 import { normalizeEvidenceItems } from "../evidence/normalize.js";
-import { createMarketProvider } from "../evidence/providers/marketProvider.js";
-import { createPerplexityProvider } from "../evidence/providers/perplexity.js";
-import { createPolymarketClobProvider } from "../evidence/providers/polymarketClob.js";
-import { createPolymarketGammaProvider } from "../evidence/providers/polymarketGamma.js";
 import type { EvidenceProvider } from "../evidence/types.js";
 import type { EventRecord } from "../events/repository.js";
 import { InMemoryJudgeCacheStore, type JudgeCacheStore } from "../judgments/judgeCache.js";
-import { evaluateEventForecast } from "../judgments/service.js";
+import {
+  createDefaultEvidenceProviders as createDefaultJudgmentEvidenceProviders,
+  evaluateEventForecast,
+} from "../judgments/service.js";
 import {
   assertNoPolymarketLeak,
   computeBaseRateOnlyProbability,
@@ -130,12 +129,21 @@ export function buildReplayCutoffs(resolvedAt: string): ReplayCutoff[] {
   }));
 }
 
+function inferReplayEntities(question: string): string[] {
+  const normalized = question.trim().replace(/\?$/, "");
+  const subject =
+    normalized.match(/^Will\s+(.+?)(?:\s+by\s+|\s+before\s+|\s+on\s+|\s+in\s+)/i)?.[1]
+    ?? normalized.replace(/^Will\s+/i, "");
+
+  return [subject.trim() || normalized];
+}
+
 export function buildReplayEventInput(market: BenchmarkMarket): EventInput {
   return {
     question: market.title,
     resolutionCriteria: market.resolutionCriteria,
     deadline: market.resolvedAt,
-    entities: [],
+    entities: inferReplayEntities(market.title),
     referenceClass: null,
     marketSymbols: [],
     polymarketMarketId: market.id,
@@ -212,24 +220,6 @@ function createFallbackCalibrationSnapshot(): CalibrationSnapshot {
     resolvedOutcomeCount: 0,
     approved: false,
   };
-}
-
-function createDefaultEvidenceProviders(env: AppEnv): EvidenceProvider[] {
-  return [
-    createPerplexityProvider({
-      apiKey: env.PERPLEXITY_API_KEY,
-    }),
-    createMarketProvider({
-      baseUrl: env.CUSTOM_MARKET_API_BASE_URL,
-      apiKey: env.CUSTOM_MARKET_API_KEY,
-    }),
-    createPolymarketGammaProvider({
-      baseUrl: env.POLYMARKET_GAMMA_URL,
-    }),
-    createPolymarketClobProvider({
-      baseUrl: env.POLYMARKET_CLOB_URL,
-    }),
-  ];
 }
 
 function sourceConfigurationForBaseline(
@@ -386,7 +376,8 @@ export async function runHistoricalEvaluation(
 
   const calibrationSnapshot =
     (await getCalibrationSnapshot(args.pool)) ?? createFallbackCalibrationSnapshot();
-  const evidenceProviders = args.evidenceProviders ?? createDefaultEvidenceProviders(args.env);
+  const evidenceProviders =
+    args.evidenceProviders ?? createDefaultJudgmentEvidenceProviders(args.env);
   const evidenceCacheStore = args.evidenceCacheStore ?? new InMemoryEvidenceCacheStore();
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
   const predictions: EvaluationPredictionInput[] = [];
@@ -419,26 +410,36 @@ export async function runHistoricalEvaluation(
             throw new Error(`Missing replay event for baseline ${baseline}`);
           }
 
-          const evaluated = await evaluateModelBaseline({
-            pool: args.pool,
-            env: args.env,
-            event,
-            market,
-            cutoff,
-            baseline,
-            calibrationSnapshot,
-            evidenceProviders,
-            evidenceCacheStore,
-            judgeCacheStore,
-          });
-          predictedProbability = evaluated.probability;
+          try {
+            const evaluated = await evaluateModelBaseline({
+              pool: args.pool,
+              env: args.env,
+              event,
+              market,
+              cutoff,
+              baseline,
+              calibrationSnapshot,
+              evidenceProviders,
+              evidenceCacheStore,
+              judgeCacheStore,
+            });
+            predictedProbability = evaluated.probability;
 
-          if (evaluated.replayFidelity === "approximate") {
+            if (evaluated.replayFidelity === "approximate") {
+              replayFidelity = "approximate";
+            }
+
+            for (const warning of evaluated.leakageWarnings ?? []) {
+              leakageWarnings.add(warning);
+            }
+          } catch (error) {
             replayFidelity = "approximate";
-          }
-
-          for (const warning of evaluated.leakageWarnings ?? []) {
-            leakageWarnings.add(warning);
+            leakageWarnings.add(
+              `Skipped ${baseline} for ${market.id} at ${cutoff.cutoffAt}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            continue;
           }
         }
 

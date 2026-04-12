@@ -41,7 +41,10 @@ services:
         "apk add --no-cache postgresql-client && corepack enable && pnpm install --frozen-lockfile && pnpm db:migrate && pnpm --filter @cassandra/api dev",
       ]
     env_file:
-      - .env.example
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
     environment:
       CI: "true"
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/cassandra
@@ -102,7 +105,10 @@ services:
         "python -m pip install --no-cache-dir uv && uv sync --frozen && uv run uvicorn app.main:app --host 0.0.0.0 --port ${JUDGE_PORT:-8000} --reload",
       ]
     env_file:
-      - .env.example
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/cassandra
       REDIS_URL: redis://redis:6379
@@ -151,7 +157,10 @@ services:
         "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @cassandra/web dev",
       ]
     env_file:
-      - .env.example
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
     environment:
       CI: "true"
       VITE_API_BASE_URL: http://api:3000

@@ -703,6 +703,9 @@ describe("judgment routes and service", () => {
       createFixtureEnv({
         CASSANDRA_ADAPTER_MODE: "live",
         ZAI_API_KEY: "zai-key",
+        PERPLEXITY_API_KEY: "perplexity-key",
+        CUSTOM_MARKET_API_BASE_URL: "https://markets.example.com",
+        CUSTOM_MARKET_API_KEY: "market-key",
       }),
     );
 
@@ -713,6 +716,24 @@ describe("judgment routes and service", () => {
       "web",
       "perplexity",
       "marketProvider",
+      "polymarketGamma",
+      "polymarketClob",
+    ]);
+  });
+
+  it("skips placeholder-backed live providers when credentials are not configured", () => {
+    const providers = createDefaultEvidenceProviders(
+      createFixtureEnv({
+        CASSANDRA_ADAPTER_MODE: "live",
+        ZAI_API_KEY: "zai-key",
+      }),
+    );
+
+    expect(providers.map((provider) => provider.name)).toEqual([
+      "officialSearch",
+      "governmentSearch",
+      "communitySearch",
+      "web",
       "polymarketGamma",
       "polymarketClob",
     ]);

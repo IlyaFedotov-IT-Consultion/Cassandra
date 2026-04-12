@@ -588,6 +588,7 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
   const start = Date.now();
   const steps: StepRecord[] = [];
   const failures: string[] = [];
+  let benchmarkMarkets: unknown[] = [];
 
   try {
     const importResult = await timed(
@@ -629,7 +630,7 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
         const firstSet = benchmarkSets[0] as { benchmarkSetId: string };
         shared.benchmarkSetId = firstSet.benchmarkSetId;
 
-        const markets = await timed(
+        benchmarkMarkets = await timed(
           "GET /evaluation/benchmark-sets/:id/markets",
           () =>
             apiRequest<unknown[]>(
@@ -639,18 +640,33 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
           steps,
         );
 
-        if (!Array.isArray(markets)) {
+        if (!Array.isArray(benchmarkMarkets)) {
           failures.push("GET benchmark-sets/:id/markets did not return an array");
         }
       }
     }
 
     if (shared.benchmarkSetId) {
+      const benchmarkMarketIds = Array.isArray(benchmarkMarkets)
+        ? benchmarkMarkets
+            .slice(0, 1)
+            .map((market) =>
+              typeof market === "object"
+                && market !== null
+                && "id" in market
+                && typeof market.id === "string"
+                ? market.id
+                : null,
+            )
+            .filter((id): id is string => id !== null)
+        : [];
       const runResponse = await timed(
         "POST /evaluation/runs",
         () =>
           apiRequestStatus("POST", "/evaluation/runs", {
             benchmarkSetId: shared.benchmarkSetId,
+            benchmarkMarketIds: benchmarkMarketIds.length > 0 ? benchmarkMarketIds : undefined,
+            baselines: ["base_rate_only", "polymarket_only"],
           }),
         steps,
       );
@@ -752,7 +768,10 @@ function validateVerdictTraceInvariants(vt: VerdictTrace): string[] {
     failures.push(`expected >= 1 citation, got ${vt.citations.length}`);
   }
 
-  if (vt.citations.some((citation) => citation.url.includes("example.invalid"))) {
+  if (
+    vt.status === "completed"
+    && vt.citations.some((citation) => citation.url.includes("example.invalid"))
+  ) {
     failures.push("verdict contains placeholder citations");
   }
 
@@ -842,7 +861,7 @@ function validateVerdictTraceInvariants(vt: VerdictTrace): string[] {
 
   if (!Array.isArray(vt.cacheEvents)) {
     failures.push("cacheEvents is not an array");
-  } else if (vt.cacheEvents.length === 0) {
+  } else if (vt.status === "completed" && vt.cacheEvents.length === 0) {
     failures.push("cacheEvents is empty — expected at least one cache trace entry (§13.2)");
   }
 

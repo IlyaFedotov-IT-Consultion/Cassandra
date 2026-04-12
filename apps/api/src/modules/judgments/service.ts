@@ -703,34 +703,74 @@ class DefaultJudgeClient implements JudgeClient {
   }
 }
 
+function hasConfiguredSecret(value: string | undefined): boolean {
+  const trimmed = value?.trim();
+
+  return Boolean(trimmed && trimmed.toLowerCase() !== "replace-me");
+}
+
+function hasConfiguredCustomMarketBaseUrl(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.hostname !== "example-market-provider.local";
+  } catch {
+    return false;
+  }
+}
+
 export function createDefaultEvidenceProviders(env: AppEnv): EvidenceProvider[] {
-  return [
-    createOfficialSearchProvider({
-      zaiApiKey: env.ZAI_API_KEY,
-    }),
-    createGovernmentSearchProvider({
-      zaiApiKey: env.ZAI_API_KEY,
-    }),
-    createCommunitySearchProvider({
-      zaiApiKey: env.ZAI_API_KEY,
-    }),
-    createWebProvider({
-      zaiApiKey: env.ZAI_API_KEY,
-    }),
-    createPerplexityProvider({
-      apiKey: env.PERPLEXITY_API_KEY,
-    }),
-    createMarketProvider({
-      baseUrl: env.CUSTOM_MARKET_API_BASE_URL,
-      apiKey: env.CUSTOM_MARKET_API_KEY,
-    }),
+  const providers: EvidenceProvider[] = [];
+
+  if (hasConfiguredSecret(env.ZAI_API_KEY)) {
+    providers.push(
+      createOfficialSearchProvider({
+        zaiApiKey: env.ZAI_API_KEY,
+      }),
+      createGovernmentSearchProvider({
+        zaiApiKey: env.ZAI_API_KEY,
+      }),
+      createCommunitySearchProvider({
+        zaiApiKey: env.ZAI_API_KEY,
+      }),
+      createWebProvider({
+        zaiApiKey: env.ZAI_API_KEY,
+      }),
+    );
+  }
+
+  if (hasConfiguredSecret(env.PERPLEXITY_API_KEY)) {
+    providers.push(
+      createPerplexityProvider({
+        apiKey: env.PERPLEXITY_API_KEY,
+      }),
+    );
+  }
+
+  if (hasConfiguredCustomMarketBaseUrl(env.CUSTOM_MARKET_API_BASE_URL)) {
+    providers.push(
+      createMarketProvider({
+        baseUrl: env.CUSTOM_MARKET_API_BASE_URL,
+        apiKey: hasConfiguredSecret(env.CUSTOM_MARKET_API_KEY)
+          ? env.CUSTOM_MARKET_API_KEY
+          : undefined,
+      }),
+    );
+  }
+
+  providers.push(
     createPolymarketGammaProvider({
       baseUrl: env.POLYMARKET_GAMMA_URL,
     }),
     createPolymarketClobProvider({
       baseUrl: env.POLYMARKET_CLOB_URL,
     }),
-  ];
+  );
+
+  return providers;
 }
 
 async function getOrCreateCalibrationSnapshot(pool: Pool): Promise<CalibrationSnapshot> {
