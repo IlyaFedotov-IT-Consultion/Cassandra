@@ -11,6 +11,7 @@ import type { Redis } from "ioredis";
 import type { Pool } from "pg";
 
 import type { AppEnv } from "../../config/env.js";
+import type { AppLogger } from "../../lib/logger.js";
 import {
   InMemoryEvidenceCacheStore,
   collectEvidenceForEventWithCache,
@@ -122,6 +123,7 @@ export interface JudgmentServiceDeps {
   evidenceCacheStore?: EvidenceCacheStore;
   judgeCacheStore?: JudgeCacheStore;
   judgeClient?: JudgeClient;
+  logger?: AppLogger;
 }
 
 export interface CreateJudgmentInput {
@@ -679,9 +681,19 @@ export async function runJudgment(args: JudgmentServiceDeps & {
     args.evidenceCacheStore ?? new InMemoryEvidenceCacheStore();
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
   const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
+  const logger = args.logger?.child({
+    component: "judgment_run",
+    evaluationTime,
+  });
   await updateJudgmentStatus(args.pool, judgment.id, "running");
 
   try {
+    logger?.info(
+      {
+        event: "judgment_started",
+      },
+      "judgment started",
+    );
     const collected = await collectEvidenceForEventWithCache({
       pool: args.pool,
       event,
@@ -689,7 +701,16 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       mode: args.env.CASSANDRA_ADAPTER_MODE,
       providers: evidenceProviders,
       cacheStore: evidenceCacheStore,
+      logger,
     });
+    logger?.info(
+      {
+        event: "judgment_evidence_ready",
+        evidenceCount: collected.items.length,
+        providerCount: collected.providerRuns.length,
+      },
+      "judgment evidence ready",
+    );
     const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
     const verdictTrace = await evaluateEventForecast({
       env: args.env,
@@ -709,9 +730,25 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       throw new Error(`Stored judgment not found after persistence: ${judgment.id}`);
     }
 
+    logger?.info(
+      {
+        event: "judgment_completed",
+        finalProbability: stored.verdictTrace?.finalProbability ?? null,
+        status: stored.status,
+      },
+      "judgment completed",
+    );
+
     return stored;
   } catch (error) {
     await updateJudgmentStatus(args.pool, judgment.id, "failed");
+    logger?.error(
+      {
+        event: "judgment_failed",
+        err: error,
+      },
+      "judgment failed",
+    );
     throw error;
   }
 }

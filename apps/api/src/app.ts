@@ -1,9 +1,20 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyBaseLogger, type FastifyInstance } from "fastify";
+import type {
+  RawReplyDefaultExpression,
+  RawRequestDefaultExpression,
+  RawServerDefault,
+} from "fastify";
 import type { Pool } from "pg";
 import type { Redis } from "ioredis";
 
 import type { AppEnv } from "./config/env.js";
 import { getEnv } from "./config/env.js";
+import {
+  buildRequestId,
+  createLogger,
+  resolveLogLevel,
+  type AppLogger,
+} from "./lib/logger.js";
 import { registerBacktestRoutes } from "./modules/backtests/routes.js";
 import {
   registerEvaluationRoutes,
@@ -18,6 +29,7 @@ export interface ReadinessChecks {
   dbPool?: Pool;
   env?: AppEnv;
   redisConnection?: Redis;
+  logger?: ReturnType<typeof createLogger>;
   fetchImpl?: typeof fetch;
   runEvaluation?: RegisterEvaluationRoutesArgs["runEvaluation"];
   getEvaluationRun?: RegisterEvaluationRoutesArgs["getEvaluationRun"];
@@ -27,11 +39,50 @@ export interface ReadinessChecks {
 }
 
 export function buildApp(checks: ReadinessChecks = {}) {
-  const app = Fastify({
-    logger: false,
+  const isTestMode = process.env.NODE_ENV === "test";
+  const env =
+    checks.env ??
+    getEnv(
+      isTestMode
+        ? {
+            ...process.env,
+            LOG_LEVEL: process.env.LOG_LEVEL ?? "silent",
+          }
+        : process.env,
+    );
+  const logger =
+    checks.logger ??
+    createLogger({
+      component: "api",
+      level: isTestMode ? "silent" : resolveLogLevel(env.LOG_LEVEL),
+    });
+  const app: FastifyInstance = Fastify<
+    RawServerDefault,
+    RawRequestDefaultExpression<RawServerDefault>,
+    RawReplyDefaultExpression<RawServerDefault>,
+    FastifyBaseLogger
+  >({
+    disableRequestLogging: true,
+    genReqId(request) {
+      return buildRequestId(request.headers["x-request-id"]);
+    },
+    loggerInstance: logger as unknown as FastifyBaseLogger,
+    requestIdHeader: "x-request-id",
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    const requestLogger = request.log.child({
+      component: "http",
+      method: request.method,
+      url: request.url,
+    }) as AppLogger;
+    requestLogger.info(
+      {
+        event: "request_received",
+      },
+      "request received",
+    );
+
     const origin = request.headers.origin;
 
     if (origin) {
@@ -46,11 +97,47 @@ export function buildApp(checks: ReadinessChecks = {}) {
     }
   });
 
+  app.addHook("onResponse", async (request, reply) => {
+    const requestLogger = request.log.child({
+      component: "http",
+      method: request.method,
+      url: request.url,
+    }) as AppLogger;
+    requestLogger.info(
+      {
+        event: "request_completed",
+        durationMs: reply.elapsedTime,
+        statusCode: reply.statusCode,
+      },
+      "request completed",
+    );
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    const statusCode = reply.statusCode >= 400 ? reply.statusCode : 500;
+    const requestLogger = request.log.child({
+      component: "http",
+      method: request.method,
+      url: request.url,
+    }) as AppLogger;
+
+    requestLogger.error(
+      {
+        event: "request_failed",
+        err: error,
+        statusCode,
+      },
+      "request failed",
+    );
+
+    reply.code(statusCode).send(error);
+  });
+
   app.get("/health", async () => ({
     status: "ok",
   }));
 
-  app.get("/ready", async (_request, reply) => {
+  app.get("/ready", async (request, reply) => {
     try {
       if (checks.checkDb) {
         await checks.checkDb();
@@ -64,6 +151,15 @@ export function buildApp(checks: ReadinessChecks = {}) {
         status: "ready",
       };
     } catch (error) {
+      request.log.child({
+        component: "readiness",
+      }).warn(
+        {
+          event: "readiness_check_failed",
+          err: error,
+        },
+        "readiness check failed",
+      );
       reply.code(503);
 
       return {
@@ -79,11 +175,11 @@ export function buildApp(checks: ReadinessChecks = {}) {
     registerOutcomeRoutes(app, checks.dbPool);
     registerBacktestRoutes(app, {
       pool: checks.dbPool,
-      env: checks.env ?? getEnv(),
+      env,
     });
     registerEvaluationRoutes(app, {
       pool: checks.dbPool,
-      env: checks.env ?? getEnv(),
+      env,
       fetchImpl: checks.fetchImpl,
       redisConnection: checks.redisConnection,
       runEvaluation: checks.runEvaluation,
@@ -92,7 +188,7 @@ export function buildApp(checks: ReadinessChecks = {}) {
     });
     registerJudgmentRoutes(app, {
       pool: checks.dbPool,
-      env: checks.env ?? getEnv(),
+      env,
       redisConnection: checks.redisConnection,
     });
   }

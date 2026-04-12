@@ -31,7 +31,22 @@ try {
     host: "0.0.0.0",
     port: env.API_PORT,
   });
+  app.log.info(
+    {
+      event: "server_started",
+      adapterMode: env.CASSANDRA_ADAPTER_MODE,
+      host: "0.0.0.0",
+      port: env.API_PORT,
+    },
+    "server started",
+  );
 } catch (error) {
-  app.log.error(error);
+  app.log.error(
+    {
+      event: "server_start_failed",
+      err: error,
+    },
+    "server start failed",
+  );
   process.exit(1);
 }

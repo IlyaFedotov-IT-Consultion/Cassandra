@@ -7,6 +7,9 @@ const EnvSchema = z.object({
     .min(1)
     .default("postgresql://postgres:postgres@localhost:5432/cassandra"),
   REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
+  LOG_LEVEL: z
+    .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
+    .default("info"),
   JUDGE_BASE_URL: z.string().url().default("http://localhost:8000"),
   CASSANDRA_ADAPTER_MODE: z.enum(["live", "fixture"]).default("fixture"),
   PERPLEXITY_API_KEY: z.string().min(1).optional(),

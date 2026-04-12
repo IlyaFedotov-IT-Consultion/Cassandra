@@ -29,6 +29,8 @@ This document describes the current HTTP API exposed by the Cassandra prototype 
 
 - The FastAPI judge service uses its default validation behavior and returns `422` for malformed payloads.
 - There is currently no auth layer or versioned prefix such as `/v1`.
+- The API accepts an optional `x-request-id` header. If it is not provided, the API generates one internally.
+- The API emits structured JSON logs for request lifecycle, readiness failures, evidence collection, and judgment execution events.
 
 ## Common Shared Shapes
 

@@ -1,6 +1,6 @@
 # Current Project Status
 
-**Reviewed on:** 2026-04-11
+**Reviewed on:** 2026-04-12
 
 This document summarizes what is implemented in the repository today, what remains scaffolded, and what was verified during the latest status review.
 
@@ -38,6 +38,7 @@ The API service exposes:
 - evaluation benchmark import, benchmark set browsing, market listing, and evaluation run creation/fetching
 
 The API persists to Postgres, reads configuration from `src/config/env.ts`, and optionally uses Redis for caching through the judgment and evidence flows.
+It also emits structured JSON logs with request ids and child logger context for request handling, evidence collection, and judgment processing.
 
 ### Judge service
 

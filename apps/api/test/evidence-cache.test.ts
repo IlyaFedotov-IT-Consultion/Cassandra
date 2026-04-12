@@ -1,8 +1,11 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { Writable } from "node:stream";
+
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { EvidenceItem } from "@cassandra/shared";
 
 import { createDbPool } from "../src/lib/db.js";
+import { createLogger } from "../src/lib/logger.js";
 import {
   InMemoryEvidenceCacheStore,
   collectEvidenceForEventWithCache,
@@ -177,5 +180,76 @@ describe("collectEvidenceForEventWithCache", () => {
     expect(calls).toBe(2);
     expect(first.providerRuns[0]?.cacheStatus).toBe("bypass");
     expect(second.providerRuns[0]?.cacheStatus).toBe("bypass");
+  });
+
+  it("logs provider failures as structured warnings instead of writing to console", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria:
+        "Counts only if Example Corp posts a general availability announcement on its official site.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+
+    const records: Array<Record<string, unknown>> = [];
+    const destination = new Writable({
+      write(chunk, _encoding, callback) {
+        const lines = chunk.toString().split("\n").filter(Boolean);
+
+        for (const line of lines) {
+          records.push(JSON.parse(line) as Record<string, unknown>);
+        }
+
+        callback();
+      },
+    });
+    const logger = createLogger({
+      component: "test",
+      destination,
+      level: "warn",
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await collectEvidenceForEventWithCache({
+        pool,
+        event,
+        evaluationTime: "2026-10-11T12:15:00Z",
+        mode: "live",
+        providers: [
+          {
+            name: "failingProvider",
+            async collect() {
+              throw new Error("provider exploded");
+            },
+          },
+        ],
+        cacheStore: new InMemoryEvidenceCacheStore(),
+        logger,
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          service: "cassandra-api",
+          component: "evidence",
+          event: "evidence_provider_failed",
+          providerName: "failingProvider",
+          eventId: event.id,
+        }),
+      ]),
+    );
+
+    const warning = records.find((record) => record.event === "evidence_provider_failed");
+    expect(warning?.err).toMatchObject({
+      message: "provider exploded",
+      type: "Error",
+    });
   });
 });

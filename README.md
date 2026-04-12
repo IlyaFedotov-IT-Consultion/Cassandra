@@ -106,12 +106,17 @@ virtual environment so container-side installs do not overwrite the host workspa
 
 The default local mode is `CASSANDRA_ADAPTER_MODE=fixture`, which is intended for offline iteration without live third-party API calls. Switch to `live` only when the required upstream credentials are intentionally configured.
 
+The API now emits structured JSON logs by default. In local development, set
+`LOG_LEVEL=debug` if you want more detail; in tests, the default app logger stays
+silent unless a test injects its own logger explicitly.
+
 ## Environment Variables
 
 The shared environment template is in `.env.example`. The most important values are:
 
 - `DATABASE_URL`
 - `REDIS_URL`
+- `LOG_LEVEL`
 - `API_PORT`
 - `JUDGE_BASE_URL`
 - `JUDGE_PORT`
@@ -123,6 +128,12 @@ The shared environment template is in `.env.example`. The most important values 
 - `POLYMARKET_CLOB_URL`
 - `CUSTOM_MARKET_API_BASE_URL`
 - `CUSTOM_MARKET_API_KEY`
+
+Notable logging behavior:
+
+- `LOG_LEVEL` controls the default API logger level and accepts `fatal`, `error`, `warn`, `info`, `debug`, `trace`, or `silent`
+- the API honors `x-request-id` and otherwise generates a request id for each request
+- sensitive auth headers and cookies are redacted from log output
 
 ## Commands
 

@@ -1,5 +1,6 @@
 import type { Redis } from "ioredis";
 
+import type { AppLogger } from "../../lib/logger.js";
 import { normalizeEvidenceItems } from "./normalize.js";
 import { insertEvidenceItems } from "./repository.js";
 import type { CollectEvidenceArgs, CollectEvidenceResult, ProviderRun } from "./types.js";
@@ -47,9 +48,15 @@ export function buildEvidenceCacheKey(
 export async function collectEvidenceForEventWithCache(
   args: CollectEvidenceArgs & {
     cacheStore: EvidenceCacheStore;
+    logger?: AppLogger;
     ttlSeconds?: number;
   },
 ): Promise<CollectEvidenceResult> {
+  const logger = args.logger?.child({
+    component: "evidence",
+    evaluationTime: args.evaluationTime,
+    eventId: args.event.id,
+  });
   const providerRuns: ProviderRun[] = [];
   const rawItems = [];
 
@@ -107,8 +114,14 @@ export async function collectEvidenceForEventWithCache(
         cacheStatus: "miss",
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[evidence] provider ${provider.name} failed, skipping: ${message}`);
+      logger?.warn(
+        {
+          event: "evidence_provider_failed",
+          err: error,
+          providerName: provider.name,
+        },
+        "evidence provider failed",
+      );
       providerRuns.push({
         providerName: provider.name,
         rawCount: 0,
@@ -120,6 +133,17 @@ export async function collectEvidenceForEventWithCache(
 
   const normalizedItems = normalizeEvidenceItems(rawItems);
   const items = await insertEvidenceItems(args.pool, normalizedItems);
+
+  logger?.info(
+    {
+      event: "evidence_collection_completed",
+      normalizedCount: normalizedItems.length,
+      persistedCount: items.length,
+      providerRuns,
+      rawCount: rawItems.length,
+    },
+    "evidence collection completed",
+  );
 
   return {
     items,

@@ -30,6 +30,9 @@ export function registerJudgmentRoutes(
 ) {
   const evidenceCacheStore = createEvidenceCacheStore(args.redisConnection);
   const judgeCacheStore = createJudgeCacheStore(args.redisConnection);
+  const logger = app.log.child({
+    component: "judgments",
+  });
 
   app.get("/judgments", async (request) => {
     const query = request.query as { eventId?: string };
@@ -72,6 +75,14 @@ export function registerJudgmentRoutes(
 
     try {
       const judgment = await enqueueJudgmentRun(args.pool, parsed.data.eventId);
+      logger.info(
+        {
+          event: "judgment_enqueued",
+          eventId: judgment.eventId,
+          judgmentId: judgment.id,
+        },
+        "judgment enqueued",
+      );
 
       setTimeout(() => {
         void runJudgmentWorker({
@@ -79,12 +90,24 @@ export function registerJudgmentRoutes(
           env: args.env,
           evidenceCacheStore,
           judgeCacheStore,
+          logger: logger.child({
+            eventId: judgment.eventId,
+            judgmentId: judgment.id,
+          }),
           input: {
             ...parsed.data,
             judgmentId: judgment.id,
           },
         }).catch((error) => {
-          app.log.error(error);
+          logger.error(
+            {
+              event: "judgment_worker_failed",
+              err: error,
+              eventId: judgment.eventId,
+              judgmentId: judgment.id,
+            },
+            "judgment worker failed",
+          );
         });
       }, 0);
 
