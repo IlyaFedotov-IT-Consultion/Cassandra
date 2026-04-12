@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends
 
 from app.llm import LLMClient, get_llm_client
-from app.models import CalibrationRequest, CalibrationSnapshot, JudgeRequest, VerdictTrace
+from app.models import CalibrationRequest, JudgeRequest, VerdictTrace
+from app.models_generated import EvidenceItem
 from app.scoring.aggregate import aggregate_posterior
 from app.scoring.calibration import fit_calibration_snapshot
 from app.scoring.judges.community_signal import evaluate as evaluate_community_signal
@@ -46,6 +48,48 @@ def _collect_market_signals(request: JudgeRequest) -> dict[str, float]:
     return {"price": 0.5, "spread": 0.05, "depth": 0.0, "volatility": 0.1}
 
 
+def _looks_english(text: str) -> bool:
+    latin_count = sum(1 for char in text if "a" <= char.lower() <= "z")
+    cjk_count = sum(1 for char in text if "\u3400" <= char <= "\u9fff")
+    return latin_count >= max(10, cjk_count * 2)
+
+
+def _english_evidence_priority(item: EvidenceItem) -> int:
+    url = str(item.url)
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    is_cn_host = host.endswith(".cn") or ".cn." in host
+    text = " ".join([item.title, item.summary, item.publisher])
+    english_text = _looks_english(text)
+    metadata_hint = item.metadata.get("language")
+    explicit_non_english = isinstance(metadata_hint, str) and metadata_hint.lower() not in {
+        "en",
+        "eng",
+        "english",
+    }
+
+    if explicit_non_english:
+        return 0
+    if english_text and not is_cn_host:
+        return 3
+    if english_text:
+        return 2
+    if not is_cn_host:
+        return 1
+    return 0
+
+
+def _sort_evidence_for_judging(evidence: list[EvidenceItem]) -> list[EvidenceItem]:
+    return sorted(
+        evidence,
+        key=lambda item: (
+            -_english_evidence_priority(item),
+            item.publishedAt,
+            item.id,
+        ),
+    )
+
+
 def _missing_evidence_records(request: JudgeRequest, raw_opinions: list) -> list[dict[str, str]]:
     missing: list[dict[str, str]] = []
     family_map = {
@@ -81,6 +125,7 @@ def _cluster_groups(request: JudgeRequest, judge_probabilities: list[float]) -> 
 
 
 def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
+    ordered_evidence = _sort_evidence_for_judging(request.evidence)
     citations = [
         {
             "evidenceId": item.id,
@@ -90,7 +135,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             "url": item.url,
             "sourceFamily": item.sourceFamily,
         }
-        for item in request.evidence
+        for item in ordered_evidence
     ] or [
         {
             "title": request.event.question,
@@ -99,9 +144,9 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
         }
     ]
     raw_opinions = [
-        evaluate_official_records(request.event, request.evidence, llm=llm),
-        evaluate_community_signal(request.event, request.evidence, llm=llm),
-        evaluate_open_web_research(request.event, request.evidence, llm=llm),
+        evaluate_official_records(request.event, ordered_evidence, llm=llm),
+        evaluate_community_signal(request.event, ordered_evidence, llm=llm),
+        evaluate_open_web_research(request.event, ordered_evidence, llm=llm),
     ]
     cross_examiner = evaluate_cross_examiner(raw_opinions, llm=llm)
     judge_names = [opinion.judge_name for opinion in raw_opinions]
@@ -122,7 +167,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
         prior_log_odds=prior.prior_log_odds,
         raw_opinions=raw_opinions,
         base_weights=base_weights,
-        evidence_lookup={item.id: item for item in request.evidence},
+        evidence_lookup={item.id: item for item in ordered_evidence},
         evaluation_time=request.evaluation_time,
     )
     interval = bootstrap_confidence_interval(

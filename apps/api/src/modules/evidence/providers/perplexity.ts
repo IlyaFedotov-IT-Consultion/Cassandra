@@ -27,7 +27,7 @@ export function createPerplexityProvider(config: {
               {
                 body: JSON.stringify({
                   max_results: 5,
-                  query: input.event.question,
+                  query: `${input.event.question} (prioritize English-language sources)`,
                 }),
                 headers: {
                   ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),

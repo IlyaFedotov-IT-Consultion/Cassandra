@@ -23,7 +23,7 @@ export function createWebProvider(config: { zaiApiKey?: string } = {}): Evidence
                 apiKey: config.zaiApiKey,
                 count: 5,
                 providerName: "web",
-                query: `${input.event.question} ${input.event.entities.join(" ")} latest reporting analysis`,
+                query: `${input.event.question} ${input.event.entities.join(" ")} latest reporting analysis in English`,
                 recency: "oneYear",
               }),
             };

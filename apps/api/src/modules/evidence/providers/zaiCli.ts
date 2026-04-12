@@ -69,7 +69,7 @@ export async function searchWithZaiCli(args: {
           count: args.count ?? 5,
           search_domain_filter: domain,
           search_recency_filter: args.recency ?? "noLimit",
-          location: args.location,
+          location: args.location ?? "us",
         }),
         signal: controller.signal,
       });

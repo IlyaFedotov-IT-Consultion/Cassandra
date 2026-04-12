@@ -153,3 +153,81 @@ def test_judge_endpoint_runs_full_panel_and_reports_missing_families() -> None:
 
     assert judge_names == {"official_records", "community_signal", "open_web_research"}
     assert {"official", "community"} <= missing_families
+
+
+def test_judge_endpoint_prioritizes_english_citations() -> None:
+    response = client.post(
+        "/judge",
+        json={
+            "eventId": "event-citation-priority",
+            "event": {
+                "question": "Will Example Corp launch Product X by 2026-12-31?",
+                "resolutionCriteria": "Counts only if Example Corp posts a general availability announcement on its official site.",
+                "deadline": "2026-12-31T23:59:59Z",
+                "entities": ["Example Corp", "Product X"],
+                "referenceClass": "product_launch",
+                "marketSymbols": ["EXMPL"],
+            },
+            "evaluationTime": "2026-10-11T12:00:00Z",
+            "evidence": [
+                {
+                    "id": "zh-web-1",
+                    "eventId": "event-citation-priority",
+                    "sourceFamily": "web",
+                    "sourceType": "web_article",
+                    "title": "示例公司将在年底前发布产品",
+                    "url": "https://news.example.cn/product-x",
+                    "publisher": "示例财经",
+                    "publishedAt": "2026-10-10T09:00:00Z",
+                    "retrievedAt": "2026-10-11T12:00:00Z",
+                    "summary": "市场传言称产品发布临近。",
+                    "rawText": None,
+                    "entities": ["Example Corp", "Product X"],
+                    "claims": ["Product X may launch this year"],
+                    "stance": "supports",
+                    "qualitySignals": {},
+                    "metadata": {},
+                },
+                {
+                    "id": "en-web-1",
+                    "eventId": "event-citation-priority",
+                    "sourceFamily": "web",
+                    "sourceType": "web_article",
+                    "title": "Example Corp says Product X launch remains on track",
+                    "url": "https://news.example.com/product-x",
+                    "publisher": "Example News",
+                    "publishedAt": "2026-10-10T08:00:00Z",
+                    "retrievedAt": "2026-10-11T12:00:00Z",
+                    "summary": "English-language reporting indicates a launch is still expected this year.",
+                    "rawText": None,
+                    "entities": ["Example Corp", "Product X"],
+                    "claims": ["Product X may launch this year"],
+                    "stance": "supports",
+                    "qualitySignals": {},
+                    "metadata": {},
+                },
+            ],
+            "calibrationSnapshot": {
+                "id": "snapshot-citation-priority",
+                "createdAt": "2026-10-01T00:00:00Z",
+                "trainingWindow": "all_time",
+                "judgeWeights": {
+                    "official_records": 0.33,
+                    "community_signal": 0.33,
+                    "open_web_research": 0.34,
+                },
+                "baseRateParams": {},
+                "marketPriorParams": {},
+                "calibrationParams": {"method": "identity"},
+                "onlineLearningParams": {"enabled": False},
+                "metrics": {},
+                "weightRegime": "cold_start",
+                "resolvedOutcomeCount": 0,
+                "approved": False,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["citations"][0]["url"] == "https://news.example.com/product-x"

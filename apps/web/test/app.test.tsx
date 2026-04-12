@@ -996,8 +996,8 @@ describe("workspace app", () => {
     expect(await screen.findByRole("heading", { name: /judgment trace/i })).toBeVisible();
     expect(screen.getByRole("link", { name: /back to judgments/i })).toHaveAttribute("href", "/judgments");
     expect(screen.getAllByText("63.0%").length).toBeGreaterThan(0);
-    expect(screen.getByText(/Official release indicates launch readiness/i)).toBeVisible();
-    expect(screen.getByText(/Web chatter remains less certain/i)).toBeVisible();
+    expect(screen.getAllByText(/Official release indicates launch readiness/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Web chatter remains less certain/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Exact GA date is not independently confirmed/i)).toBeVisible();
     expect(screen.getByRole("link", { name: /Example Corp release/i })).toHaveAttribute(
       "href",

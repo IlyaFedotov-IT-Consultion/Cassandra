@@ -122,6 +122,18 @@ function formatDecimal(value: number) {
   return value.toFixed(2);
 }
 
+function formatSignedDecimal(value: number) {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}`;
+}
+
+function isLikelyEnglishCitation(input: { title: string; url: string }) {
+  const latinCount = (input.title.match(/[A-Za-z]/g) ?? []).length;
+  const cjkCount = (input.title.match(/[\u3400-\u9fff]/g) ?? []).length;
+
+  return latinCount >= Math.max(8, cjkCount * 2) && !/\.cn([/?#:]|$)/i.test(input.url);
+}
+
 function getStatusTone(value: string): StatusTone {
   switch (value) {
     case "ok":
@@ -1338,6 +1350,16 @@ function JudgmentDetailPage() {
 
   const trace = judgment.verdictTrace;
   const statusDetail = describeJudgmentState(judgment.status);
+  const judgeContributions = trace
+    ? [...judgment.judgeOpinions].sort(
+        (left, right) =>
+          Math.abs(right.effectiveLogOddsContribution) - Math.abs(left.effectiveLogOddsContribution),
+      )
+    : [];
+  const totalContribution = judgeContributions.reduce(
+    (sum, opinion) => sum + Math.abs(opinion.effectiveLogOddsContribution),
+    0,
+  );
 
   return (
     <div className="page-stack">
@@ -1381,6 +1403,56 @@ function JudgmentDetailPage() {
       </SectionCard>
       {trace ? (
         <>
+          <SectionCard title="How The Decision Was Made" kicker="Decision flow">
+            <div className="list-stack">
+              <div className="list-row">
+                <div>
+                  <strong>Start from prior</strong>
+                  <p>Baseline prior for this event before judge evidence is applied.</p>
+                </div>
+                <div className="list-row__tail">
+                  <span>{formatProbability(trace.priorProbability)}</span>
+                </div>
+              </div>
+              {judgeContributions.map((opinion) => {
+                const contributionShare =
+                  totalContribution > 0
+                    ? `${((Math.abs(opinion.effectiveLogOddsContribution) / totalContribution) * 100).toFixed(0)}% of total`
+                    : "No net impact";
+
+                return (
+                  <div key={`contribution-${opinion.id ?? opinion.judgeName}`} className="list-row">
+                    <div>
+                      <strong>{humanizeToken(opinion.judgeName)}</strong>
+                      <p>{opinion.rationale}</p>
+                    </div>
+                    <div className="list-row__tail">
+                      <span>{formatSignedDecimal(opinion.effectiveLogOddsContribution)} log-odds</span>
+                      <small>{contributionShare}</small>
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="list-row">
+                <div>
+                  <strong>Apply disagreement shrinkage</strong>
+                  <p>High disagreement across judges reduces confidence in the pooled posterior.</p>
+                </div>
+                <div className="list-row__tail">
+                  <span>{formatDecimal(trace.disagreementShrinkage)}</span>
+                </div>
+              </div>
+              <div className="list-row">
+                <div>
+                  <strong>Produce final probability</strong>
+                  <p>Final output after pooling, dependency discounting, freshness decay, and shrinkage.</p>
+                </div>
+                <div className="list-row__tail">
+                  <span>{formatProbability(trace.finalProbability)}</span>
+                </div>
+              </div>
+            </div>
+          </SectionCard>
           <SectionCard title="Judge Cards" kicker="Opinions">
             <div className="card-grid">
               {judgment.judgeOpinions.map((opinion) => (
@@ -1405,7 +1477,13 @@ function JudgmentDetailPage() {
                 <div key={item.source} className="list-row">
                   <div>
                     <strong>{humanizeToken(item.source)}</strong>
-                    <p>{JSON.stringify(item.details)}</p>
+                    <p>
+                      Dependency discount {formatDecimal(Number(item.details.dependencyDiscount ?? 0))}
+                      {" · "}
+                      Freshness decay {formatDecimal(Number(item.details.freshnessDecay ?? 0))}
+                      {" · "}
+                      Effective log-odds {formatSignedDecimal(Number(item.details.effectiveLogOddsContribution ?? 0))}
+                    </p>
                   </div>
                   <div className="list-row__tail">
                     <span>{formatDecimal(item.weight)}</span>
@@ -1429,7 +1507,7 @@ function JudgmentDetailPage() {
                     <p>{humanizeToken(citation.sourceFamily)}</p>
                   </div>
                   <div className="list-row__tail">
-                    <span>Open source</span>
+                    <span>{isLikelyEnglishCitation(citation) ? "English-priority" : "Non-English / mixed"}</span>
                   </div>
                 </a>
               ))}
