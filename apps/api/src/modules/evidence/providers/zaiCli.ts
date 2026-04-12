@@ -40,6 +40,7 @@ export async function searchWithZaiCli(args: {
   providerName: string;
   query: string;
   recency?: ZaiCliRecency;
+  searchEngine?: string;
   searchUrl?: string;
   timeoutMs?: number;
 }): Promise<ProviderDocument[]> {
@@ -63,7 +64,7 @@ export async function searchWithZaiCli(args: {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          search_engine: "search-prime",
+          search_engine: args.searchEngine ?? "search-std",
           search_query: args.query,
           count: args.count ?? 5,
           search_domain_filter: domain,

@@ -54,17 +54,23 @@ export function createPolymarketGammaProvider(config: { baseUrl?: string } = {})
         }
       }
 
-      // Text search fallback using the public search endpoint
-      const query = input.event.question;
-      const searchResults = await fetchProviderJson<Array<Record<string, unknown>>>(
-        `${baseUrl}/public-search?query=${encodeURIComponent(query)}&limit=5`,
+      const marketsResponse = await fetchProviderJson<Array<Record<string, unknown>>>(
+        `${baseUrl}/markets?limit=5&closed=false&order=volume&ascending=false`,
       );
 
       const markets: ProviderDocument[] = [];
-      for (const result of searchResults) {
-        const market = ((result as Record<string, unknown>).market ?? result) as Record<string, unknown>;
+      for (const market of marketsResponse) {
+        const question = String(market.question ?? "");
+        const eventQuestion = input.event.question.toLowerCase();
+        const hasOverlap = input.event.entities.some(
+          (entity) => question.toLowerCase().includes(entity.toLowerCase()),
+        ) || eventQuestion.split(/\s+/).filter((w) => w.length > 3).some(
+          (word) => question.toLowerCase().includes(word),
+        );
+        if (!hasOverlap) continue;
+
         markets.push({
-          title: String(market.question ?? market.title ?? ""),
+          title: question,
           url: String(market.url ?? `https://polymarket.com/event/${market.slug ?? ""}`),
           publisher: "Polymarket",
           publishedAt: String(market.startDate ?? market.createdAt ?? new Date().toISOString()),

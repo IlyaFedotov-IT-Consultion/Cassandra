@@ -12,6 +12,12 @@ interface PolymarketClobPayload {
   prices: ProviderDocument[];
 }
 
+interface ClobMarketResponse {
+  condition_id: string;
+  question?: string;
+  tokens: Array<{ token_id: string; outcome: string }>;
+}
+
 export function createPolymarketClobProvider(config: { baseUrl?: string } = {}): EvidenceProvider {
   return {
     name: "polymarketClob",
@@ -42,20 +48,18 @@ export function createPolymarketClobProvider(config: { baseUrl?: string } = {}):
 
       // Use the sampling-markets endpoint to get market details including token IDs
       try {
-        const marketData = await fetchProviderJson<Record<string, unknown>>(
-          `${baseUrl}/sampling-markets?condition_id=${encodeURIComponent(input.event.polymarketMarketId)}`,
+        const market = await fetchProviderJson<ClobMarketResponse>(
+          `${baseUrl}/markets/${encodeURIComponent(input.event.polymarketMarketId)}`,
         );
 
-        const tokens = (marketData as Record<string, unknown>).tokens as
-          | Array<Record<string, unknown>>
-          | undefined;
-        if (!tokens || tokens.length === 0) {
+        const tokens = market.tokens ?? [];
+        if (tokens.length === 0) {
           return [];
         }
 
         const prices: ProviderDocument[] = [];
         for (const token of tokens) {
-          const tokenId = String(token.token_id ?? "");
+          const tokenId = token.token_id;
           if (!tokenId) continue;
 
           try {
