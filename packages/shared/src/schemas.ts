@@ -256,7 +256,7 @@ export const VerdictTraceSchema = z
     id: IdSchema,
     eventId: IdSchema,
     evaluationTime: TimestampSchema,
-    referenceClass: ReferenceClassSchema.nullable(),
+    referenceClass: ReferenceClassSchema.nullable().default(null),
     referenceClassFallback: NullableStringSchema.default(null),
     priorProbability: ProbabilitySchema,
     rawPosteriorProbability: ProbabilitySchema,
