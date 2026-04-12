@@ -255,6 +255,34 @@ export async function upsertBenchmarkMarkets(
   return inserted;
 }
 
+export async function syncBenchmarkMarkets(
+  pool: Pool,
+  benchmarkSetId: string,
+  benchmarkMarketIds: string[],
+): Promise<number> {
+  const result =
+    benchmarkMarketIds.length > 0
+      ? await pool.query(
+          `
+            DELETE FROM benchmark_markets
+            WHERE benchmark_set_id = $1
+              AND NOT (id = ANY($2::text[]))
+            RETURNING id
+          `,
+          [benchmarkSetId, benchmarkMarketIds],
+        )
+      : await pool.query(
+          `
+            DELETE FROM benchmark_markets
+            WHERE benchmark_set_id = $1
+            RETURNING id
+          `,
+          [benchmarkSetId],
+        );
+
+  return result.rowCount ?? result.rows.length;
+}
+
 export async function listBenchmarkMarkets(
   pool: Pool,
   benchmarkSetId?: string,

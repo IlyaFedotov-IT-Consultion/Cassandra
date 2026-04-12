@@ -10,6 +10,7 @@ import {
   listBenchmarkSets,
   listEvaluationPredictionsForRun,
   listPriceSnapshotsForBenchmark,
+  syncBenchmarkMarkets,
   upsertBenchmarkPriceSnapshots,
   upsertBenchmarkMarkets,
 } from "../src/modules/evaluation/repository.js";
@@ -113,6 +114,43 @@ describe("evaluation repository", () => {
 
     await expect(upsertBenchmarkMarkets(pool, [benchmark])).rejects.toThrow(
       "Benchmark market market-1 already belongs to benchmark set benchmark-set-1",
+    );
+  });
+
+  it("syncs benchmark markets by deleting stale rows from a benchmark set", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      rows: [{ id: "market-stale" }],
+      rowCount: 1,
+    });
+
+    const pool = { query } as never;
+
+    const deleted = await syncBenchmarkMarkets(pool, "polymarket_recent_resolved", [
+      "market-1",
+      "market-2",
+    ]);
+
+    expect(deleted).toBe(1);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE FROM benchmark_markets"),
+      ["polymarket_recent_resolved", ["market-1", "market-2"]],
+    );
+  });
+
+  it("syncs benchmark markets to an empty benchmark set when no markets remain", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      rows: [{ id: "market-1" }, { id: "market-2" }],
+      rowCount: 2,
+    });
+
+    const pool = { query } as never;
+
+    const deleted = await syncBenchmarkMarkets(pool, "polymarket_recent_resolved", []);
+
+    expect(deleted).toBe(2);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE FROM benchmark_markets"),
+      ["polymarket_recent_resolved"],
     );
   });
 

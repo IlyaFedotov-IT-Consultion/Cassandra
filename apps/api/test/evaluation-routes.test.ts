@@ -12,8 +12,32 @@ describe("evaluation routes", () => {
   it("imports resolved Polymarket benchmarks through the evaluation route", async () => {
     const captured: unknown[][] = [];
     const pool = {
-      async query(_text: string, params?: unknown[]) {
+      async query(text: string, params?: unknown[]) {
         captured.push(params ?? []);
+
+        if (text.includes("DELETE FROM benchmark_markets")) {
+          return {
+            rows: [],
+            rowCount: 0,
+          };
+        }
+
+        if (text.includes("INSERT INTO benchmark_price_snapshots")) {
+          return {
+            rows: [
+              {
+                id: `snapshot-${captured.length}`,
+                benchmark_market_id: params?.[0],
+                cutoff_at: new Date(String(params?.[1])),
+                probability: params?.[2],
+                volume: params?.[3],
+                liquidity: params?.[4],
+                source: params?.[5],
+                created_at: new Date("2026-12-31T00:00:00Z"),
+              },
+            ],
+          };
+        }
 
         return {
           rows: [
@@ -42,31 +66,52 @@ describe("evaluation routes", () => {
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
       }),
-      fetchImpl: async () =>
-        new Response(
-          JSON.stringify([
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+
+        if (url.origin === "https://gamma-api.polymarket.com") {
+          return new Response(
+            JSON.stringify([
+              {
+                id: "market-1",
+                question: "Will Example Corp launch Product X by 2026-12-31?",
+                resolution_criteria: "Official launch announcement by deadline.",
+                end_date_iso: "2026-12-31T23:59:59Z",
+                closedTime: "2026-12-31T23:59:59Z",
+                startDate: "2026-11-01T00:00:00Z",
+                closed: true,
+                archived: false,
+                market_slug: "example-product-x",
+                volume_num: 100000,
+                liquidity_num: 25000,
+                outcomes: ["Yes", "No"],
+                outcome_prices: [1, 0],
+                clobTokenIds: JSON.stringify(["yes-token", "no-token"]),
+                tags: [{ slug: "technology" }],
+              },
+            ]),
             {
-              id: "market-1",
-              question: "Will Example Corp launch Product X by 2026-12-31?",
-              resolution_criteria: "Official launch announcement by deadline.",
-              end_date_iso: "2026-12-31T23:59:59Z",
-              closed: true,
-              archived: false,
-              market_slug: "example-product-x",
-              volume_num: 100000,
-              liquidity_num: 25000,
-              outcomes: ["Yes", "No"],
-              outcome_prices: [1, 0],
-              tags: [{ slug: "technology" }],
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+              },
             },
-          ]),
+          );
+        }
+
+        const endTs = Number(url.searchParams.get("endTs"));
+        return new Response(
+          JSON.stringify({
+            history: [{ t: endTs - 60, p: 0.61 }],
+          }),
           {
             status: 200,
             headers: {
               "content-type": "application/json",
             },
           },
-        ),
+        );
+      },
     });
 
     try {
@@ -86,7 +131,7 @@ describe("evaluation routes", () => {
           }),
         ],
       });
-      expect(captured).toHaveLength(1);
+      expect(captured.length).toBeGreaterThan(1);
     } finally {
       await app.close();
     }
@@ -123,8 +168,32 @@ describe("evaluation routes", () => {
   it("imports resolved Polymarket benchmarks into an explicit benchmark set", async () => {
     const captured: unknown[][] = [];
     const pool = {
-      async query(_text: string, params?: unknown[]) {
+      async query(text: string, params?: unknown[]) {
         captured.push(params ?? []);
+
+        if (text.includes("DELETE FROM benchmark_markets")) {
+          return {
+            rows: [],
+            rowCount: 0,
+          };
+        }
+
+        if (text.includes("INSERT INTO benchmark_price_snapshots")) {
+          return {
+            rows: [
+              {
+                id: `snapshot-${captured.length}`,
+                benchmark_market_id: params?.[0],
+                cutoff_at: new Date(String(params?.[1])),
+                probability: params?.[2],
+                volume: params?.[3],
+                liquidity: params?.[4],
+                source: params?.[5],
+                created_at: new Date("2026-12-31T00:00:00Z"),
+              },
+            ],
+          };
+        }
 
         return {
           rows: [
@@ -153,31 +222,52 @@ describe("evaluation routes", () => {
         JUDGE_BASE_URL: "http://localhost:8000",
         CASSANDRA_ADAPTER_MODE: "live",
       }),
-      fetchImpl: async () =>
-        new Response(
-          JSON.stringify([
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+
+        if (url.origin === "https://gamma-api.polymarket.com") {
+          return new Response(
+            JSON.stringify([
+              {
+                id: "market-1",
+                question: "Will Example Corp launch Product X by 2026-12-31?",
+                resolution_criteria: "Official launch announcement by deadline.",
+                end_date_iso: "2026-12-31T23:59:59Z",
+                closedTime: "2026-12-31T23:59:59Z",
+                startDate: "2026-11-01T00:00:00Z",
+                closed: true,
+                archived: false,
+                market_slug: "example-product-x",
+                volume_num: 100000,
+                liquidity_num: 25000,
+                outcomes: ["Yes", "No"],
+                outcome_prices: [1, 0],
+                clobTokenIds: JSON.stringify(["yes-token", "no-token"]),
+                tags: [{ slug: "technology" }],
+              },
+            ]),
             {
-              id: "market-1",
-              question: "Will Example Corp launch Product X by 2026-12-31?",
-              resolution_criteria: "Official launch announcement by deadline.",
-              end_date_iso: "2026-12-31T23:59:59Z",
-              closed: true,
-              archived: false,
-              market_slug: "example-product-x",
-              volume_num: 100000,
-              liquidity_num: 25000,
-              outcomes: ["Yes", "No"],
-              outcome_prices: [1, 0],
-              tags: [{ slug: "technology" }],
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+              },
             },
-          ]),
+          );
+        }
+
+        const endTs = Number(url.searchParams.get("endTs"));
+        return new Response(
+          JSON.stringify({
+            history: [{ t: endTs - 60, p: 0.61 }],
+          }),
           {
             status: 200,
             headers: {
               "content-type": "application/json",
             },
           },
-        ),
+        );
+      },
     });
 
     try {
@@ -199,7 +289,7 @@ describe("evaluation routes", () => {
           }),
         ],
       });
-      expect(captured).toHaveLength(1);
+      expect(captured.length).toBeGreaterThan(1);
       expect(captured[0]).toContain("custom-benchmark-set");
     } finally {
       await app.close();

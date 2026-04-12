@@ -94,6 +94,7 @@ export function registerEvaluationRoutes(
       const markets = await importAndStoreResolvedPolymarketBenchmarks({
         pool: args.pool,
         baseUrl: args.env.POLYMARKET_GAMMA_URL,
+        clobBaseUrl: args.env.POLYMARKET_CLOB_URL,
         fetchImpl: args.fetchImpl,
         benchmarkSetId: parsed.data.benchmarkSetId,
         mode: args.env.CASSANDRA_ADAPTER_MODE,
