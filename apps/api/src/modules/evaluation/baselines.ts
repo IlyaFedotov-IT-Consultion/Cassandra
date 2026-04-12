@@ -98,7 +98,8 @@ export function computeBaseRateOnlyProbability(args: {
   const smoothed = (successes + 1) / (total + 2);
 
   if (total < minimumSample) {
-    return smoothed;
+    const shrinkageWeight = total / minimumSample;
+    return shrinkageWeight * smoothed + (1 - shrinkageWeight) * 0.5;
   }
 
   return smoothed;

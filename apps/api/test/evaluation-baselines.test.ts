@@ -145,14 +145,14 @@ describe("evaluation baselines", () => {
           historicalCounts: {
             product_launch: {
               successes: 9,
-              total: 10,
+              total: 20,
             },
           },
         },
       },
     });
 
-    expect(probability).toBeCloseTo(10 / 12, 8);
+    expect(probability).toBeCloseTo(10 / 22, 8);
   });
 
   it("falls back to 0.5 when no historical counts are available", () => {
@@ -162,5 +162,24 @@ describe("evaluation baselines", () => {
         calibrationSnapshot,
       }),
     ).toBe(0.5);
+  });
+
+  it("shrinks sparse reference classes toward global prior of 0.5", () => {
+    const result = computeBaseRateOnlyProbability({
+      referenceClass: "rare_class",
+      calibrationSnapshot: {
+        ...calibrationSnapshot,
+        baseRateParams: {
+          minimumSample: 20,
+          historicalCounts: {
+            rare_class: { successes: 2, total: 3 },
+          },
+        },
+      },
+    });
+    const rawSmoothed = (2 + 1) / (3 + 2);
+    expect(result).not.toBeCloseTo(rawSmoothed, 6);
+    expect(result).toBeGreaterThan(0.5);
+    expect(result).toBeLessThan(rawSmoothed);
   });
 });
