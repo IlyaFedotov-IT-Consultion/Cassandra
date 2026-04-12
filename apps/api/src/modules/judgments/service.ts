@@ -686,13 +686,23 @@ function buildInsufficientEvidenceVerdictTrace(args: {
   evaluationTime: string;
   calibrationSnapshot: CalibrationSnapshot;
 }): VerdictTrace {
-  const judgeOpinions = PANEL_JUDGES.map((panelJudge) =>
+  const judgeEvidenceSets = PANEL_JUDGES.map((panelJudge) => ({
+    judgeName: panelJudge.judgeName,
+    evidence: [] as JudgmentEvidenceItem[],
+    missingSourceFamily: panelJudge.missingSourceFamily,
+  }));
+  const evidenceIdSets = judgeEvidenceSets.map((j) => ({
+    judgeName: j.judgeName,
+    evidenceIds: j.evidence.map((e) => e.id),
+  }));
+  const judgeOpinions = judgeEvidenceSets.map((j) =>
     buildJudgeOpinion({
-      judgeName: panelJudge.judgeName,
-      evidence: [],
+      judgeName: j.judgeName,
+      evidence: j.evidence,
       calibrationSnapshot: args.calibrationSnapshot,
       evaluationTime: args.evaluationTime,
-      missingSourceFamily: panelJudge.missingSourceFamily,
+      missingSourceFamily: j.missingSourceFamily,
+      dependencyDiscount: computeDependencyDiscount(j.judgeName, evidenceIdSets),
     }),
   );
   const dependencyMatrix = buildDependencyMatrix(judgeOpinions);
@@ -770,6 +780,7 @@ function buildJudgeOpinion(args: {
   calibrationSnapshot: CalibrationSnapshot;
   evaluationTime: string;
   missingSourceFamily: SourceFamily;
+  dependencyDiscount?: number;
 }): JudgeOpinion {
   const evidenceScore = args.evidence.reduce((sum, item) => sum + stanceToScore(item.stance), 0);
   const evidenceStrength = mapEvidenceStrength(evidenceScore);
@@ -777,7 +788,7 @@ function buildJudgeOpinion(args: {
   const baseWeightValue = args.calibrationSnapshot.judgeWeights[args.judgeName];
   const baseWeight =
     typeof baseWeightValue === "number" ? baseWeightValue : 1 / PANEL_JUDGES.length;
-  const dependencyDiscount = args.evidence.length > 1 ? 1 / args.evidence.length : 1;
+  const dependencyDiscount = args.dependencyDiscount ?? 1;
   const freshnessDecay =
     args.evidence.length === 0
       ? 1
@@ -828,15 +839,25 @@ function buildFixtureVerdictTrace(args: {
   calibrationSnapshot: CalibrationSnapshot;
 }): VerdictTrace {
   const priorProbability = 0.5;
-  const judgeOpinions = PANEL_JUDGES.map((panelJudge) =>
+  const judgeEvidenceSets = PANEL_JUDGES.map((panelJudge) => ({
+    judgeName: panelJudge.judgeName,
+    evidence: args.evidence.filter((item) =>
+      (panelJudge.sourceFamilies as readonly SourceFamily[]).includes(item.sourceFamily),
+    ),
+    missingSourceFamily: panelJudge.missingSourceFamily,
+  }));
+  const evidenceIdSets = judgeEvidenceSets.map((j) => ({
+    judgeName: j.judgeName,
+    evidenceIds: j.evidence.map((e) => e.id),
+  }));
+  const judgeOpinions = judgeEvidenceSets.map((j) =>
     buildJudgeOpinion({
-      judgeName: panelJudge.judgeName,
-      evidence: args.evidence.filter((item) => {
-        return (panelJudge.sourceFamilies as readonly SourceFamily[]).includes(item.sourceFamily);
-      }),
+      judgeName: j.judgeName,
+      evidence: j.evidence,
       calibrationSnapshot: args.calibrationSnapshot,
       evaluationTime: args.evaluationTime,
-      missingSourceFamily: panelJudge.missingSourceFamily,
+      missingSourceFamily: j.missingSourceFamily,
+      dependencyDiscount: computeDependencyDiscount(j.judgeName, evidenceIdSets),
     }),
   );
   const dependencyMatrix = buildDependencyMatrix(judgeOpinions);
