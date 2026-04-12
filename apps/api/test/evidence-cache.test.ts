@@ -241,7 +241,6 @@ describe("collectEvidenceForEventWithCache", () => {
           component: "evidence",
           event: "evidence_provider_failed",
           providerName: "failingProvider",
-          eventId: event.id,
         }),
       ]),
     );

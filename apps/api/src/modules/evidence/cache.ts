@@ -54,8 +54,6 @@ export async function collectEvidenceForEventWithCache(
 ): Promise<CollectEvidenceResult> {
   const logger = args.logger?.child({
     component: "evidence",
-    evaluationTime: args.evaluationTime,
-    eventId: args.event.id,
   });
   const providerRuns: ProviderRun[] = [];
   const rawItems = [];

@@ -682,7 +682,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
   const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
   const logger = args.logger?.child({
-    component: "judgment_run",
+    operation: "judgment_run",
     evaluationTime,
   });
   await updateJudgmentStatus(args.pool, judgment.id, "running");

@@ -31,7 +31,7 @@ export function registerJudgmentRoutes(
   const evidenceCacheStore = createEvidenceCacheStore(args.redisConnection);
   const judgeCacheStore = createJudgeCacheStore(args.redisConnection);
   const logger = app.log.child({
-    component: "judgments",
+    area: "judgments",
   });
 
   app.get("/judgments", async (request) => {

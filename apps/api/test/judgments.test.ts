@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Writable } from "node:stream";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,6 +8,7 @@ import type { CalibrationSnapshot, EvidenceItem } from "@cassandra/shared";
 import { buildApp } from "../src/app.js";
 import { getEnv } from "../src/config/env.js";
 import { createDbPool } from "../src/lib/db.js";
+import { createLogger } from "../src/lib/logger.js";
 import { createEvent } from "../src/modules/events/repository.js";
 import { InMemoryJudgeCacheStore } from "../src/modules/judgments/judgeCache.js";
 import {
@@ -190,6 +192,60 @@ describe("judgment routes and service", () => {
 
       expect(completed.verdictTrace.citations.length).toBeGreaterThan(0);
       expect(completed.judgeOpinions.length).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("emits judgment pipeline logs without duplicate JSON keys", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria:
+        "Counts only if Example Corp posts a general availability announcement on its official site.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: ["EXMPL"],
+      polymarketMarketId: "poly-1",
+    });
+
+    const lines: string[] = [];
+    const destination = new Writable({
+      write(chunk, _encoding, callback) {
+        lines.push(...chunk.toString().split("\n").filter(Boolean));
+        callback();
+      },
+    });
+    const app = buildApp({
+      dbPool: pool,
+      env: createFixtureEnv(),
+      logger: createLogger({
+        component: "test",
+        destination,
+        level: "info",
+      }),
+    });
+
+    try {
+      const createResponse = await app.inject({
+        method: "POST",
+        url: "/judgments",
+        payload: {
+          eventId: event.id,
+          evaluationTime: "2026-10-11T12:00:00Z",
+        },
+      });
+
+      expect(createResponse.statusCode).toBe(202);
+      const queued = createResponse.json();
+      await waitForCompletedJudgment(app, queued.id);
+
+      const evidenceLine = lines.find((line) => line.includes("\"event\":\"evidence_collection_completed\""));
+
+      expect(evidenceLine).toBeDefined();
+      expect(evidenceLine?.match(/"component":/g) ?? []).toHaveLength(1);
+      expect(evidenceLine?.match(/"eventId":/g) ?? []).toHaveLength(1);
+      expect(evidenceLine?.match(/"evaluationTime":/g) ?? []).toHaveLength(1);
     } finally {
       await app.close();
     }
