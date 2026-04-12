@@ -97,10 +97,11 @@ export async function appendJudgmentTrace(
   judgmentId: string,
   verdictTrace: VerdictTrace,
 ): Promise<void> {
-  await pool.query("BEGIN");
-
+  const client = await pool.connect();
   try {
-    await pool.query(
+    await client.query("BEGIN");
+
+    await client.query(
       `
         UPDATE judgments
         SET status = $2, verdict_trace = $3::jsonb, updated_at = NOW()
@@ -109,10 +110,10 @@ export async function appendJudgmentTrace(
       [judgmentId, verdictTrace.status, JSON.stringify(verdictTrace)],
     );
 
-    await pool.query(`DELETE FROM judge_opinions WHERE judgment_id = $1`, [judgmentId]);
+    await client.query(`DELETE FROM judge_opinions WHERE judgment_id = $1`, [judgmentId]);
 
     for (const opinion of verdictTrace.judgeOpinions) {
-      await pool.query(
+      await client.query(
         `
           INSERT INTO judge_opinions (
             id,
@@ -156,10 +157,12 @@ export async function appendJudgmentTrace(
       );
     }
 
-    await pool.query("COMMIT");
+    await client.query("COMMIT");
   } catch (error) {
-    await pool.query("ROLLBACK");
+    await client.query("ROLLBACK");
     throw error;
+  } finally {
+    client.release();
   }
 }
 
