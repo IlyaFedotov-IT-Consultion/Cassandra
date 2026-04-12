@@ -36,6 +36,18 @@ import {
   retrainCalibrationSnapshot,
 } from "../backtests/repository.js";
 import {
+  probabilityToLogOdds,
+  logOddsToProbability,
+  clamp,
+  average,
+  variance,
+  computeFreshnessDecay,
+  buildDependencyMatrix,
+  computeDependencyDiscount,
+  computeDisagreementShrinkage,
+  computePosteriorWithShrinkage,
+} from "./aggregation.js";
+import {
   InMemoryJudgeCacheStore,
   createRedisJudgeCacheStore,
   getOrCreateCachedJudgeResult,
@@ -329,18 +341,6 @@ export function assessLiveCoverageForEvidence(
   return assessLiveCoverage(event, mapEvidenceForJudge(evidence));
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function probabilityToLogOdds(probability: number): number {
-  const bounded = clamp(probability, 1e-6, 1 - 1e-6);
-  return Math.log(bounded / (1 - bounded));
-}
-
-function logOddsToProbability(logOdds: number): number {
-  return 1 / (1 + Math.exp(-logOdds));
-}
 
 function selectCalibrationMethod(snapshot: CalibrationSnapshot): VerdictTrace["calibrationMethod"] {
   const method = snapshot.calibrationParams.method;
@@ -361,22 +361,6 @@ function selectCalibrationMethod(snapshot: CalibrationSnapshot): VerdictTrace["c
       : "identity";
 }
 
-function average(values: number[]): number {
-  if (values.length === 0) {
-    return 0;
-  }
-
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function variance(values: number[]): number {
-  if (values.length === 0) {
-    return 0;
-  }
-
-  const mean = average(values);
-  return average(values.map((value) => (value - mean) ** 2));
-}
 
 function mapEvidenceStrength(score: number): JudgeOpinion["evidenceStrength"] {
   if (score >= 2.5) {
@@ -418,48 +402,6 @@ function stanceToScore(stance: JudgmentEvidenceItem["stance"]): number {
   }
 }
 
-function computeFreshnessDecay(publishedAt: string, evaluationTime: string): number {
-  const ageHours = Math.max(
-    0,
-    (new Date(evaluationTime).getTime() - new Date(publishedAt).getTime()) / (1000 * 60 * 60),
-  );
-
-  return clamp(Math.exp(-ageHours / 168), 0.2, 1);
-}
-
-function buildDependencyMatrix(judgeOpinions: JudgeOpinion[]): VerdictTrace["dependencyMatrix"] {
-  const entries: VerdictTrace["dependencyMatrix"] = [];
-
-  for (let i = 0; i < judgeOpinions.length; i += 1) {
-    const left = judgeOpinions[i];
-
-    if (!left) {
-      continue;
-    }
-
-    for (let j = i + 1; j < judgeOpinions.length; j += 1) {
-      const right = judgeOpinions[j];
-
-      if (!right) {
-        continue;
-      }
-
-      const leftIds = new Set(left.evidenceIds);
-      const rightIds = new Set(right.evidenceIds);
-      const union = new Set([...leftIds, ...rightIds]);
-      const intersectionCount = [...leftIds].filter((id) => rightIds.has(id)).length;
-      const jaccard = union.size === 0 ? 0 : intersectionCount / union.size;
-
-      entries.push({
-        judgeA: left.judgeName,
-        judgeB: right.judgeName,
-        jaccard,
-      });
-    }
-  }
-
-  return entries;
-}
 
 function buildConflicts(judgeOpinions: JudgeOpinion[]): ConflictRecord[] {
   const conflicts: ConflictRecord[] = [];
