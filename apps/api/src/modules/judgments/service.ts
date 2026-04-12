@@ -847,8 +847,15 @@ function buildFixtureVerdictTrace(args: {
       0,
     );
   const rawPosteriorProbability = logOddsToProbability(rawPosteriorLogOdds);
-  const disagreementShrinkage = clamp(variance(judgeOpinions.map((opinion) => opinion.probability)) * 0.25, 0, 0.6);
-  const finalProbability = logOddsToProbability(rawPosteriorLogOdds * (1 - disagreementShrinkage));
+  const disagreementShrinkage = computeDisagreementShrinkage(
+    judgeOpinions.map((opinion) => opinion.logBayesFactor),
+  );
+  const priorLogOdds = probabilityToLogOdds(priorProbability);
+  const finalProbability = computePosteriorWithShrinkage({
+    rawPosteriorLogOdds,
+    priorLogOdds,
+    shrinkage: disagreementShrinkage,
+  });
   const noEvidence = args.evidence.length === 0;
   const confidenceHalfWidth = noEvidence
     ? 0.15
