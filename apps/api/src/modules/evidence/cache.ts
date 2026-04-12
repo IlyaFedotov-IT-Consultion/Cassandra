@@ -54,57 +54,68 @@ export async function collectEvidenceForEventWithCache(
   const rawItems = [];
 
   for (const provider of args.providers) {
-    if (args.mode === "fixture") {
+    try {
+      if (args.mode === "fixture") {
+        const providerItems = await provider.collect({
+          event: args.event,
+          evaluationTime: args.evaluationTime,
+          mode: args.mode,
+        });
+
+        rawItems.push(...providerItems);
+        providerRuns.push({
+          providerName: provider.name,
+          rawCount: providerItems.length,
+          normalizedCount: normalizeEvidenceItems(providerItems).length,
+          cacheStatus: "bypass",
+        });
+        continue;
+      }
+
+      const cacheKey = buildEvidenceCacheKey(args.event.question, args.evaluationTime, provider.name);
+      const cached = await args.cacheStore.get(cacheKey);
+
+      if (cached) {
+        const providerItems = JSON.parse(cached);
+        rawItems.push(...providerItems);
+        providerRuns.push({
+          providerName: provider.name,
+          rawCount: providerItems.length,
+          normalizedCount: normalizeEvidenceItems(providerItems).length,
+          cacheStatus: "hit",
+        });
+        continue;
+      }
+
       const providerItems = await provider.collect({
         event: args.event,
         evaluationTime: args.evaluationTime,
         mode: args.mode,
       });
 
+      await args.cacheStore.set(
+        cacheKey,
+        JSON.stringify(providerItems),
+        args.ttlSeconds ?? DEFAULT_TTL_SECONDS,
+      );
+
       rawItems.push(...providerItems);
       providerRuns.push({
         providerName: provider.name,
         rawCount: providerItems.length,
         normalizedCount: normalizeEvidenceItems(providerItems).length,
+        cacheStatus: "miss",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[evidence] provider ${provider.name} failed, skipping: ${message}`);
+      providerRuns.push({
+        providerName: provider.name,
+        rawCount: 0,
+        normalizedCount: 0,
         cacheStatus: "bypass",
       });
-      continue;
     }
-
-    const cacheKey = buildEvidenceCacheKey(args.event.question, args.evaluationTime, provider.name);
-    const cached = await args.cacheStore.get(cacheKey);
-
-    if (cached) {
-      const providerItems = JSON.parse(cached);
-      rawItems.push(...providerItems);
-      providerRuns.push({
-        providerName: provider.name,
-        rawCount: providerItems.length,
-        normalizedCount: normalizeEvidenceItems(providerItems).length,
-        cacheStatus: "hit",
-      });
-      continue;
-    }
-
-    const providerItems = await provider.collect({
-      event: args.event,
-      evaluationTime: args.evaluationTime,
-      mode: args.mode,
-    });
-
-    await args.cacheStore.set(
-      cacheKey,
-      JSON.stringify(providerItems),
-      args.ttlSeconds ?? DEFAULT_TTL_SECONDS,
-    );
-
-    rawItems.push(...providerItems);
-    providerRuns.push({
-      providerName: provider.name,
-      rawCount: providerItems.length,
-      normalizedCount: normalizeEvidenceItems(providerItems).length,
-      cacheStatus: "miss",
-    });
   }
 
   const normalizedItems = normalizeEvidenceItems(rawItems);

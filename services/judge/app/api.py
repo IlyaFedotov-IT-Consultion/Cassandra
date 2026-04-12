@@ -141,6 +141,10 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     if calibration_method not in {"identity", "isotonic", "logistic", "beta"}:
         calibration_method = "identity"
 
+    final_probability = aggregate.posterior_probability
+    confidence_low = min(interval.low, final_probability)
+    confidence_high = max(interval.high, final_probability)
+
     return VerdictTrace.model_validate(
         {
             "id": f"trace-{request.calibration_snapshot.id}",
@@ -150,12 +154,12 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             "referenceClassFallback": None if not prior.reference_class_fallback else "global_baseline",
             "priorProbability": prior.base_rate_probability if prior.alpha > 0 else prior.market_probability,
             "rawPosteriorProbability": aggregate.raw_probability,
-            "finalProbability": aggregate.posterior_probability,
-            "confidenceLow": interval.low,
-            "confidenceHigh": interval.high,
+            "finalProbability": final_probability,
+            "confidenceLow": confidence_low,
+            "confidenceHigh": confidence_high,
             "dependencyMatrix": aggregate.dependency_matrix,
             "disagreementShrinkage": aggregate.shrinkage,
-            "judgeOpinions": [opinion.model_dump(by_alias=True) for opinion in aggregate.finalized_opinions],
+            "judgeOpinions": [opinion.model_dump(by_alias=True, exclude_none=True) for opinion in aggregate.finalized_opinions],
             "weightBreakdown": [
                 {
                     "source": opinion.judgeName,
@@ -189,17 +193,19 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.post("/judge", response_model=VerdictTrace)
+@router.post("/judge")
 def judge(
     request: JudgeRequest,
     llm: LLMClient = Depends(_llm_dependency),
-) -> VerdictTrace:
-    return _build_judge_trace(request, llm)
+) -> dict:
+    trace = _build_judge_trace(request, llm)
+    return trace.model_dump(by_alias=True, exclude_none=True)
 
 
-@router.post("/calibrate", response_model=CalibrationSnapshot)
-def calibrate(request: CalibrationRequest) -> CalibrationSnapshot:
-    return fit_calibration_snapshot(
-        historical_traces=[trace.model_dump(by_alias=True) for trace in request.historical_traces],
-        resolved_outcomes=[outcome.model_dump(by_alias=True) for outcome in request.resolved_outcomes],
+@router.post("/calibrate")
+def calibrate(request: CalibrationRequest) -> dict:
+    snapshot = fit_calibration_snapshot(
+        historical_traces=[trace.model_dump(by_alias=True, exclude_none=True) for trace in request.historical_traces],
+        resolved_outcomes=[outcome.model_dump(by_alias=True, exclude_none=True) for outcome in request.resolved_outcomes],
     )
+    return snapshot.model_dump(by_alias=True, exclude_none=True)
