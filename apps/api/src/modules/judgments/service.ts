@@ -799,11 +799,7 @@ function buildJudgeOpinion(args: {
         );
   const effectiveLogOddsContribution =
     logBayesFactor * baseWeight * dependencyDiscount * freshnessDecay;
-  const probability = clamp(
-    0.5 + effectiveLogOddsContribution * 0.18 + args.evidence.length * 0.02,
-    0.05,
-    0.95,
-  );
+  const probability = clamp(logOddsToProbability(logBayesFactor), 0.05, 0.95);
 
   return {
     judgeName: args.judgeName,
