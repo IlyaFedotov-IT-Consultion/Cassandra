@@ -103,4 +103,77 @@ describe("evaluation metrics", () => {
       }),
     ]);
   });
+
+  it("handles empty pairs for all metrics", () => {
+    expect(brierScore([])).toBe(0);
+    expect(logLoss([])).toBe(0);
+    expect(averageAbsoluteError([])).toBe(0);
+    expect(winRateVsReference([])).toBe(0);
+    expect(calibrationBins([])).toEqual([]);
+    expect(expectedCalibrationError([])).toBe(0);
+  });
+
+  it("computes brier score of 0 for perfect predictions", () => {
+    const perfect = [
+      { predicted: 1, outcome: 1 },
+      { predicted: 0, outcome: 0 },
+    ];
+    expect(brierScore(perfect)).toBe(0);
+  });
+
+  it("computes brier score of 1 for worst predictions", () => {
+    const worst = [
+      { predicted: 0, outcome: 1 },
+      { predicted: 1, outcome: 0 },
+    ];
+    expect(brierScore(worst)).toBe(1);
+  });
+
+  it("computes log loss with boundary predictions clamped", () => {
+    const boundary = [
+      { predicted: 0, outcome: 1 },
+      { predicted: 1, outcome: 0 },
+    ];
+    const loss = logLoss(boundary);
+    expect(Number.isFinite(loss)).toBe(true);
+    expect(loss).toBeGreaterThan(0);
+  });
+
+  it("computes win rate of 0 when model always loses", () => {
+    const losing = [
+      { predicted: 0.9, outcome: 0, referencePredicted: 0.1 },
+      { predicted: 0.1, outcome: 1, referencePredicted: 0.9 },
+    ];
+    expect(winRateVsReference(losing)).toBe(0);
+  });
+
+  it("computes win rate of 0.5 on ties (conservative — ties are not wins)", () => {
+    const tied = [
+      { predicted: 0.5, outcome: 1, referencePredicted: 0.5 },
+      { predicted: 0.8, outcome: 1, referencePredicted: 0.6 },
+    ];
+    expect(winRateVsReference(tied)).toBe(0.5);
+  });
+
+  it("handles calibration bins with single-bin edge case", () => {
+    const bins = calibrationBins(pairs, 1);
+    expect(bins).toHaveLength(1);
+    expect(bins[0]?.sampleSize).toBe(4);
+  });
+
+  it("handles slice metrics with no matching baseline", () => {
+    const slices = sliceMetrics(pairs, {
+      key: "theme",
+      baseline: "base_rate_only" as any,
+    });
+    expect(slices).toEqual([]);
+  });
+
+  it("handles averageAbsoluteError for all-correct predictions", () => {
+    const correct = [
+      { predicted: 1, outcome: 1 },
+      { predicted: 0, outcome: 0 },
+    ];
+    expect(averageAbsoluteError(correct)).toBe(0);
+  });
 });
