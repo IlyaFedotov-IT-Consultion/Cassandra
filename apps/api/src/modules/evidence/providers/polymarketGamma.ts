@@ -12,13 +12,6 @@ interface PolymarketGammaPayload {
   markets: ProviderDocument[];
 }
 
-function toSlug(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
 export function createPolymarketGammaProvider(config: { baseUrl?: string } = {}): EvidenceProvider {
   return {
     name: "polymarketGamma",
@@ -69,7 +62,7 @@ export function createPolymarketGammaProvider(config: { baseUrl?: string } = {})
 
       const markets: ProviderDocument[] = [];
       for (const result of searchResults) {
-        const market = (result as Record<string, unknown>).market ?? result;
+        const market = ((result as Record<string, unknown>).market ?? result) as Record<string, unknown>;
         markets.push({
           title: String(market.question ?? market.title ?? ""),
           url: String(market.url ?? `https://polymarket.com/event/${market.slug ?? ""}`),

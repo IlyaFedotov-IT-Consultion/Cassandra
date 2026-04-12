@@ -112,21 +112,37 @@ export async function collectEvidenceForEventWithCache(
         cacheStatus: "miss",
       });
     } catch (error) {
-      logger?.warn(
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger?.error(
         {
           event: "evidence_provider_failed",
           err: error,
           providerName: provider.name,
         },
-        "evidence provider failed",
+        `evidence provider "${provider.name}" failed: ${errorMessage}`,
       );
       providerRuns.push({
         providerName: provider.name,
         rawCount: 0,
         normalizedCount: 0,
         cacheStatus: "bypass",
+        error: errorMessage,
       });
     }
+  }
+
+  const failedRuns = providerRuns.filter((run) => run.error);
+  if (
+    args.mode === "live" &&
+    args.providers.length > 0 &&
+    failedRuns.length === args.providers.length
+  ) {
+    const summary = failedRuns
+      .map((run) => `${run.providerName}: ${run.error}`)
+      .join("; ");
+    throw new Error(
+      `All ${args.providers.length} evidence provider(s) failed in live mode: ${summary}`,
+    );
   }
 
   const normalizedItems = normalizeEvidenceItems(rawItems);
@@ -139,6 +155,7 @@ export async function collectEvidenceForEventWithCache(
       persistedCount: items.length,
       providerRuns,
       rawCount: rawItems.length,
+      failedProviders: failedRuns.map((run) => run.providerName),
     },
     "evidence collection completed",
   );

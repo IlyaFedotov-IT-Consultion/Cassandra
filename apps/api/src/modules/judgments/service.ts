@@ -930,14 +930,34 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       cacheStore: evidenceCacheStore,
       logger,
     });
+    const failedProviders = collected.providerRuns.filter((run) => run.error);
     logger?.info(
       {
         event: "judgment_evidence_ready",
         evidenceCount: collected.items.length,
         providerCount: collected.providerRuns.length,
+        failedProviderCount: failedProviders.length,
+        providerDetails: collected.providerRuns.map((run) => ({
+          name: run.providerName,
+          rawCount: run.rawCount,
+          cacheStatus: run.cacheStatus,
+          error: run.error ?? null,
+        })),
       },
       "judgment evidence ready",
     );
+    if (failedProviders.length > 0) {
+      logger?.warn(
+        {
+          event: "judgment_providers_degraded",
+          failedProviders: failedProviders.map((run) => ({
+            name: run.providerName,
+            error: run.error,
+          })),
+        },
+        `${failedProviders.length} of ${collected.providerRuns.length} evidence provider(s) failed`,
+      );
+    }
     const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
     const evidenceForCoverage: JudgmentEvidenceItem[] = collected.items.map((item) => ({
       id: item.id,

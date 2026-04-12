@@ -23,6 +23,7 @@ export interface ProviderRun {
   rawCount: number;
   normalizedCount: number;
   cacheStatus: ProviderCacheStatus;
+  error?: string;
 }
 
 export interface CollectEvidenceArgs {

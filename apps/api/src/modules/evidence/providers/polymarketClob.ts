@@ -90,8 +90,10 @@ export function createPolymarketClobProvider(config: { baseUrl?: string } = {}):
             metadata: { provider: "polymarketClob" },
           }),
         );
-      } catch {
-        return [];
+      } catch (error) {
+        throw new Error(
+          `polymarketClob failed for condition_id "${input.event.polymarketMarketId}": ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     },
   };
