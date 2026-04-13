@@ -22,6 +22,7 @@ import {
 } from "./modules/evaluation/routes.js";
 import { registerEventRoutes } from "./modules/events/routes.js";
 import { registerJudgmentRoutes } from "./modules/judgments/routes.js";
+import type { JudgmentJobQueue } from "./modules/judgments/jobQueue.js";
 import { registerOutcomeRoutes } from "./modules/outcomes/routes.js";
 import { registerResearchRoutes, type ResearchRunInput, type ResearchRunRecord } from "./modules/research/routes.js";
 import { registerWatchlistRoutes } from "./modules/watchlists/routes.js";
@@ -36,6 +37,7 @@ export interface ReadinessChecks {
   runEvaluation?: RegisterEvaluationRoutesArgs["runEvaluation"];
   getEvaluationRun?: RegisterEvaluationRoutesArgs["getEvaluationRun"];
   listBenchmarkSets?: RegisterEvaluationRoutesArgs["listBenchmarkSets"];
+  judgmentQueue?: JudgmentJobQueue;
   checkDb?: () => Promise<void>;
   checkRedis?: () => Promise<void>;
 }
@@ -198,6 +200,7 @@ export function buildApp(checks: ReadinessChecks = {}) {
       pool: checks.dbPool,
       env,
       redisConnection: checks.redisConnection,
+      judgmentQueue: checks.judgmentQueue,
     });
   }
 

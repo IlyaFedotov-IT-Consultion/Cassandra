@@ -85,6 +85,27 @@ def test_disagreement_shrinkage_pulls_toward_prior() -> None:
     assert 0 < shrinkage <= 0.6
 
 
+def test_aggregate_posterior_shrinkage_keeps_non_neutral_prior_signal() -> None:
+    prior_log_odds = probability_to_log_odds(0.8)
+    result = aggregate_posterior(
+        prior_log_odds=prior_log_odds,
+        raw_opinions=[
+            _raw_opinion("official_records", ["e1"], "strong_for"),
+            _raw_opinion("open_web_research", ["e2"], "strong_against"),
+        ],
+        base_weights={"official_records": 1.0, "open_web_research": 1.0},
+        evidence_lookup={
+            "e1": _evidence("e1", "2026-10-11T10:00:00Z"),
+            "e2": _evidence("e2", "2026-10-11T09:00:00Z"),
+        },
+        evaluation_time="2026-10-11T12:00:00Z",
+    )
+
+    assert result.shrinkage > 0
+    assert result.posterior_probability > 0.5
+    assert abs(result.posterior_probability - log_odds_to_probability(prior_log_odds)) < 0.02
+
+
 def test_stale_evidence_decays_more_than_fresh_evidence() -> None:
     fresh = freshness_decay("2026-10-11T11:00:00Z", "2026-10-11T12:00:00Z")
     stale = freshness_decay("2026-09-01T12:00:00Z", "2026-10-11T12:00:00Z")

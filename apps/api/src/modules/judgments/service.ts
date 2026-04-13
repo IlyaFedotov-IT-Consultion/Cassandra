@@ -1170,13 +1170,6 @@ class DefaultJudgeClient implements JudgeClient {
     calibrationSnapshot: CalibrationSnapshot;
     mode: AdapterMode;
   }): Promise<VerdictTrace> {
-    if (input.mode === "fixture") {
-      return buildFixtureVerdictTrace({
-        ...input,
-        env: this.env,
-      });
-    }
-
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.env.JUDGE_REQUEST_TIMEOUT_MS);
 

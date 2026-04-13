@@ -166,7 +166,7 @@ def aggregate_posterior(
         )
 
     shrinkage = disagreement_shrinkage(weighted_log_odds)
-    posterior_log_odds = (1 - shrinkage) * raw_posterior_log_odds
+    posterior_log_odds = (1 - shrinkage) * raw_posterior_log_odds + shrinkage * prior_log_odds
     dependency_matrix = [
         {"judgeA": left, "judgeB": right, "jaccard": value}
         for (left, right), value in overlap_matrix.items()

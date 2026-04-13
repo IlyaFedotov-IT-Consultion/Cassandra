@@ -9,13 +9,11 @@ import {
 } from "@cassandra/shared";
 
 import type { AppEnv } from "../../config/env.js";
-import { runJudgmentWorker } from "../../workers/judgmentWorker.js";
+import type { JudgmentJobQueue } from "./jobQueue.js";
 import { listJudgments } from "./repository.js";
 import {
   LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE,
   assertLiveAuthoritativeSearchProviderConfigured,
-  createEvidenceCacheStore,
-  createJudgeCacheStore,
   enqueueJudgmentRun,
   getJudgmentDetails,
   listRuntimeEvents,
@@ -44,10 +42,9 @@ export function registerJudgmentRoutes(
     pool: Pool;
     env: AppEnv;
     redisConnection?: Redis;
+    judgmentQueue?: JudgmentJobQueue;
   },
 ) {
-  const evidenceCacheStore = createEvidenceCacheStore(args.redisConnection);
-  const judgeCacheStore = createJudgeCacheStore(args.redisConnection);
   const logger = app.log.child({
     area: "judgments",
   });
@@ -117,32 +114,17 @@ export function registerJudgmentRoutes(
         "judgment enqueued",
       );
 
-      setTimeout(() => {
-        void runJudgmentWorker({
-          pool: args.pool,
-          env: args.env,
-          evidenceCacheStore,
-          judgeCacheStore,
-          logger: logger.child({
-            eventId: judgment.eventId,
-            judgmentId: judgment.id,
-          }),
-          input: {
-            ...parsed.data,
-            judgmentId: judgment.id,
-          },
-        }).catch((error) => {
-          logger.error(
-            {
-              event: "judgment_worker_failed",
-              err: error,
-              eventId: judgment.eventId,
-              judgmentId: judgment.id,
-            },
-            "judgment worker failed",
-          );
-        });
-      }, 0);
+      if (!args.judgmentQueue) {
+        reply.code(503);
+        return {
+          error: "Judgment queue is not configured",
+        };
+      }
+
+      await args.judgmentQueue.enqueue({
+        ...parsed.data,
+        judgmentId: judgment.id,
+      });
 
       reply.code(202);
       return {

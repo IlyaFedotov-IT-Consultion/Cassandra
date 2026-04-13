@@ -8,7 +8,8 @@ import type { CalibrationSnapshot, EvidenceItem } from "@cassandra/shared";
 import { buildApp } from "../src/app.js";
 import { getEnv } from "../src/config/env.js";
 import { createDbPool } from "../src/lib/db.js";
-import { createLogger } from "../src/lib/logger.js";
+import { createLogger, type AppLogger } from "../src/lib/logger.js";
+import type { JudgmentJobQueue } from "../src/modules/judgments/jobQueue.js";
 import { createEvent } from "../src/modules/events/repository.js";
 import { InMemoryJudgeCacheStore } from "../src/modules/judgments/judgeCache.js";
 import {
@@ -21,6 +22,7 @@ import {
 import {
   createDefaultEvidenceProviders,
   evaluateEventForecast,
+  type JudgeClient,
   runJudgment,
 } from "../src/modules/judgments/service.js";
 
@@ -100,6 +102,138 @@ function buildCalibrationSnapshot(): CalibrationSnapshot {
   };
 }
 
+function buildJudgeTrace(args: {
+  eventId: string;
+  referenceClass: string | null;
+  evaluationTime: string;
+  calibrationSnapshot: CalibrationSnapshot;
+  evidence: EvidenceItem[];
+  priorProbability?: number;
+  rawPosteriorProbability?: number;
+  finalProbability?: number;
+  confidenceLow?: number;
+  confidenceHigh?: number;
+  calibrationMethod?: "identity" | "logistic" | "isotonic" | "beta";
+  status?: "completed" | "insufficient_evidence";
+  citedEvidence?: EvidenceItem[];
+}) {
+  const citedEvidence = args.citedEvidence ?? args.evidence;
+  const primaryEvidence = citedEvidence[0];
+  const finalProbability = args.finalProbability ?? (args.status === "insufficient_evidence" ? 0.5 : 0.64);
+  const rawPosteriorProbability = args.rawPosteriorProbability ?? finalProbability;
+
+  return {
+    id: randomUUID(),
+    eventId: args.eventId,
+    evaluationTime: args.evaluationTime,
+    referenceClass: args.referenceClass,
+    referenceClassFallback: null,
+    priorProbability: args.priorProbability ?? 0.5,
+    rawPosteriorProbability,
+    finalProbability,
+    confidenceLow: args.confidenceLow ?? Math.max(0, finalProbability - 0.1),
+    confidenceHigh: args.confidenceHigh ?? Math.min(1, finalProbability + 0.1),
+    dependencyMatrix: [],
+    disagreementShrinkage: args.status === "insufficient_evidence" ? 0 : 0.04,
+    judgeOpinions: [
+      {
+        judgeName: "official_records",
+        probability: finalProbability,
+        confidence: args.status === "insufficient_evidence" ? 0.55 : 0.8,
+        evidenceStrength: args.status === "insufficient_evidence" ? "neutral" as const : "moderate_for" as const,
+        rationale:
+          args.status === "insufficient_evidence"
+            ? "Evidence remains inconclusive."
+            : "Evidence supports the forecast.",
+        evidenceIds: primaryEvidence ? citedEvidence.map((item) => item.id) : [],
+        warnings: [],
+        logBayesFactor: args.status === "insufficient_evidence" ? 0 : 1.5,
+        baseWeight: 0.4,
+        dependencyDiscount: 1,
+        freshnessDecay: 1,
+        effectiveLogOddsContribution: args.status === "insufficient_evidence" ? 0 : 0.6,
+        missingEvidence: [],
+      },
+    ],
+    weightBreakdown: [
+      {
+        source: "official_records",
+        weight: 0.4,
+        details: {},
+      },
+    ],
+    ensembleMethod: "logarithmic_opinion_pool" as const,
+    calibrationMethod: args.calibrationMethod ?? "identity" as const,
+    uncertaintyMethod: "bootstrap" as const,
+    weightRegime: args.calibrationSnapshot.weightRegime,
+    replayFidelity: args.status === "insufficient_evidence" ? "approximate" as const : "exact" as const,
+    conflicts: [],
+    missingEvidence: [],
+    citations:
+      citedEvidence.length > 0
+        ? citedEvidence.map((item) => ({
+            title: item.title,
+            url: item.url,
+            sourceFamily: item.sourceFamily,
+          }))
+        : [
+            {
+              title: "No evidence",
+              url: "https://example.com/no-evidence",
+              sourceFamily: "web" as const,
+            },
+          ],
+    modelVersion: "judge-v1",
+    weightVersion: args.calibrationSnapshot.id,
+    calibrationVersion: args.calibrationSnapshot.id,
+    status: args.status ?? "completed" as const,
+    cacheEvents: [],
+  };
+}
+
+function createFixtureJudgeClient(overrides: {
+  buildTrace?: (input: Parameters<JudgeClient["judge"]>[0]) => ReturnType<typeof buildJudgeTrace>;
+} = {}): JudgeClient {
+  return {
+    async judge(input) {
+      return (
+        overrides.buildTrace?.(input) ??
+        buildJudgeTrace({
+          eventId: input.event.id,
+          referenceClass: input.event.referenceClass,
+          evaluationTime: input.evaluationTime,
+          calibrationSnapshot: input.calibrationSnapshot,
+          evidence: input.evidence,
+        })
+      );
+    },
+  };
+}
+
+function createImmediateJudgmentQueue(args: {
+  env: ReturnType<typeof createFixtureEnv>;
+  judgeClient?: JudgeClient;
+  logger?: AppLogger;
+}): JudgmentJobQueue {
+  return {
+    enqueue: vi.fn(async (input) => {
+      queueMicrotask(() => {
+        void runJudgment({
+          pool,
+          env: args.env,
+          input,
+          judgeClient: args.judgeClient ?? createFixtureJudgeClient(),
+          logger: args.logger?.child({
+            eventId: input.eventId,
+            judgmentId: input.judgmentId,
+          }),
+        }).catch(() => undefined);
+      });
+    }),
+    close: async () => undefined,
+  };
+}
+
 async function waitForCompletedJudgment(app: ReturnType<typeof buildApp>, judgmentId: string) {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const response = await app.inject({
@@ -157,6 +291,9 @@ describe("judgment routes and service", () => {
     const app = buildApp({
       dbPool: pool,
       env: createFixtureEnv(),
+      judgmentQueue: createImmediateJudgmentQueue({
+        env: createFixtureEnv(),
+      }),
     });
 
     try {
@@ -216,6 +353,49 @@ describe("judgment routes and service", () => {
 
       expect(completed.verdictTrace.citations.length).toBeGreaterThan(0);
       expect(completed.judgeOpinions.length).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("enqueues judgment jobs through the configured queue abstraction", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria:
+        "Counts only if Example Corp posts a general availability announcement on its official site.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: ["EXMPL"],
+      polymarketMarketId: "poly-1",
+    });
+    const judgmentQueue: JudgmentJobQueue = {
+      enqueue: vi.fn(async () => undefined),
+      close: async () => undefined,
+    };
+    const app = buildApp({
+      dbPool: pool,
+      env: createFixtureEnv(),
+      judgmentQueue,
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/judgments",
+        payload: {
+          eventId: event.id,
+          evaluationTime: "2026-10-11T12:00:00Z",
+        },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const payload = response.json();
+      expect(judgmentQueue.enqueue).toHaveBeenCalledWith({
+        judgmentId: payload.id,
+        eventId: event.id,
+        evaluationTime: "2026-10-11T12:00:00Z",
+      });
     } finally {
       await app.close();
     }
@@ -283,6 +463,14 @@ describe("judgment routes and service", () => {
     const app = buildApp({
       dbPool: pool,
       env: createFixtureEnv(),
+      judgmentQueue: createImmediateJudgmentQueue({
+        env: createFixtureEnv(),
+        logger: createLogger({
+          component: "test",
+          destination,
+          level: "info",
+        }),
+      }),
       logger: createLogger({
         component: "test",
         destination,
@@ -343,6 +531,18 @@ describe("judgment routes and service", () => {
           },
         },
       ],
+      judgeClient: createFixtureJudgeClient({
+        buildTrace: (input) =>
+          buildJudgeTrace({
+            eventId: input.event.id,
+            referenceClass: input.event.referenceClass,
+            evaluationTime: input.evaluationTime,
+            calibrationSnapshot: input.calibrationSnapshot,
+            evidence: input.evidence,
+            status: "insufficient_evidence",
+            finalProbability: 0.5,
+          }),
+      }),
     });
 
     expect(completed.status).toBe("insufficient_evidence");
@@ -360,7 +560,7 @@ describe("judgment routes and service", () => {
     );
   });
 
-  it("uses calibration snapshot prior parameters in fixture mode", async () => {
+  it("preserves blended prior probabilities returned by the judge service in fixture mode", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",
       resolutionCriteria: "Launch must be publicly announced.",
@@ -414,12 +614,24 @@ describe("judgment routes and service", () => {
       evaluationTime: "2026-10-11T12:00:00Z",
       evidence,
       calibrationSnapshot,
+      judgeClient: createFixtureJudgeClient({
+        buildTrace: (input) =>
+          buildJudgeTrace({
+            eventId: input.event.id,
+            referenceClass: input.event.referenceClass,
+            evaluationTime: input.evaluationTime,
+            calibrationSnapshot: input.calibrationSnapshot,
+            evidence: input.evidence,
+            priorProbability: 0.74,
+            finalProbability: 0.69,
+          }),
+      }),
     });
 
-    expect(trace.priorProbability).toBeGreaterThan(0.7);
+    expect(trace.priorProbability).toBe(0.74);
   });
 
-  it("applies calibration parameters in fixture mode", async () => {
+  it("preserves calibration metadata returned by the judge service in fixture mode", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",
       resolutionCriteria: "Launch must be publicly announced.",
@@ -455,6 +667,18 @@ describe("judgment routes and service", () => {
           method: "identity",
         },
       },
+      judgeClient: createFixtureJudgeClient({
+        buildTrace: (input) =>
+          buildJudgeTrace({
+            eventId: input.event.id,
+            referenceClass: input.event.referenceClass,
+            evaluationTime: input.evaluationTime,
+            calibrationSnapshot: input.calibrationSnapshot,
+            evidence: input.evidence,
+            calibrationMethod: "identity",
+            finalProbability: 0.68,
+          }),
+      }),
     });
     const logisticTrace = await evaluateEventForecast({
       env: createFixtureEnv(),
@@ -469,6 +693,18 @@ describe("judgment routes and service", () => {
           intercept: -1.2,
         },
       },
+      judgeClient: createFixtureJudgeClient({
+        buildTrace: (input) =>
+          buildJudgeTrace({
+            eventId: input.event.id,
+            referenceClass: input.event.referenceClass,
+            evaluationTime: input.evaluationTime,
+            calibrationSnapshot: input.calibrationSnapshot,
+            evidence: input.evidence,
+            calibrationMethod: "logistic",
+            finalProbability: 0.41,
+          }),
+      }),
     });
 
     expect(logisticTrace.calibrationMethod).toBe("logistic");
@@ -936,6 +1172,107 @@ describe("judgment routes and service", () => {
     });
   });
 
+  it("uses the HTTP judge client in fixture mode instead of local TS aggregation", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const calibrationSnapshot = buildCalibrationSnapshot();
+    const evidence = [
+      buildEvidenceItem({
+        eventId: event.id,
+        sourceFamily: "official",
+        sourceType: "press_release",
+      }),
+    ];
+    const trace = {
+      id: randomUUID(),
+      eventId: event.id,
+      evaluationTime: "2026-10-11T12:00:00Z",
+      referenceClass: event.referenceClass,
+      referenceClassFallback: null,
+      priorProbability: 0.61,
+      rawPosteriorProbability: 0.7,
+      finalProbability: 0.68,
+      confidenceLow: 0.58,
+      confidenceHigh: 0.78,
+      dependencyMatrix: [],
+      disagreementShrinkage: 0.04,
+      judgeOpinions: [
+        {
+          judgeName: "official_records",
+          probability: 0.68,
+          confidence: 0.8,
+          evidenceStrength: "moderate_for" as const,
+          rationale: "Official evidence supports the launch.",
+          evidenceIds: [evidence[0]!.id],
+          warnings: [],
+          logBayesFactor: 1.5,
+          baseWeight: 0.4,
+          dependencyDiscount: 1,
+          freshnessDecay: 1,
+          effectiveLogOddsContribution: 0.6,
+          missingEvidence: [],
+        },
+      ],
+      weightBreakdown: [],
+      ensembleMethod: "logarithmic_opinion_pool" as const,
+      calibrationMethod: "identity" as const,
+      uncertaintyMethod: "bootstrap" as const,
+      weightRegime: "cold_start" as const,
+      replayFidelity: "exact" as const,
+      conflicts: [],
+      missingEvidence: [],
+      citations: [
+        {
+          title: evidence[0]!.title,
+          url: evidence[0]!.url,
+          sourceFamily: evidence[0]!.sourceFamily,
+        },
+      ],
+      modelVersion: "judge-v1",
+      weightVersion: calibrationSnapshot.id,
+      calibrationVersion: calibrationSnapshot.id,
+      status: "completed" as const,
+      cacheEvents: [],
+    };
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify(trace), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    try {
+      const result = await evaluateEventForecast({
+        env: createFixtureEnv({
+          JUDGE_BASE_URL: "http://judge.local",
+        }),
+        event,
+        evaluationTime: "2026-10-11T12:00:00Z",
+        evidence,
+        calibrationSnapshot,
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result.finalProbability).toBe(trace.finalProbability);
+      expect(result.cacheEvents).toContainEqual({
+        layer: "judge_output",
+        target: "panel",
+        status: "bypass",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("uses the configured judge request timeout for live judge calls", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
@@ -1363,6 +1700,17 @@ describe("judgment routes and service", () => {
         unusedMarketEvidence,
       ],
       calibrationSnapshot,
+      judgeClient: createFixtureJudgeClient({
+        buildTrace: (input) =>
+          buildJudgeTrace({
+            eventId: input.event.id,
+            referenceClass: input.event.referenceClass,
+            evaluationTime: input.evaluationTime,
+            calibrationSnapshot: input.calibrationSnapshot,
+            evidence: input.evidence,
+            citedEvidence: [officialEvidence, communityEvidence, webEvidence],
+          }),
+      }),
     });
 
     expect(trace.citations.map((citation) => citation.url)).toEqual([

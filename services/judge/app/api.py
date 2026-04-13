@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from math import exp
 from urllib.parse import urlparse
 from fastapi import APIRouter, Depends
 
@@ -27,6 +28,10 @@ def _llm_dependency() -> LLMClient:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _log_odds_to_probability(log_odds: float) -> float:
+    return 1 / (1 + exp(-log_odds))
 
 def _collect_market_signals(request: JudgeRequest) -> dict[str, float]:
     for item in request.evidence:
@@ -204,7 +209,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             "evaluationTime": request.evaluation_time,
             "referenceClass": request.event.referenceClass,
             "referenceClassFallback": None if not prior.reference_class_fallback else "global_baseline",
-            "priorProbability": prior.base_rate_probability if prior.alpha > 0 else prior.market_probability,
+            "priorProbability": _log_odds_to_probability(prior.prior_log_odds),
             "rawPosteriorProbability": aggregate.raw_probability,
             "finalProbability": final_probability,
             "confidenceLow": confidence_low,

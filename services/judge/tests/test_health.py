@@ -1,3 +1,5 @@
+from math import exp, log
+
 from fastapi.testclient import TestClient
 
 from app.api import _llm_dependency
@@ -128,6 +130,99 @@ def test_judge_endpoint_applies_calibration_map_to_final_probability() -> None:
     payload = response.json()
     assert payload["rawPosteriorProbability"] == 0.5
     assert payload["finalProbability"] > payload["rawPosteriorProbability"]
+
+
+def test_judge_endpoint_reports_the_blended_prior_probability() -> None:
+    app.dependency_overrides[_llm_dependency] = lambda: FakeLLMClient({})
+    try:
+        response = client.post(
+            "/judge",
+            json={
+                "eventId": "event-prior",
+                "event": {
+                    "question": "Will Example Corp launch Product X by 2026-12-31?",
+                    "resolutionCriteria": "Counts only if Example Corp posts a general availability announcement on its official site.",
+                    "deadline": "2026-12-31T23:59:59Z",
+                    "entities": ["Example Corp", "Product X"],
+                    "referenceClass": "product_launch",
+                    "marketSymbols": ["EXMPL"],
+                },
+                "evaluationTime": "2026-10-11T12:00:00Z",
+                "evidence": [
+                    {
+                        "id": "market-1",
+                        "eventId": "event-prior",
+                        "sourceFamily": "prediction_market",
+                        "sourceType": "quote_snapshot",
+                        "title": "Example market snapshot",
+                        "url": "https://markets.example.com/product-x",
+                        "publisher": "Example Markets",
+                        "publishedAt": "2026-10-10T09:00:00Z",
+                        "retrievedAt": "2026-10-11T12:00:00Z",
+                        "summary": "Market odds imply a likely launch.",
+                        "rawText": None,
+                        "entities": ["Example Corp", "Product X"],
+                        "claims": ["Product X likely launches this year"],
+                        "stance": "supports",
+                        "qualitySignals": {},
+                        "metadata": {
+                            "price": 0.7,
+                            "spread": 0.05,
+                            "depth": 50000,
+                            "volatility": 0.1,
+                        },
+                    }
+                ],
+                "calibrationSnapshot": {
+                    "id": "snapshot-prior",
+                    "createdAt": "2026-10-01T00:00:00Z",
+                    "trainingWindow": "all_time",
+                    "judgeWeights": {
+                        "official_records": 0.33,
+                        "community_signal": 0.33,
+                        "open_web_research": 0.34,
+                    },
+                    "baseRateParams": {
+                        "minimumSample": 20,
+                        "historicalCounts": {
+                            "product_launch": {
+                                "successes": 15,
+                                "total": 20,
+                            }
+                        },
+                    },
+                    "marketPriorParams": {
+                        "defaultAlpha": 0.6,
+                    },
+                    "calibrationParams": {"method": "identity"},
+                    "onlineLearningParams": {"enabled": False},
+                    "metrics": {},
+                    "weightRegime": "cold_start",
+                    "resolvedOutcomeCount": 0,
+                    "approved": False,
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    base_rate_probability = (15 + 1) / (20 + 2)
+    market_probability = 0.5 + (
+        min(max((1 - 0.05) * (1 - 0.1) * (1 - exp(-50000 / 50000)), 0.0), 1.0) * (0.7 - 0.5)
+    )
+    expected_prior = 1 / (
+        1
+        + exp(
+            -(
+                0.6 * log(base_rate_probability / (1 - base_rate_probability))
+                + 0.4 * log(market_probability / (1 - market_probability))
+            )
+        )
+    )
+
+    assert abs(payload["priorProbability"] - expected_prior) < 1e-6
 
 
 def test_judge_endpoint_rejects_invalid_payload() -> None:
