@@ -1,3 +1,4 @@
+import type { EvidenceItem } from "@cassandra/shared";
 import type { Redis } from "ioredis";
 
 import type { AppLogger } from "../../lib/logger.js";
@@ -74,7 +75,7 @@ export async function collectEvidenceForEventWithCache(
     component: "evidence",
   });
   const providerRuns: ProviderRun[] = [];
-  const rawItems = [];
+  const rawItems: EvidenceItem[] = [];
 
   for (const provider of args.providers) {
     try {
@@ -99,7 +100,7 @@ export async function collectEvidenceForEventWithCache(
       const cached = await args.cacheStore.get(cacheKey);
 
       if (cached) {
-        const providerItems = (JSON.parse(cached) as Array<{ eventId?: string }>).map((item) => ({
+        const providerItems = (JSON.parse(cached) as EvidenceItem[]).map((item) => ({
           ...item,
           eventId: args.event.id,
         }));

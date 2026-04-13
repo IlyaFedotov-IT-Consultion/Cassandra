@@ -532,9 +532,11 @@ function applyCalibrationToProbability(args: {
   }
 
   if (method === "isotonic") {
-    const points = Array.isArray(params.thresholds) && Array.isArray(params.outputs)
-      ? params.thresholds.flatMap((threshold, index) => {
-          const output = params.outputs[index];
+    const thresholds = Array.isArray(params.thresholds) ? params.thresholds : [];
+    const outputs = Array.isArray(params.outputs) ? params.outputs : [];
+    const points = thresholds.length > 0 && outputs.length > 0
+      ? thresholds.flatMap((threshold, index) => {
+          const output = outputs[index];
 
           return typeof threshold === "number" && typeof output === "number"
             ? [{ threshold, output: clamp(output, 0, 1) }]

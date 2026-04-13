@@ -17,7 +17,7 @@ export const RECENT_BENCHMARK_THEME_LIMIT = 12;
 const RECENT_BENCHMARK_MIN_OPEN_HOURS = 24;
 const HISTORY_LOOKBACK_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const HISTORY_FIDELITY_MINUTES = 60;
-const RECENT_BENCHMARK_PAGE_REQUESTS = [
+const RECENT_BENCHMARK_PAGE_REQUESTS: ReadonlyArray<{ limit: number; offset?: number }> = [
   { limit: 100 },
   { limit: 100, offset: 200 },
   { limit: 100, offset: 300 },
@@ -141,7 +141,13 @@ function normalizeResolvedValue(outcomes: string[], prices: number[]): boolean |
   const yesPrice = prices[yesIndex];
   const noPrice = prices[noIndex];
 
-  if (!Number.isFinite(yesPrice) || !Number.isFinite(noPrice) || yesPrice === noPrice) {
+  if (
+    yesPrice === undefined ||
+    noPrice === undefined ||
+    !Number.isFinite(yesPrice) ||
+    !Number.isFinite(noPrice) ||
+    yesPrice === noPrice
+  ) {
     return null;
   }
 
@@ -463,7 +469,9 @@ function normalizePolymarketBenchmarkEntries(
     const yesIndex = normalizedOutcomes.indexOf("yes");
     const tokenIds = parseTokenIdArray(market.clobTokenIds);
     const yesTokenId =
-      yesIndex >= 0 && tokenIds.length === normalizedOutcomes.length ? tokenIds[yesIndex] : null;
+      yesIndex >= 0 && tokenIds.length === normalizedOutcomes.length
+        ? (tokenIds[yesIndex] ?? null)
+        : null;
     const marketSlug = market.market_slug ?? market.slug ?? primaryEvent?.slug;
     const marketUrl = marketSlug
       ? `https://polymarket.com/event/${marketSlug}`
