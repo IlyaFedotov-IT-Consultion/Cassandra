@@ -2245,7 +2245,11 @@ function CalibrationPage() {
                       : "Approve snapshot"}
                 </button>
               </div>
-              <pre className="json-block">{JSON.stringify(selectedSnapshot.calibrationParams, null, 2)}</pre>
+              <pre className="json-block">
+                {"calibrationParams" in selectedSnapshot
+                  ? JSON.stringify(selectedSnapshot.calibrationParams, null, 2)
+                  : "Loading detailed calibration parameters…"}
+              </pre>
             </div>
           ) : (
             <EmptyState title="Pick a snapshot" body="Select a snapshot from the history column." />
