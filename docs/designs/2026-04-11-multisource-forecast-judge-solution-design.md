@@ -45,10 +45,10 @@ The primary output is a `VerdictTrace`: a full record of the event definition, e
 ### 4.1 Explicit event workflow
 
 1. Operator submits an event with question, resolution criteria, deadline, entities, and optional market identifiers.
-2. API schedules an evidence collection job.
+2. API persists a queued judgment and enqueues background work in Redis.
 3. Adapters retrieve web, official, government, community, market, and Polymarket evidence.
 4. Normalization and deduplication build a canonical evidence set.
-5. Python judge service runs specialized judges plus cross-examination.
+5. Python judge service runs specialized judges plus cross-examination in both `live` and `fixture` modes.
 6. Aggregation and calibration produce the final probability and confidence band.
 7. UI displays the trace, disagreements, and supporting citations.
 
@@ -349,6 +349,7 @@ raw_posterior_log_odds =
 
 posterior_log_odds =
   (1 - shrinkage) * raw_posterior_log_odds
+  + shrinkage * prior_log_odds
 
 calibrated_probability = calibration_map(sigmoid(posterior_log_odds))
 ```
@@ -521,7 +522,7 @@ Aggregator-derived:
 - `evaluationTime` (wall clock in live mode, replay cutoff in backtest mode)
 - `referenceClass` (snapshot of `Event.referenceClass` at evaluation time)
 - `referenceClassFallback` (boolean; true when the class was null or under-sampled and `Beta(1, 1)` was used)
-- `priorProbability`
+- `priorProbability` (the actual blended prior derived from `prior_log_odds` and used by aggregation)
 - `rawPosteriorProbability`
 - `finalProbability`
 - `confidenceLow`
@@ -625,9 +626,11 @@ Returns discovered candidate events and supporting evidence.
 }
 ```
 
+The API stores a `queued` judgment record, enqueues the run in Redis, and returns `202` immediately. A worker later collects evidence and calls the Python judge service to produce the terminal trace.
+
 `GET /judgments/:id`
 
-Returns the full `VerdictTrace`.
+Returns the stored judgment record. Once the run reaches a terminal state, the record includes the full `VerdictTrace`.
 
 ### 10.4 Outcomes and backtests
 
@@ -704,7 +707,7 @@ Required environment variables:
 
 Optional:
 
-- `CASSANDRA_ADAPTER_MODE` (`live` | `fixture`; when `fixture`, all evidence providers and LLM judges return canned responses from fixture directories, allowing the full stack to run with no external API keys)
+- `CASSANDRA_ADAPTER_MODE` (`live` | `fixture`; when `fixture`, evidence providers return canned responses from fixture directories and the Python judge service normally runs with its fake LLM backend, allowing the full stack to run with no external API keys)
 - domain allowlists for official and government search
 - queue concurrency values
 - adapter timeouts
@@ -731,7 +734,7 @@ v1 caches at two layers, both backed by Redis:
 - **Evidence cache.** Keyed on `(canonical_event_question_hash, evaluationTime_hour_bucket, providerName)`. Values are normalized `EvidenceItem[]`. TTL is long (days) because historical cutoffs do not change. The same event-cutoff combination is then hit once per eval run regardless of which baseline is active.
 - **Judge output cache.** Keyed on `(judgeName, sorted(evidenceIds)_hash, judgeModelVersion, promptVersion)`. Values are raw `JudgeOpinion` records. TTL is shorter (hours to a day). The `model_without_polymarket` and `model_with_polymarket` baselines share all non-market judge computations through this cache.
 
-Both caches are bypassed when `CASSANDRA_ADAPTER_MODE=fixture` (the fixtures are themselves the cache). The cache key must include a `promptVersion` so prompt changes invalidate cleanly, and cache reads must be logged in the debug trace so a reviewer can see whether a judgment was computed or replayed.
+Both request-side caches are bypassed when `CASSANDRA_ADAPTER_MODE=fixture` because fixture evidence is deterministic. The final forecast still runs through the Python judge service. The cache key must include a `promptVersion` so prompt changes invalidate cleanly, and cache reads must be logged in the debug trace so a reviewer can see whether a judgment was computed or replayed.
 
 ## 14. Risks And Mitigations
 
