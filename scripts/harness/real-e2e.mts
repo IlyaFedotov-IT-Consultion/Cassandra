@@ -48,11 +48,19 @@ import {
   type CalibrationSnapshot,
   type CalibrationSnapshotSummary,
 } from "@cassandra/shared";
+import {
+  buildHarnessEnvironmentReport,
+  validateEvaluationPipelineOutcome,
+  validateTerminalJudgmentStatus,
+  type HarnessEnvironmentReport,
+  type HealthSnapshot,
+} from "./real-e2e-support.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const API_BASE = process.env.API_BASE ?? "http://localhost:3000";
 const TIMEOUT_MS = Number.parseInt(process.env.HARNESS_TIMEOUT_MS ?? "420000", 10);
 const POLL_INTERVAL_MS = Number.parseInt(process.env.HARNESS_POLL_MS ?? "2500", 10);
+const ALLOW_INSUFFICIENT_EVIDENCE = process.env.HARNESS_ALLOW_INSUFFICIENT_EVIDENCE === "1";
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const RUNS_DIR = join(HERE, "runs", RUN_ID);
 
@@ -92,7 +100,7 @@ interface RunReport {
   totalDurationMs: number;
   ok: boolean;
   scenarios: ScenarioResult[];
-  environment: Record<string, string | undefined>;
+  environment: HarnessEnvironmentReport;
 }
 
 // -- HTTP helpers -------------------------------------------------------------
@@ -375,8 +383,12 @@ async function scenarioJudgmentFlow(): Promise<ScenarioResult> {
       return finalize("judgment-flow", failures, steps, startedAt, start);
     }
 
-    if (trace.status !== "completed" && trace.status !== "insufficient_evidence") {
-      failures.push(`expected status 'completed' or 'insufficient_evidence', got '${trace.status}'`);
+    const terminalStatusFailure = validateTerminalJudgmentStatus(
+      trace.status,
+      ALLOW_INSUFFICIENT_EVIDENCE,
+    );
+    if (terminalStatusFailure) {
+      failures.push(terminalStatusFailure);
     }
 
     if (!trace.verdictTrace) {
@@ -705,6 +717,13 @@ async function scenarioLearningLoop(): Promise<ScenarioResult> {
         steps,
         "approval-selection",
       );
+      const approvalSelectionStatusFailure = validateTerminalJudgmentStatus(
+        approvalSelectionJudgment.status,
+        ALLOW_INSUFFICIENT_EVIDENCE,
+      );
+      if (approvalSelectionStatusFailure) {
+        failures.push(`approval-selection ${approvalSelectionStatusFailure}`);
+      }
       const selectedSnapshotId = findCalibrationSnapshotLogId(approvalSelectionJudgment);
       if (!selectedSnapshotId) {
         failures.push("approval-selection judgment did not log the loaded calibration snapshot id");
@@ -749,9 +768,15 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
   const steps: StepRecord[] = [];
   const failures: string[] = [];
   let benchmarkMarkets: unknown[] = [];
+  let benchmarkSetCount = 0;
+  let evaluationRunCreated = false;
+  let importResult: { imported: unknown; markets: unknown } = {
+    imported: undefined,
+    markets: undefined,
+  };
 
   try {
-    const importResult = await timed(
+    importResult = await timed(
       "POST /evaluation/benchmarks/import/polymarket",
       () =>
         apiRequest<{ imported: number; markets: unknown[] }>(
@@ -761,13 +786,10 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
         ),
       steps,
     );
-
-    if (typeof importResult.imported !== "number") {
-      failures.push("benchmark import did not return imported count");
-    }
-    if (!Array.isArray(importResult.markets)) {
-      failures.push("benchmark import did not return markets array");
-    }
+    steps[steps.length - 1]!.detail = {
+      imported: importResult.imported,
+      marketCount: Array.isArray(importResult.markets) ? importResult.markets.length : null,
+    };
 
     const benchmarkSets = await timed(
       "GET /evaluation/benchmark-sets",
@@ -778,6 +800,7 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
     if (!Array.isArray(benchmarkSets)) {
       failures.push("GET /evaluation/benchmark-sets did not return an array");
     } else {
+      benchmarkSetCount = benchmarkSets.length;
       for (const bs of benchmarkSets) {
         const p = BenchmarkSetSummarySchema.safeParse(bs);
         if (!p.success) {
@@ -834,6 +857,7 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
       if (runResponse.status === 201 || runResponse.status === 200) {
         const run = runResponse.body as { id: string };
         shared.evaluationRunId = run.id;
+        evaluationRunCreated = true;
 
         if (!run.id) {
           failures.push("POST /evaluation/runs did not return an id");
@@ -866,16 +890,10 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
         if (!Array.isArray(predictions)) {
           failures.push("GET /evaluation/runs/:id/predictions did not return an array");
         }
-      } else if (runResponse.status === 404) {
-        steps.push({ step: "POST /evaluation/runs (no markets)", ok: true, durationMs: 0, detail: "no benchmark markets available — expected in fixture mode" });
       } else if (runResponse.status === 500) {
         const body = runResponse.body as { message?: string } | undefined;
         const msg = body?.message ?? "";
-        if (msg.includes("ENOENT") || msg.includes("fixture")) {
-          steps.push({ step: "POST /evaluation/runs (fixture miss)", ok: true, durationMs: 0, detail: `fixture limitation: ${msg.slice(0, 200)}` });
-        } else {
-          failures.push(`POST /evaluation/runs returned 500: ${msg.slice(0, 200)}`);
-        }
+        failures.push(`POST /evaluation/runs returned 500: ${msg.slice(0, 200)}`);
       } else {
         failures.push(`POST /evaluation/runs returned ${runResponse.status}`);
       }
@@ -908,6 +926,15 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
     if (invalidRun.status !== 400) {
       failures.push(`POST /evaluation/runs with invalid input returned ${invalidRun.status}, expected 400`);
     }
+
+    failures.push(
+      ...validateEvaluationPipelineOutcome({
+        importResult,
+        benchmarkSetCount,
+        benchmarkMarketCount: Array.isArray(benchmarkMarkets) ? benchmarkMarkets.length : 0,
+        evaluationRunCreated,
+      }),
+    );
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error));
   }
@@ -1060,11 +1087,10 @@ function finalize(
 
 // -- Main ---------------------------------------------------------------------
 
-async function assertApiReady(): Promise<void> {
+async function assertApiReady(): Promise<HealthSnapshot> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
-      await apiRequest<{ status: string }>("GET", "/health");
-      return;
+      return await apiRequest<HealthSnapshot>("GET", "/health");
     } catch (error) {
       if (attempt === 9) {
         throw new Error(
@@ -1111,7 +1137,7 @@ async function main(): Promise<number> {
 
   console.log(`[harness] runId=${RUN_ID} api=${API_BASE}`);
   console.log(`[harness] waiting for ${API_BASE}/health ...`);
-  await assertApiReady();
+  const apiHealth = await assertApiReady();
 
   const scenarioRunners: Array<{ name: string; run: () => Promise<ScenarioResult> }> = [
     { name: "event-crud", run: scenarioEventCrud },
@@ -1140,12 +1166,11 @@ async function main(): Promise<number> {
     totalDurationMs: Date.now() - startMs,
     ok: scenarios.every((s) => s.ok),
     scenarios,
-    environment: {
-      CASSANDRA_ADAPTER_MODE: process.env.CASSANDRA_ADAPTER_MODE,
-      CASSANDRA_JUDGE_LLM: process.env.CASSANDRA_JUDGE_LLM,
-      OPENROUTER_JUDGE_MODEL: process.env.OPENROUTER_JUDGE_MODEL,
-      OPENROUTER_SEARCH_MODEL: process.env.OPENROUTER_SEARCH_MODEL,
-    },
+    environment: buildHarnessEnvironmentReport({
+      env: process.env,
+      apiHealth,
+      allowInsufficientEvidence: ALLOW_INSUFFICIENT_EVIDENCE,
+    }),
   };
 
   writeFileSync(
