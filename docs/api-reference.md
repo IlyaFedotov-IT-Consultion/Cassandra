@@ -261,7 +261,7 @@ Response shape:
 
 ### `POST /judgments`
 
-Creates and runs a judgment.
+Creates and enqueues a judgment run.
 
 Request body:
 
@@ -275,18 +275,22 @@ Request body:
 Notes:
 
 - `evaluationTime` is optional; if omitted, the API uses the current time.
-- In `fixture` mode, the API builds a local synthetic verdict trace.
-- In `live` mode, the API calls the Python judge service at `JUDGE_BASE_URL`.
+- The API persists a judgment with status `queued`, enqueues a BullMQ job in Redis, and returns immediately.
+- The worker later stores a terminal status of `completed`, `insufficient_evidence`, or `failed`.
+- In both `fixture` and `live` modes, the forecasting trace is produced by the Python judge service at `JUDGE_BASE_URL`.
+- In `fixture` mode, evidence providers still use canned fixture payloads and the judge service normally runs with its fake LLM backend.
 
 Success:
 
-- status `201`
-- response body is the stored judgment detail object
+- status `202`
+- response body is the queued judgment record
+- fetch `GET /judgments/:id` to observe terminal completion
 
 Errors:
 
 - `400` with `error: "Invalid judgment input"`
 - `404` with `error: "Event not found"` when `eventId` is unknown
+- `409` when live mode is requested without a configured authoritative search provider
 
 ### `POST /backtests/retrain`
 

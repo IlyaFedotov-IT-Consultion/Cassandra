@@ -124,6 +124,8 @@ The repository is in a solid prototype state for backend and judge-service work:
 
 - schema contracts are defined and tested
 - the API surface is meaningful and persists real records
+- judgments are now queued through Redis/BullMQ instead of in-memory timers
+- both fixture and live judgment runs go through the Python judge service
 - the judge service has broad test coverage and currently passes its full suite
 
 The highest-signal risks right now are:

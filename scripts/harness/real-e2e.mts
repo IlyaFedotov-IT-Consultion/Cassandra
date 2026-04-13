@@ -4,7 +4,7 @@
  *
  * Drives the full API + judge pipeline against live third-party services
  * (OpenRouter, Perplexity sonar via OpenRouter). Seeds a small, deterministic
- * set of forecasting events, submits judgments, polls them to completion,
+ * set of forecasting events, submits queued judgments, polls them to completion,
  * validates the verdict traces against the shared schema, and writes a
  * structured JSON artifact per run to scripts/harness/runs/<timestamp>/.
  *
@@ -26,6 +26,7 @@
  *   - .env contains a working OPENROUTER_API_KEY
  *   - CASSANDRA_JUDGE_LLM=openrouter and CASSANDRA_ADAPTER_MODE=live
  *     are exported to the judge / api containers (see docker-compose.yml)
+ *   - the API and worker share Redis because `POST /judgments` is queue-backed
  *
  * Exit code is 0 on success, 1 on any scenario failure.
  */

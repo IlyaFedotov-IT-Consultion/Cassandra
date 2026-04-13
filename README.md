@@ -2,6 +2,8 @@
 
 Cassandra is a research prototype for multi-source event forecasting. The repo combines a TypeScript orchestration API, a shared schema package, and a Python judge service that produces probabilistic verdict traces and calibration snapshots.
 
+Judgment execution is queue-backed: the API persists a `queued` judgment, enqueues a BullMQ job in Redis, and a worker calls the Python judge service to produce the terminal trace.
+
 ## Repository Layout
 
 ```text
@@ -72,7 +74,14 @@ A fuller implementation snapshot lives in [docs/current-status.md](docs/current-
    This now prefers a reachable local `DATABASE_URL`, then falls back to starting the
    Docker Compose `postgres` service and applying the schema there.
 
-5. Run the API watcher.
+5. Run the judge service.
+
+   ```bash
+   cd services/judge
+   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+6. Run the API watcher.
 
    ```bash
    pnpm --filter @cassandra/api dev
@@ -80,12 +89,7 @@ A fuller implementation snapshot lives in [docs/current-status.md](docs/current-
 
    The Compose `api` service also runs `pnpm db:migrate` before starting the dev server.
 
-6. Run the judge service.
-
-   ```bash
-   cd services/judge
-   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-   ```
+   Judgment creation now depends on both Redis and the Python judge service in all adapter modes.
 
 7. Run the web console.
 
@@ -104,7 +108,7 @@ docker compose --profile app up -d postgres redis api judge web
 The app containers use isolated dependency volumes for `node_modules` and the judge
 virtual environment so container-side installs do not overwrite the host workspace.
 
-The default local mode is `CASSANDRA_ADAPTER_MODE=live`. Historical evaluation imports and runs now require live upstream queries so the benchmark set and replay metrics reflect real market data rather than placeholders.
+The default local mode is `CASSANDRA_ADAPTER_MODE=live`. Historical evaluation imports and runs require live upstream queries so the benchmark set and replay metrics reflect real market data rather than placeholders. In `fixture` mode, evidence providers still use canned fixtures, but the API submits the resulting evidence to the Python judge service so fixture and live runs share the same forecasting core.
 
 The API now emits structured JSON logs by default. In local development, set
 `LOG_LEVEL=debug` if you want more detail; in tests, the default app logger stays
@@ -120,6 +124,7 @@ The shared environment template is in `.env.example`. The most important values 
 - `API_PORT`
 - `JUDGE_BASE_URL`
 - `JUDGE_PORT`
+- `JUDGE_REQUEST_TIMEOUT_MS`
 - `VITE_API_BASE_URL`
 - `CASSANDRA_ADAPTER_MODE`
 - `PERPLEXITY_API_KEY`
@@ -162,6 +167,14 @@ pnpm --filter @cassandra/shared build
 pnpm --filter @cassandra/shared test
 cd services/judge && uv run pytest
 ```
+
+Useful harness command:
+
+```bash
+pnpm harness:real
+```
+
+The live harness submits judgments through `POST /judgments` and polls `GET /judgments/:id` until the queued run reaches a terminal state.
 
 ## Documentation
 
