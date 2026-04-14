@@ -135,6 +135,27 @@ function isLikelyEnglishCitation(input: { title: string; url: string }) {
   return latinCount >= Math.max(8, cjkCount * 2) && !/\.cn([/?#:]|$)/i.test(input.url);
 }
 
+function compareCitationsForDisplay(
+  left: { title: string; url: string; publishedAt?: string | null },
+  right: { title: string; url: string; publishedAt?: string | null },
+) {
+  const leftPublishedAt = left.publishedAt ? new Date(left.publishedAt).getTime() : Number.NEGATIVE_INFINITY;
+  const rightPublishedAt = right.publishedAt ? new Date(right.publishedAt).getTime() : Number.NEGATIVE_INFINITY;
+  const publishedGap = rightPublishedAt - leftPublishedAt;
+
+  if (publishedGap !== 0) {
+    return publishedGap;
+  }
+
+  const englishGap = Number(isLikelyEnglishCitation(right)) - Number(isLikelyEnglishCitation(left));
+
+  if (englishGap !== 0) {
+    return englishGap;
+  }
+
+  return left.title.localeCompare(right.title) || left.url.localeCompare(right.url);
+}
+
 function getStatusTone(value: string): StatusTone {
   switch (value) {
     case "ok":
@@ -1495,7 +1516,7 @@ function JudgmentDetailPage() {
           </SectionCard>
           <SectionCard title="Supporting Citations" kicker="Sources">
             <div className="list-stack">
-              {trace.citations.map((citation) => {
+              {[...trace.citations].sort(compareCitationsForDisplay).map((citation) => {
                 const citationDetails = [
                   humanizeToken(citation.sourceFamily),
                   citation.provider ? humanizeToken(citation.provider) : null,

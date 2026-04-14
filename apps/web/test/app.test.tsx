@@ -210,9 +210,22 @@ describe("workspace app", () => {
               ],
               citations: [
                 {
+                  title: "Older background report",
+                  url: "https://example.com/background",
+                  sourceFamily: "official",
+                  publishedAt: "2025-07-14T00:00:00Z",
+                },
+                {
+                  title: "Community follow-up",
+                  url: "https://example.com/community",
+                  sourceFamily: "community",
+                  publishedAt: "2026-01-02T12:00:00Z",
+                },
+                {
                   title: "Example Corp release",
                   url: "https://example.com/release",
                   sourceFamily: "official",
+                  publishedAt: "2026-01-03T08:00:00Z",
                 },
               ],
               cacheEvents: [
@@ -425,9 +438,22 @@ describe("workspace app", () => {
             ],
             citations: [
               {
+                title: "Older background report",
+                url: "https://example.com/background",
+                sourceFamily: "official",
+                publishedAt: "2025-07-14T00:00:00Z",
+              },
+              {
+                title: "Community follow-up",
+                url: "https://example.com/community",
+                sourceFamily: "community",
+                publishedAt: "2026-01-02T12:00:00Z",
+              },
+              {
                 title: "Example Corp release",
                 url: "https://example.com/release",
                 sourceFamily: "official",
+                publishedAt: "2026-01-03T08:00:00Z",
               },
             ],
             cacheEvents: [
@@ -1053,10 +1079,14 @@ describe("workspace app", () => {
     expect(screen.getAllByText(/Web chatter remains less certain/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Exact GA date is not independently confirmed/i)).toBeVisible();
     expect(screen.getByRole("heading", { name: /supporting citations/i })).toBeVisible();
-    expect(screen.getByRole("link", { name: /Example Corp release/i })).toHaveAttribute(
-      "href",
+    const citationLinks = screen
+      .getAllByRole("link")
+      .filter((link) => link.getAttribute("href")?.startsWith("https://example.com/"));
+    expect(citationLinks.map((link) => link.getAttribute("href"))).toEqual([
       "https://example.com/release",
-    );
+      "https://example.com/community",
+      "https://example.com/background",
+    ]);
     expect(screen.getByRole("heading", { name: /execution logs/i })).toBeVisible();
     expect(screen.getByText(/evidence collection finished/i)).toBeVisible();
     expect(screen.getByText(/officialSearch/i)).toBeVisible();
