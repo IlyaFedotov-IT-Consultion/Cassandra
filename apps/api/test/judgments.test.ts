@@ -20,6 +20,7 @@ import {
   listJudgments,
 } from "../src/modules/judgments/repository.js";
 import {
+  buildInsufficientEvidenceVerdictTraceForEvidence,
   createDefaultEvidenceProviders,
   evaluateEventForecast,
   type JudgeClient,
@@ -629,6 +630,82 @@ describe("judgment routes and service", () => {
     });
 
     expect(trace.priorProbability).toBe(0.74);
+  });
+
+  it("uses prediction-market probability metadata when insufficient-evidence fallback builds the prior", () => {
+    const trace = buildInsufficientEvidenceVerdictTraceForEvidence({
+      env: createFixtureEnv({
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      event: {
+        id: "event-1",
+        question: "Will Example Corp launch Product X by 2026-12-31?",
+        resolutionCriteria: "Launch must be publicly announced.",
+        deadline: "2026-12-31T23:59:59Z",
+        status: "open",
+        entities: ["Example Corp", "Product X"],
+        referenceClass: null,
+        marketSymbols: [],
+        polymarketMarketId: "example-product-x",
+        createdAt: "2026-10-01T00:00:00Z",
+        updatedAt: "2026-10-01T00:00:00Z",
+      },
+      evaluationTime: "2026-10-11T12:00:00Z",
+      calibrationSnapshot: buildCalibrationSnapshot(),
+      evidence: [
+        buildEvidenceItem({
+          sourceFamily: "prediction_market",
+          sourceType: "quote_snapshot",
+          metadata: {
+            provider: "polymarketGamma",
+            probability: 0.72,
+            liquidity: 500_000,
+          },
+        }),
+      ],
+    });
+
+    expect(trace.status).toBe("insufficient_evidence");
+    expect(trace.priorProbability).toBeGreaterThan(0.6);
+    expect(trace.finalProbability).toBeCloseTo(trace.priorProbability, 6);
+  });
+
+  it("uses prediction-market outcomePrices metadata when insufficient-evidence fallback builds the prior", () => {
+    const trace = buildInsufficientEvidenceVerdictTraceForEvidence({
+      env: createFixtureEnv({
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      event: {
+        id: "event-1",
+        question: "Will Example Corp launch Product X by 2026-12-31?",
+        resolutionCriteria: "Launch must be publicly announced.",
+        deadline: "2026-12-31T23:59:59Z",
+        status: "open",
+        entities: ["Example Corp", "Product X"],
+        referenceClass: null,
+        marketSymbols: [],
+        polymarketMarketId: "example-product-x",
+        createdAt: "2026-10-01T00:00:00Z",
+        updatedAt: "2026-10-01T00:00:00Z",
+      },
+      evaluationTime: "2026-10-11T12:00:00Z",
+      calibrationSnapshot: buildCalibrationSnapshot(),
+      evidence: [
+        buildEvidenceItem({
+          sourceFamily: "prediction_market",
+          sourceType: "polymarket_market",
+          metadata: {
+            provider: "polymarketGamma",
+            outcomePrices: ["0.72", "0.28"],
+            liquidity: 500_000,
+          },
+        }),
+      ],
+    });
+
+    expect(trace.status).toBe("insufficient_evidence");
+    expect(trace.priorProbability).toBeGreaterThan(0.6);
+    expect(trace.finalProbability).toBeCloseTo(trace.priorProbability, 6);
   });
 
   it("preserves calibration metadata returned by the judge service in fixture mode", async () => {

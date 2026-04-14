@@ -382,6 +382,7 @@ describe("evaluation replay", () => {
       metadata: expect.objectContaining({
         archivedRetrieval: true,
         provider: "benchmarkPolymarket",
+        price: 0.61,
         probability: 0.61,
       }),
     });

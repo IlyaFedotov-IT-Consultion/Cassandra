@@ -280,6 +280,7 @@ interface LiveCoverageResult {
 function buildJudgeModelVersion(env: AppEnv): string {
   return [
     env.CASSANDRA_ADAPTER_MODE,
+    env.CASSANDRA_JUDGE_LLM ?? "default-judge-llm",
     env.OPENROUTER_JUDGE_MODEL ?? "default-judge",
     env.OPENROUTER_CROSS_EXAMINER_MODEL ?? "default-cross",
     env.OPENROUTER_SEARCH_MODEL ?? "default-search",
@@ -379,6 +380,64 @@ function readNumericRecord(
   return Object.keys(result).length > 0 ? result : null;
 }
 
+function readNumericValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function readFirstNumericFromCollection(value: unknown): number | null {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const numericEntry = readNumericValue(entry);
+
+      if (numericEntry !== null) {
+        return numericEntry;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return readFirstNumericFromCollection(parsed);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function readMarketProbability(metadata: Record<string, unknown>): number | null {
+  const directProbability =
+    readNumericValue(metadata.price)
+    ?? readNumericValue(metadata.probability)
+    ?? readNumericValue(metadata.yesPrice)
+    ?? readNumericValue(metadata.lastTradePrice);
+
+  if (directProbability !== null) {
+    return clamp(directProbability, 1e-6, 1 - 1e-6);
+  }
+
+  const outcomePrice = readFirstNumericFromCollection(metadata.outcomePrices);
+
+  if (outcomePrice !== null) {
+    return clamp(outcomePrice, 1e-6, 1 - 1e-6);
+  }
+
+  return null;
+}
+
 function computeFixtureBaseRate(args: {
   referenceClass: string | null;
   calibrationSnapshot: CalibrationSnapshot;
@@ -453,17 +512,35 @@ function collectFixtureMarketSignals(
       continue;
     }
 
-    const metadata = readNumericRecord(item.metadata);
+    const metadata =
+      item.metadata && typeof item.metadata === "object"
+        ? (item.metadata as Record<string, unknown>)
+        : null;
 
-    if (!metadata || typeof metadata.price !== "number") {
+    if (!metadata) {
       continue;
     }
 
+    const price = readMarketProbability(metadata);
+
+    if (price === null) {
+      continue;
+    }
+
+    const numericMetadata = readNumericRecord(metadata) ?? {};
+
     return {
-      price: metadata.price,
-      spread: typeof metadata.spread === "number" ? metadata.spread : 0.05,
-      depth: typeof metadata.depth === "number" ? metadata.depth : 0,
-      volatility: typeof metadata.volatility === "number" ? metadata.volatility : 0.1,
+      price,
+      spread: typeof numericMetadata.spread === "number" ? numericMetadata.spread : 0.05,
+      depth:
+        typeof numericMetadata.depth === "number"
+          ? numericMetadata.depth
+          : typeof numericMetadata.liquidity === "number"
+            ? numericMetadata.liquidity
+            : typeof numericMetadata.volume === "number"
+              ? numericMetadata.volume
+              : 0,
+      volatility: typeof numericMetadata.volatility === "number" ? numericMetadata.volatility : 0.1,
     };
   }
 

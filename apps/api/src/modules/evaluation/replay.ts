@@ -367,6 +367,7 @@ export function buildHistoricalPolymarketEvidenceItem(args: {
       benchmarkPriceSnapshotId: args.snapshot.id,
       benchmarkSnapshotSource: args.snapshot.source,
       liquidity: args.snapshot.liquidity,
+      price: args.snapshot.probability,
       probability: args.snapshot.probability,
       provider: "benchmarkPolymarket",
       volume: args.snapshot.volume,

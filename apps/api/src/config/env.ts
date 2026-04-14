@@ -13,6 +13,7 @@ const EnvSchema = z.object({
   JUDGE_BASE_URL: z.string().url().default("http://localhost:8000"),
   JUDGE_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(360000),
   CASSANDRA_ADAPTER_MODE: z.enum(["live", "fixture"]).default("live"),
+  CASSANDRA_JUDGE_LLM: z.string().min(1).optional(),
   PERPLEXITY_API_KEY: z.string().min(1).optional(),
   OPENROUTER_API_KEY: z.string().min(1).optional(),
   OPENROUTER_JUDGE_MODEL: z.string().min(1).optional(),
