@@ -35,6 +35,7 @@ import {
 import {
   averageAbsoluteError,
   brierScore,
+  expectedCalibrationError,
   logLoss,
   sliceMetrics,
   winRateVsReference,
@@ -151,7 +152,9 @@ export function buildReplayEventInput(market: BenchmarkMarket): EventInput {
   return {
     question: market.title,
     resolutionCriteria: market.resolutionCriteria,
-    deadline: market.resolvedAt,
+    // The close time leaks the outcome for markets that resolved YES early; use the
+    // scheduled end date the forecaster would have known.
+    deadline: market.endDate ?? market.resolvedAt,
     entities: inferReplayEntities(market.title),
     referenceClass: null,
     marketSymbols: [],
@@ -261,8 +264,52 @@ function summarizePairs(pairs: EvaluationPair[]) {
     brierScore: brierScore(pairs),
     logLoss: logLoss(pairs),
     averageAbsoluteError: averageAbsoluteError(pairs),
+    expectedCalibrationError: expectedCalibrationError(pairs),
     winRateVsPolymarket: winRateVsReference(pairs),
     sampleSize: pairs.length,
+  };
+}
+
+/**
+ * Baselines skip different market-cutoff pairs (missing snapshots, provider failures), so
+ * per-baseline averages are over different samples. The paired view restricts every
+ * baseline to the pairs all of them scored, which is the comparison that is fair.
+ */
+function summarizePairedBaselines(
+  baselines: EvaluationRun["baselines"],
+  predictions: EvaluationPredictionInput[],
+  pairs: EvaluationPair[],
+) {
+  const keysByBaseline = new Map<string, Set<string>>();
+
+  predictions.forEach((prediction) => {
+    const keys = keysByBaseline.get(prediction.baseline) ?? new Set<string>();
+    keys.add(predictionReferenceKey(prediction.benchmarkMarketId, prediction.cutoffAt));
+    keysByBaseline.set(prediction.baseline, keys);
+  });
+
+  const sharedKeys = [...(keysByBaseline.get(baselines[0] ?? "") ?? new Set<string>())].filter((key) =>
+    baselines.every((baseline) => keysByBaseline.get(baseline)?.has(key)),
+  );
+  const shared = new Set(sharedKeys);
+
+  return {
+    sampleSize: shared.size,
+    byBaseline: Object.fromEntries(
+      baselines.map((baseline) => [
+        baseline,
+        summarizePairs(
+          pairs.filter((pair, index) => {
+            const prediction = predictions[index];
+            return (
+              pair.baseline === baseline &&
+              prediction !== undefined &&
+              shared.has(predictionReferenceKey(prediction.benchmarkMarketId, prediction.cutoffAt))
+            );
+          }),
+        ),
+      ]),
+    ),
   };
 }
 
@@ -369,11 +416,15 @@ export function buildHistoricalPolymarketEvidenceItem(args: {
       archivedRetrieval: true,
       benchmarkPriceSnapshotId: args.snapshot.id,
       benchmarkSnapshotSource: args.snapshot.source,
-      liquidity: args.snapshot.liquidity,
+      // Snapshot liquidity/volume are the market's end-of-life values (often 0 once
+      // resolved), not values at the cutoff. Exposing them as liquidity would both leak
+      // post-cutoff information and zero out trust in the price, so the prior treats
+      // liquidity as unknown.
+      finalLiquidity: args.snapshot.liquidity,
+      finalVolume: args.snapshot.volume,
       price: args.snapshot.probability,
       probability: args.snapshot.probability,
       provider: "benchmarkPolymarket",
-      volume: args.snapshot.volume,
     },
   };
 }
@@ -611,6 +662,7 @@ export async function runHistoricalEvaluation(
         summarizePairs(pairs.filter((pair) => pair.baseline === baseline)),
       ]),
     ),
+    paired: summarizePairedBaselines(baselines, predictions, pairs),
   };
   const sliceResults = baselines.flatMap((baseline) => [
     ...sliceMetrics(pairs, {

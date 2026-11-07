@@ -175,28 +175,41 @@ export async function loadCalibrationTrainingData(
   historicalTraces: VerdictTrace[];
   resolvedOutcomes: OutcomeInput[];
 }> {
+  // One outcome per event: the most recently recorded one wins (corrections supersede).
   const outcomesResult = await pool.query(`
-    SELECT
+    SELECT DISTINCT ON (event_id)
       event_id,
       resolved_value,
       resolved_at,
       resolution_source_url
     FROM outcomes
-    ORDER BY created_at ASC, event_id ASC
+    ORDER BY event_id, created_at DESC
   `);
 
+  // One trace per resolved event: the latest judgment evaluated strictly before the
+  // event resolved. Judgments run after resolution would leak the answer into calibration.
   const tracesResult = await pool.query(`
+    WITH latest_outcomes AS (
+      SELECT DISTINCT ON (event_id)
+        event_id,
+        resolved_value,
+        resolved_at,
+        resolution_source_url
+      FROM outcomes
+      ORDER BY event_id, created_at DESC
+    )
     SELECT DISTINCT ON (o.event_id)
       o.event_id,
       o.resolved_value,
       o.resolved_at,
       o.resolution_source_url,
       j.verdict_trace
-    FROM outcomes o
+    FROM latest_outcomes o
     JOIN judgments j
       ON j.event_id = o.event_id
     WHERE j.verdict_trace IS NOT NULL
-    ORDER BY o.event_id, j.updated_at DESC, j.created_at DESC
+      AND (j.verdict_trace->>'evaluationTime')::timestamptz < o.resolved_at
+    ORDER BY o.event_id, (j.verdict_trace->>'evaluationTime')::timestamptz DESC, j.created_at DESC
   `);
 
   const historicalTraces: VerdictTrace[] = [];

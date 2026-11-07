@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS benchmark_markets (
 ALTER TABLE benchmark_markets
   ADD COLUMN IF NOT EXISTS benchmark_set_id TEXT NOT NULL DEFAULT 'polymarket_recent_resolved';
 
+ALTER TABLE benchmark_markets
+  ADD COLUMN IF NOT EXISTS end_date TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS benchmark_markets_benchmark_set_id_resolved_at_idx
   ON benchmark_markets (benchmark_set_id, resolved_at DESC, id ASC);
 
