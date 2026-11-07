@@ -783,3 +783,63 @@ describe("evaluation import", () => {
     expect(snapshotWrites.every((params) => String(params[1]).startsWith("2026-12-"))).toBe(true);
   });
 });
+
+describe("benchmark import metadata", () => {
+  it("keeps the market's scheduled end date separately from its close time", () => {
+    const [market] = normalizePolymarketBenchmarkMarkets([
+      {
+        id: "market-early",
+        question: "Will Example Corp launch Product X by 2026-12-31?",
+        description: "Official launch announcement by deadline.",
+        closedTime: "2026-10-15T09:00:00Z",
+        endDate: "2026-12-31T23:59:59Z",
+        closed: true,
+        archived: false,
+        slug: "example-product-x",
+        volumeNum: 100000,
+        liquidityNum: 25000,
+        outcomes: '["Yes", "No"]',
+        outcomePrices: '["1", "0"]',
+      },
+    ]);
+
+    expect(market).toMatchObject({
+      resolvedAt: "2026-10-15T09:00:00.000Z",
+      endDate: "2026-12-31T23:59:59.000Z",
+    });
+  });
+
+  it("does not classify generic 'Who will' questions as science and health", () => {
+    const [market] = normalizePolymarketBenchmarkMarkets([
+      {
+        id: "market-who",
+        question: "Who will be the next chair of the city planning board?",
+        description: "Resolves to the appointed chair.",
+        closedTime: "2026-10-15T09:00:00Z",
+        closed: true,
+        archived: false,
+        slug: "next-chair",
+        volumeNum: 1000,
+        liquidityNum: 1000,
+        outcomes: '["Yes", "No"]',
+        outcomePrices: '["1", "0"]',
+      },
+    ]);
+
+    expect(market?.theme).not.toBe("science_health");
+  });
+
+  it("requests every page of recently resolved markets without skipping an offset", async () => {
+    const offsets: Array<string | null> = [];
+    await importResolvedPolymarketBenchmarks({
+      baseUrl: "https://gamma-api.polymarket.com",
+      now: new Date("2027-01-15T00:00:00Z"),
+      fetchImpl: async (input) => {
+        offsets.push(new URL(String(input)).searchParams.get("offset"));
+        return new Response("[]", { status: 200 });
+      },
+    });
+
+    expect(offsets.slice(0, 3)).toEqual([null, "100", "200"]);
+  });
+});

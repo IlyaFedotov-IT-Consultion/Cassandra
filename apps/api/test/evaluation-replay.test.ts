@@ -388,6 +388,27 @@ describe("evaluation replay", () => {
     });
   });
 
+  it("does not present the market's end-of-life liquidity as liquidity at the cutoff", () => {
+    const evidence = buildHistoricalPolymarketEvidenceItem({
+      event: buildReplayEventRecord(benchmarkMarket),
+      market: benchmarkMarket,
+      snapshot: {
+        id: "snapshot-resolved",
+        benchmarkMarketId: benchmarkMarket.id,
+        cutoffAt: "2026-12-24T12:00:00Z",
+        probability: 0.24,
+        volume: 0,
+        liquidity: 0,
+        source: "polymarket",
+        createdAt: "2026-12-24T12:01:00Z",
+      },
+    });
+
+    expect(evidence.metadata).not.toHaveProperty("liquidity");
+    expect(evidence.metadata).not.toHaveProperty("depth");
+    expect(evidence.metadata).toMatchObject({ probability: 0.24, finalLiquidity: 0 });
+  });
+
   it("builds, persists, and summarizes a historical evaluation run", async () => {
     const calibrationSnapshot: CalibrationSnapshot = {
       id: "snapshot-1",
@@ -875,5 +896,84 @@ describe("evaluation replay", () => {
         },
       }),
     ).rejects.toThrow("Real evaluations require CASSANDRA_ADAPTER_MODE=live");
+  });
+});
+
+describe("replay event deadlines", () => {
+  it("uses the market's original end date as the deadline, not the time it closed", () => {
+    const resolvedEarly = {
+      ...benchmarkMarket,
+      resolvedAt: "2026-10-15T09:00:00Z",
+      endDate: "2026-12-31T23:59:59Z",
+    };
+
+    expect(buildReplayEventInput(resolvedEarly).deadline).toBe("2026-12-31T23:59:59Z");
+  });
+
+  it("falls back to the resolution time when the end date is unknown", () => {
+    expect(buildReplayEventInput({ ...benchmarkMarket, endDate: null }).deadline).toBe(
+      benchmarkMarket.resolvedAt,
+    );
+  });
+});
+
+describe("paired evaluation metrics", () => {
+  it("compares baselines only on market-cutoff pairs that every baseline scored, and reports calibration error", async () => {
+    const run = await runHistoricalEvaluation({
+      pool: {
+        async query(text: string) {
+          throw new Error(`Unexpected query: ${text}`);
+        },
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      input: {
+        benchmarkSetId: "benchmark-set-1",
+        baselines: ["polymarket_only", "model_without_polymarket"],
+      },
+      listBenchmarkMarkets: async () => [benchmarkMarket],
+      listPriceSnapshotsForBenchmark: async () => [
+        {
+          id: "snapshot-early",
+          benchmarkMarketId: benchmarkMarket.id,
+          cutoffAt: "2026-11-01T00:00:00Z",
+          probability: 0.6,
+          volume: 1000,
+          liquidity: 500,
+          source: "polymarket",
+          createdAt: "2026-11-01T00:01:00Z",
+        },
+      ],
+      getCalibrationSnapshot: async () => null,
+      evaluateModelBaseline: async ({ cutoff }) => {
+        if (cutoff.horizon === "6h") {
+          throw new Error("provider outage");
+        }
+        return { probability: 0.7, replayFidelity: "approximate" };
+      },
+      persistEvaluationRunResult: async (_pool, input) => ({
+        id: "run-paired",
+        ...input.run,
+        createdAt: "2026-01-02T00:00:00Z",
+      }),
+    });
+
+    const metrics = run.overallMetrics as {
+      byBaseline: Record<string, { sampleSize: number; expectedCalibrationError: number }>;
+      paired: {
+        sampleSize: number;
+        byBaseline: Record<string, { sampleSize: number; brierScore: number }>;
+      };
+    };
+    expect(metrics.byBaseline.polymarket_only?.sampleSize).toBe(4);
+    expect(metrics.byBaseline.model_without_polymarket?.sampleSize).toBe(3);
+    expect(metrics.byBaseline.model_without_polymarket?.expectedCalibrationError).toBeCloseTo(0.3, 6);
+    expect(metrics.paired.sampleSize).toBe(3);
+    expect(metrics.paired.byBaseline.polymarket_only?.sampleSize).toBe(3);
+    expect(metrics.paired.byBaseline.polymarket_only?.brierScore).toBeCloseTo(0.16, 6);
+    expect(metrics.paired.byBaseline.model_without_polymarket?.brierScore).toBeCloseTo(0.09, 6);
   });
 });

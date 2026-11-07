@@ -19,6 +19,7 @@ const HISTORY_LOOKBACK_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const HISTORY_FIDELITY_MINUTES = 60;
 const RECENT_BENCHMARK_PAGE_REQUESTS: ReadonlyArray<{ limit: number; offset?: number }> = [
   { limit: 100 },
+  { limit: 100, offset: 100 },
   { limit: 100, offset: 200 },
   { limit: 100, offset: 300 },
   { limit: 100, offset: 400 },
@@ -324,7 +325,11 @@ function inferBenchmarkTheme(
     return "companies_products";
   }
 
-  if (/\b(covid|vaccine|fda|trial|disease|public health|who)\b/.test(sourceText)) {
+  // "WHO" (the organization) is matched case-sensitively so "Who will..." questions do not qualify.
+  if (
+    /\b(covid|vaccine|fda|trial|disease|public health|world health organization)\b/.test(sourceText) ||
+    /\bWHO\b/.test(buildThemeSourceText(market, title, resolutionCriteria))
+  ) {
     return "science_health";
   }
 
@@ -476,6 +481,7 @@ function normalizePolymarketBenchmarkEntries(
     const marketUrl = marketSlug
       ? `https://polymarket.com/event/${marketSlug}`
       : `https://polymarket.com/event/${market.id}`;
+    const scheduledEnd = market.endDate ?? market.endDateIso ?? market.end_date_iso ?? null;
     const startAt =
       market.startDate ??
       market.startDateIso ??
@@ -508,6 +514,7 @@ function normalizePolymarketBenchmarkEntries(
           volume: coerceNumber(market.volume_num ?? market.volumeNum ?? market.volume),
           liquidity: coerceNumber(market.liquidity_num ?? market.liquidityNum ?? market.liquidity),
           resolvedAt: normalizeTimestamp(resolvedAt),
+          endDate: scheduledEnd ? normalizeTimestamp(scheduledEnd) : null,
           resolvedValue,
           marketUrl,
         }),

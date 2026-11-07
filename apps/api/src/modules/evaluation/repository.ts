@@ -69,6 +69,7 @@ function mapBenchmarkMarketRow(row: Record<string, unknown>): BenchmarkMarket {
     volume: Number(row.volume),
     liquidity: Number(row.liquidity),
     resolvedAt: toIsoString(row.resolved_at),
+    endDate: row.end_date === null || row.end_date === undefined ? null : toIsoString(row.end_date),
     resolvedValue: Boolean(row.resolved_value),
     marketUrl: String(row.market_url),
   });
@@ -197,9 +198,10 @@ export async function upsertBenchmarkMarkets(
           liquidity,
           resolved_at,
           resolved_value,
-          market_url
+          market_url,
+          end_date
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (id)
         DO UPDATE SET
           title = EXCLUDED.title,
@@ -210,6 +212,7 @@ export async function upsertBenchmarkMarkets(
           resolved_at = EXCLUDED.resolved_at,
           resolved_value = EXCLUDED.resolved_value,
           market_url = EXCLUDED.market_url,
+          end_date = EXCLUDED.end_date,
           updated_at = NOW()
         WHERE benchmark_markets.benchmark_set_id = EXCLUDED.benchmark_set_id
         RETURNING *
@@ -225,6 +228,7 @@ export async function upsertBenchmarkMarkets(
         market.resolvedAt,
         market.resolvedValue,
         market.marketUrl,
+        market.endDate ?? null,
       ],
     );
 
