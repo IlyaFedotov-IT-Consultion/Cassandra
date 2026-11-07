@@ -6,13 +6,14 @@ import { WatchlistInputSchema } from "@cassandra/shared";
 import type { AppEnv } from "../../config/env.js";
 import type { EvidenceProvider } from "../evidence/types.js";
 import { createDefaultEvidenceProviders } from "../judgments/service.js";
-import { discoverWatchlistCandidates } from "./discovery.js";
+import { runWatchlistDiscovery } from "./discovery.js";
 import {
   createWatchlist,
   getWatchlistById,
   listCandidateEventsForWatchlist,
   listWatchlists,
 } from "./repository.js";
+import { cadenceToIntervalMs, type WatchlistDiscoveryScheduler } from "./schedule.js";
 
 export function registerWatchlistRoutes(
   app: FastifyInstance,
@@ -21,6 +22,8 @@ export function registerWatchlistRoutes(
     env: AppEnv;
     /** Overrides the configured evidence providers (tests, fixtures). */
     evidenceProviders?: EvidenceProvider[];
+    /** Absent when scheduled discovery is switched off; watchlists then run only on demand. */
+    discoveryScheduler?: WatchlistDiscoveryScheduler;
   },
 ) {
   const { pool, env } = args;
@@ -73,6 +76,22 @@ export function registerWatchlistRoutes(
     return listCandidateEventsForWatchlist(pool, watchlistId);
   });
 
+  app.get("/watchlists/:id/schedule", async (request, reply) => {
+    const { id: watchlistId } = request.params as { id?: string };
+    const watchlist = watchlistId ? await getWatchlistById(pool, watchlistId) : null;
+
+    if (!watchlist) {
+      reply.code(404);
+      return {
+        error: "Watchlist not found",
+      };
+    }
+
+    return args.discoveryScheduler
+      ? args.discoveryScheduler.describe(watchlist)
+      : { cadence: watchlist.cadence, intervalMs: cadenceToIntervalMs(watchlist.cadence), nextRunAt: null };
+  });
+
   // Runs discovery inline: it only collects and clusters evidence (no judge call), so it fits one request.
   app.post("/watchlists/:id/discover", async (request, reply) => {
     const { id: watchlistId } = request.params as { id?: string };
@@ -85,12 +104,13 @@ export function registerWatchlistRoutes(
       };
     }
 
-    const result = await discoverWatchlistCandidates({
+    const result = await runWatchlistDiscovery({
       pool,
       watchlist,
       providers: args.evidenceProviders ?? createDefaultEvidenceProviders(env),
       evaluationTime: new Date().toISOString(),
       mode: env.CASSANDRA_ADAPTER_MODE,
+      trigger: "manual",
     });
 
     for (const failure of result.failedProviders) {
@@ -115,6 +135,16 @@ export function registerWatchlistRoutes(
     }
 
     const watchlist = await createWatchlist(pool, parsed.data);
+
+    try {
+      await args.discoveryScheduler?.sync(watchlist);
+    } catch (error) {
+      // The watchlist is saved either way; the next API start re-syncs every schedule.
+      logger.warn(
+        { event: "watchlist_schedule_sync_failed", watchlistId: watchlist.id, err: error },
+        "watchlist schedule sync failed",
+      );
+    }
 
     reply.code(201);
     return watchlist;

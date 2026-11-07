@@ -10,6 +10,7 @@ import { discoverWatchlistCandidates } from "../src/modules/watchlists/discovery
 import { runWatchlistDiscoveryWorker } from "../src/workers/watchlistWorker.js";
 import {
   createWatchlist,
+  getWatchlistById,
   listCandidateEventsForWatchlist,
 } from "../src/modules/watchlists/repository.js";
 
@@ -148,13 +149,14 @@ describe("watchlist discovery", () => {
       initial[0]?.id,
     ]);
 
-    const { candidates: rerun } = await runWatchlistDiscoveryWorker({
+    const rerunOutcome = await runWatchlistDiscoveryWorker({
       pool,
-      watchlist,
+      watchlistId: watchlist.id,
       providers: [provider],
       evaluationTime: "2026-10-11T13:00:00Z",
       mode: "fixture",
     });
+    const rerun = rerunOutcome!.candidates;
 
     expect(rerun).toHaveLength(1);
 
@@ -209,13 +211,14 @@ describe("watchlist discovery", () => {
       mode: "fixture",
     });
 
-    const { candidates: rerun } = await runWatchlistDiscoveryWorker({
+    const rerunOutcome = await runWatchlistDiscoveryWorker({
       pool,
-      watchlist,
+      watchlistId: watchlist.id,
       providers: [rerunProvider],
       evaluationTime: "2026-10-11T13:00:00Z",
       mode: "fixture",
     });
+    const rerun = rerunOutcome!.candidates;
 
     expect(initial).toHaveLength(1);
     expect(rerun).toHaveLength(1);
@@ -261,5 +264,55 @@ describe("watchlist discovery", () => {
 
     // Switched off: community and prediction markets. Not mentioned (government) or untoggleable (web): still asked.
     expect(asked.sort()).toEqual(["governmentSearch", "officialSearch", "web"]);
+  });
+
+  it("records a scheduled run on the watchlist, including the sources that failed", async () => {
+    const watchlist = await createWatchlist(pool, {
+      name: "Product launches",
+      keywords: ["product launch", "Example Corp"],
+      jurisdictions: [],
+      cadence: "daily",
+      sourceToggles: {},
+    });
+
+    await runWatchlistDiscoveryWorker({
+      pool,
+      watchlistId: watchlist.id,
+      providers: [
+        {
+          name: "web",
+          async collect() {
+            return [buildEvidenceItem({ eventId: watchlist.id, title: "Example Corp prepares Product X launch" })];
+          },
+        },
+        {
+          name: "polymarketGamma",
+          async collect() {
+            throw new Error("request timed out");
+          },
+        },
+      ],
+      evaluationTime: "2026-10-11T12:00:00Z",
+      mode: "fixture",
+    });
+
+    expect((await getWatchlistById(pool, watchlist.id))?.lastDiscovery).toEqual({
+      ranAt: "2026-10-11T12:00:00.000Z",
+      trigger: "scheduled",
+      candidateCount: 1,
+      failedProviders: [{ providerName: "polymarketGamma", error: "request timed out" }],
+    });
+  });
+
+  it("skips a scheduled run for a watchlist that no longer exists", async () => {
+    const outcome = await runWatchlistDiscoveryWorker({
+      pool,
+      watchlistId: "00000000-0000-0000-0000-000000000000",
+      providers: [],
+      evaluationTime: "2026-10-11T12:00:00Z",
+      mode: "fixture",
+    });
+
+    expect(outcome).toBeNull();
   });
 });

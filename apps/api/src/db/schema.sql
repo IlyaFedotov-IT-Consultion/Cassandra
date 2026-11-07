@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS watchlists (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE watchlists
+  ADD COLUMN IF NOT EXISTS last_discovery JSONB;
+
 CREATE TABLE IF NOT EXISTS candidate_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   watchlist_id UUID REFERENCES watchlists(id) ON DELETE CASCADE,
