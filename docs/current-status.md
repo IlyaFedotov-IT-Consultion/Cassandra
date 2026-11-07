@@ -1,127 +1,94 @@
 # Current Project Status
 
-**Reviewed on:** 2026-04-13
+**Reviewed on:** 2026-11-07, on branch `feat/multi-stage-forecasting-pipeline`
 
-This document summarizes what is implemented in the repository today, what remains scaffolded, and what was verified during the latest status review.
+This page records what the repository does today, what is still partial, and what was verified at the last review. HTTP contracts are in [api-reference.md](api-reference.md). The architecture review and its remediation status are in [reviews/2026-11-07-architecture-and-algorithms-review.md](reviews/2026-11-07-architecture-and-algorithms-review.md).
 
 ## Summary
 
-Cassandra is no longer just a scaffold. The repo now contains:
+Cassandra is a working research prototype for multi-source event forecasting:
 
-- a working shared schema package in [packages/shared/src/schemas.ts](/Users/ilya/Documents/Cassandra/packages/shared/src/schemas.ts)
-- a working Fastify orchestration API in [apps/api/src/app.ts](/Users/ilya/Documents/Cassandra/apps/api/src/app.ts)
-- a working FastAPI judge service in [services/judge/app/api.py](/Users/ilya/Documents/Cassandra/services/judge/app/api.py)
-- a working routed operator workspace in [apps/web/src/App.tsx](/Users/ilya/Documents/Cassandra/apps/web/src/App.tsx)
-- Postgres-backed operational tables in [apps/api/src/db/schema.sql](/Users/ilya/Documents/Cassandra/apps/api/src/db/schema.sql)
-- evaluation and benchmark tables in [apps/api/src/db/evaluation_schema.sql](/Users/ilya/Documents/Cassandra/apps/api/src/db/evaluation_schema.sql)
+- **Shared contract:** [packages/shared/src/schemas.ts](../packages/shared/src/schemas.ts) holds Zod schemas used by both the API and the web app. Its build exports JSON Schema, from which the judge service's Pydantic models are generated.
+- **Orchestration API:** a Fastify service in [apps/api](../apps/api). It stores data in Postgres and runs judgments through a Redis/BullMQ queue.
+- **Judge service:** a FastAPI service in [services/judge](../services/judge) that turns evidence into a calibrated probability through a multi-stage pipeline.
+- **Web workspace:** a React app in [apps/web](../apps/web) for reading forecasts, evidence, evaluation runs and calibration.
 
-The main gaps versus the original design are depth, polish, and production hardening rather than missing basic workspace flows.
+## Forecasting pipeline
 
-## Implemented Components
+Every judgment, in both `fixture` and `live` mode, goes through the judge service. The stages, recorded in `verdictTrace.pipelineStages`, are:
 
-### Shared package
+1. **Query planning:** generates sub-question search queries (judge `POST /plan`).
+2. **Retrieval:** official, government, community and web search, Perplexity, and Polymarket Gamma/CLOB.
+3. **Relevance rating:** scores sources and keeps only the relevant ones.
+4. **Panel reasoning:** a multi-model judge ensemble, with a consistency guard that excludes samples whose label contradicts their probability.
+5. **Cross-examination:** runs when at least two judges had evidence.
+6. **Aggregation:** log-odds pooling around a prior that blends the base rate and the market price.
+7. **Calibration:** applies the snapshot in use.
 
-- Shared Zod schemas define the core contract for events, watchlists, evidence, judgments, calibration snapshots, benchmark markets, and evaluation runs.
-- JSON schema export is generated from the shared package for downstream consumers.
-- The schema surface already includes the math-oriented trace fields needed for verdict inspection and evaluation.
+Models and reasoning effort are set only through the `OPENROUTER_*` variables in `.env.example`. The current choices are explained in [research/2026-11-07-llm-forecasting-methods.md](research/2026-11-07-llm-forecasting-methods.md).
 
-### API service
+## Components
 
-The API service exposes:
+### API
 
-- health and readiness checks
-- event CRUD-lite endpoints: create, list, fetch by id
-- watchlist creation, listing, detail fetch, and candidate lookup
-- judgment creation, retrieval, and filtered listing
-- outcome recording
-- backtest retraining plus calibration snapshot listing/detail
-- evaluation benchmark import, benchmark set browsing, market listing, and evaluation run creation/fetching
+The API has 27 routes covering:
 
-The API persists to Postgres, reads configuration from `src/config/env.ts`, and uses Redis for queue-backed judgment execution plus selective caching through the judgment and evidence flows.
-It also emits structured JSON logs with request ids and child logger context for request handling, evidence collection, and judgment processing.
+- health and readiness;
+- events;
+- watchlists, with candidate listing and on-demand discovery (`POST /watchlists/:id/discover`);
+- outcomes (recording, and listing newest first);
+- judgments (queueing, detail and listing);
+- runtime activity;
+- calibration retraining and snapshots;
+- the evaluation workflow: Polymarket benchmark import, benchmark sets and markets, replay runs, and predictions.
+
+It writes structured JSON logs with request ids.
 
 ### Judge service
 
-The Python service exposes:
+The judge service exposes `GET /health`, `POST /judge`, `POST /plan` and `POST /calibrate`. `CASSANDRA_JUDGE_LLM=fake`, the default, gives a deterministic backend for tests and offline work.
 
-- `GET /health`
-- `POST /judge`
-- `POST /calibrate`
+### Web workspace
 
-It produces `VerdictTrace` payloads and calibration snapshots based on the generated shared-schema-derived Pydantic models.
+- **Events:** each event's latest probability and range, plus a forecast history chart. Outcomes can be recorded or corrected, and the resolution in force is shown with its source.
+- **Judgments:**
+  - the verdict readout and the pipeline stages;
+  - how the forecast moved from prior to final;
+  - judge cards with their per-model samples;
+  - citations ranked by relevance, with diagnostics and the execution log kept collapsed.
+- **Watchlists:** discovery runs from the page, and sources that failed are listed. Candidates can be seeded as events.
+- **Evaluation:**
+  - a comparison of baselines on the same paired sample;
+  - a reliability chart;
+  - scores by slice;
+  - leakage warnings grouped by reason.
+- **Calibration:** snapshot history, with the snapshot in use marked.
+- **Runtime:** a filterable activity log across runs.
 
-### Web app
-
-The web package currently provides:
-
-- a React/Vite single-page application with routed workspaces
-- API health and readiness checks
-- event list/detail views and event creation
-- watchlist list/detail views, candidate review, and seeded event creation
-- judgment list/detail views with trace inspection and polling for active runs
-- evaluation workspace and evaluation run detail inspection
-- calibration workspace with snapshot history/detail and retraining
+The visual identity is an "instrument" look: graph-paper ground, ink-blue text, and one magenta reserved for forecast probabilities. Fonts are self-hosted.
 
 ### Persistence
 
-Operational tables currently cover:
+- **Operational tables:** `events`, `watchlists`, `candidate_events`, `evidence_items`, `judgments`, `judge_opinions`, `outcomes`, `calibration_snapshots`.
+- **Evaluation tables:** `benchmark_markets`, `benchmark_price_snapshots`, `evaluation_runs`, `evaluation_predictions`, `evaluation_slice_metrics`.
 
-- `events`
-- `watchlists`
-- `candidate_events`
-- `evidence_items`
-- `judgments`
-- `judge_opinions`
-- `outcomes`
-- `calibration_snapshots`
+There is no migration framework. Both SQL files are re-applied on every migrate and must stay idempotent.
 
-Evaluation tables currently cover:
+## What is missing or partial
 
-- `benchmark_markets`
-- `benchmark_price_snapshots`
-- `evaluation_runs`
-- `evaluation_predictions`
-- `evaluation_slice_metrics`
+- **No scheduled discovery.** A watchlist stores a `cadence`, but nothing acts on it; discovery runs only when someone triggers it. It also runs inside the request, so in `live` mode it waits for the slowest source.
+- **No authentication.** In development the API listens on every network interface.
+- **No OpenAPI document.** The contract in [api-reference.md](api-reference.md) is maintained by hand.
+- **No browser end-to-end suite.** UI changes are checked with Testing Library plus manual Playwright MCP sessions.
+- **No linter or formatter.** `pnpm lint` does nothing.
+- **Small evaluation sample.** Calibration and evaluation results on the seeded data rest on a few dozen predictions and are not yet meaningful.
 
-## What Is Still Missing Or Partial
+## Verification snapshot (2026-11-07)
 
-- the web app is functional and much broader now, but it is still prototype-quality rather than production-hardened
-- There is no autogenerated OpenAPI document; the current API contract is documented manually in [api-reference.md](/Users/ilya/Documents/Cassandra/docs/api-reference.md).
-- The repository still contains active in-progress work in evaluation-related files, so some evaluation behavior may be changing.
-
-## Recent Fixes
-
-- judgments are now queued through Redis/BullMQ instead of in-memory timers, so accepted runs survive process restarts and can retry cleanly
-- both `fixture` and `live` judgment runs now go through the Python judge service, keeping one forecasting core instead of separate TypeScript and Python paths
-- disagreement shrinkage in the judge service now pulls the posterior back toward the actual prior, not toward an implicit 0.5 baseline
-- `VerdictTrace.priorProbability` now reports the blended prior actually used by aggregation
-
-## Verification Snapshot
-
-The following checks were run during the latest implementation-and-docs pass.
-
-### Passing
-
-- `cd services/judge && uv run pytest`
-  Result: 39 tests passed
-- `pnpm test`
-  Result: passed across the workspace, including API integration-style tests against local Postgres and Redis
-- `pnpm build`
-  Result: passes (re-verified 2026-11-07; see `docs/reviews/2026-11-07-architecture-and-algorithms-review.md` for the current remediation status)
-
-## Practical Read On Project Health
-
-The repository is in a solid prototype state for backend and judge-service work:
-
-- schema contracts are defined and tested
-- the API surface is meaningful and persists real records
-- judgments are now queued through Redis/BullMQ instead of in-memory timers
-- both fixture and live judgment runs go through the Python judge service
-- the judge-service shrinkage and prior reporting semantics now match the intended forecasting math
-- the judge service has broad test coverage and currently passes its full suite
-
-The highest-signal risks right now are:
-
-- depth and breadth of the operator UI
-- future drift between the design docs and the lighter-weight v1 UI surface
-- keeping Docker and host dependency workflows isolated as the repo grows
+| Check | Result |
+| --- | --- |
+| `pnpm test` | shared 10, web 46, API 165 tests pass (API against local Postgres and Redis, in `cassandra_test`) |
+| `cd services/judge && uv run pytest` | 85 tests pass |
+| `pnpm exec vitest run scripts/harness/real-e2e-support.test.ts` | 4 tests pass |
+| `pnpm build` | passes |
+| Browser check (Playwright MCP, fixture mode) | every route at 1440 and 390 px wide: no horizontal overflow, no console errors |
