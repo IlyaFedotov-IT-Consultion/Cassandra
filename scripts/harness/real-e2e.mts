@@ -977,6 +977,23 @@ function validateVerdictTraceInvariants(vt: VerdictTrace): string[] {
     }
   }
 
+  // Ensemble judges report the median of their samples' log Bayes factors, which can fall
+  // between two strength labels; single-sample judges map exactly to their label.
+  const samplesByJudge = new Map<string, Array<{ evidenceStrength?: string }>>();
+  for (const entry of vt.weightBreakdown) {
+    const samples = (entry.details as { samples?: Array<{ evidenceStrength?: string; excluded?: string }> }).samples;
+    // Samples excluded by the ensemble's consistency guard do not enter the median.
+    const used = Array.isArray(samples) ? samples.filter((sample) => !sample.excluded) : [];
+    if (used.length > 0) {
+      samplesByJudge.set(entry.source, used);
+    }
+  }
+  const medianOf = (values: number[]) => {
+    const sorted = [...values].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 1 ? sorted[middle]! : ((sorted[middle - 1]! + sorted[middle]!) / 2);
+  };
+
   for (const opinion of vt.judgeOpinions) {
     if (opinion.probability < 0 || opinion.probability > 1) {
       failures.push(`${opinion.judgeName} probability out of [0,1]`);
@@ -985,10 +1002,17 @@ function validateVerdictTraceInvariants(vt: VerdictTrace): string[] {
       failures.push(`${opinion.judgeName} rationale is empty`);
     }
 
-    const expectedBf = EVIDENCE_STRENGTH_TO_LOG_BF[opinion.evidenceStrength];
-    if (expectedBf !== undefined && opinion.logBayesFactor !== expectedBf) {
+    const samples = samplesByJudge.get(opinion.judgeName);
+    const sampleBfs = (samples ?? [])
+      .map((sample) => EVIDENCE_STRENGTH_TO_LOG_BF[sample.evidenceStrength ?? ""])
+      .filter((value): value is number => typeof value === "number");
+    const expectedBf =
+      opinion.evidenceIds.length > 0 && sampleBfs.length > 0
+        ? medianOf(sampleBfs)
+        : EVIDENCE_STRENGTH_TO_LOG_BF[opinion.evidenceStrength];
+    if (expectedBf !== undefined && Math.abs(opinion.logBayesFactor - expectedBf) > 1e-9) {
       failures.push(
-        `${opinion.judgeName} logBayesFactor mismatch: evidenceStrength=${opinion.evidenceStrength} should map to ${expectedBf}, got ${opinion.logBayesFactor}`,
+        `${opinion.judgeName} logBayesFactor mismatch: expected ${expectedBf} (${samples ? "median of ensemble samples" : `evidenceStrength=${opinion.evidenceStrength}`}), got ${opinion.logBayesFactor}`,
       );
     }
 
