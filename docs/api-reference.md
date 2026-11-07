@@ -201,6 +201,12 @@ Errors:
 Runs candidate discovery for the watchlist now and returns the result. The run works like this:
 
 - It collects evidence from the configured providers, using the watchlist keywords as the query, in the current `CASSANDRA_ADAPTER_MODE`. In `live` mode that means paid search calls.
+- It skips the sources the watchlist has switched off in `sourceToggles`. An absent toggle counts as on, and web search and Perplexity have no toggle, so they always run. The toggles map to providers like this:
+  - `official`: `officialSearch`
+  - `government`: `governmentSearch`
+  - `community`: `communitySearch`
+  - `markets`: `marketProvider`
+  - `predictionMarkets`: `polymarketGamma` and `polymarketClob`
 - It clusters the evidence into candidates. Candidates already stored are upserted by signature, so a rerun keeps their promotion status.
 - It runs inside the request, with no queue, because it never calls the judge.
 
