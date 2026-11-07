@@ -107,7 +107,7 @@ The following checks were run during the latest implementation-and-docs pass.
 - `pnpm test`
   Result: passed across the workspace, including API integration-style tests against local Postgres and Redis
 - `pnpm build`
-  Result: still fails on unrelated pre-existing TypeScript issues in the Polymarket import files and `apps/api/src/modules/evidence/cache.ts`
+  Result: passes (re-verified 2026-11-07; see `docs/reviews/2026-11-07-architecture-and-algorithms-review.md` for the current remediation status)
 
 ## Practical Read On Project Health
 

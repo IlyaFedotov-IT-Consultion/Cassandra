@@ -278,6 +278,9 @@ Notes:
 - The API persists a judgment with status `queued`, enqueues a BullMQ job in Redis, and returns immediately.
 - The worker later stores a terminal status of `completed`, `insufficient_evidence`, or `failed`.
 - In both `fixture` and `live` modes, the forecasting trace is produced by the Python judge service at `JUDGE_BASE_URL`.
+- When live citation coverage is too weak, the API still calls the judge service, with `priorOnly: true`, and stores the returned prior-only trace as `insufficient_evidence`.
+- Before retrieval the API asks the judge service to plan up to 3 sub-question search queries (`POST /plan`); each search provider runs its own query plus up to 2 planned queries. Planning failures fall back to the templated queries.
+- `verdictTrace.pipelineStages` records every stage in order: `query_planning`, `retrieval`, `relevance_rating`, `panel_reasoning`, `cross_examination`, `aggregation`, `calibration`, each with `status` (`completed`, `skipped`, `failed`) and `details`. The execution log has a `planning` entry.
 - In `fixture` mode, evidence providers still use canned fixture payloads and the judge service normally runs with its fake LLM backend.
 
 Success:
@@ -507,6 +510,7 @@ Request body:
     "marketSymbols": ["EXMPL"]
   },
   "evaluationTime": "2026-10-11T12:00:00Z",
+  "priorOnly": false,
   "evidence": [],
   "calibrationSnapshot": {
     "id": "snapshot-1",
@@ -527,6 +531,16 @@ Request body:
 }
 ```
 
+Notes:
+
+- `priorOnly` (optional, default `false`): skip the judge panel and return an `insufficient_evidence` trace built from the base-rate and market prior only. No LLM calls are made.
+- The market prior reads the most liquid `prediction_market` evidence item whose metadata carries a Yes probability (`probability`, `yesPrice`, `price` for a Yes token, or `outcomePrices` with `outcomes`) and its `liquidity`/`depth`. Unknown liquidity gets partial trust; traditional `market` quotes are never treated as probabilities.
+- A panel judge with no evidence for its source families is neutral and does not call the LLM.
+- Relevance stage: before the panel runs, every non-market evidence item is rated 1–6 for the question by the utility model, items below 4 are dropped, and the rest are passed to the judges with question-focused summaries (the original snippet is kept in `metadata.originalSummary`). If rating rejected evidence and fewer than 2 relevant items remain, the trace is prior-only with status `insufficient_evidence`. A rating failure falls back to unfiltered evidence.
+- Ensemble consistency guard: a sample whose moderate/strong label contradicts its own probability (for example `strong_against` with p ≥ 0.75) is marked `excluded` in `samples` and left out of the median, unless every sample is incoherent.
+- Judge prompts include the `evaluationTime` as the as-of date.
+- With `OPENROUTER_JUDGE_MODELS` set, each panel judge is an ensemble: its `logBayesFactor` is the median of the members' log Bayes factors (it can fall between labels; `evidenceStrength` is the nearest label), its `probability` is the median in log-odds, and the member samples are listed in `weightBreakdown[].details.samples`. `modelVersion` names the models used.
+
 Success:
 
 - status `200`
@@ -536,9 +550,22 @@ Validation errors:
 
 - `422` when required payload fields are missing or malformed
 
+### `POST /plan`
+
+Pipeline stage 1: decomposes the question into sub-questions with one search query each, using the utility model (`OPENROUTER_UTILITY_MODEL`).
+
+Request body: `{ "event": EventInput, "evaluationTime": "...", "maxQueries": 3 }` (`maxQueries` 1–8, default 4).
+
+Success: `200` with `{ "subQuestions": [...], "queries": [...], "model": "..." }`. Queries are whitespace-normalised, de-duplicated (case-insensitive) and never repeat the question itself. `502` when the planning model fails.
+
 ### `POST /calibrate`
 
 Builds a calibration snapshot from historical traces and resolved outcomes.
+
+- One training pair per event: its latest trace evaluated before the outcome's `resolvedAt`.
+- The fit uses each trace's `preCalibrationProbability`. Older calibrated traces without it are skipped.
+- `resolvedOutcomeCount` and the regime count matched training pairs.
+- `warming` fits Platt scaling (penalised toward identity); `steady` fits isotonic regression (pool adjacent violators).
 
 Request body:
 
@@ -561,7 +588,7 @@ Success:
 The main forecasting artifact includes:
 
 - event and evaluation metadata
-- prior, raw posterior, and final probability
+- prior, raw posterior (before disagreement shrinkage), `preCalibrationProbability` (after shrinkage, before calibration), and final probability
 - confidence interval
 - judge opinions and weight breakdown
 - dependency matrix and disagreement shrinkage
@@ -577,11 +604,13 @@ Evaluation run responses include:
 - `benchmarkSetId`
 - `cutoffs`
 - `baselines`
-- `overallMetrics`
+- `overallMetrics`: `byBaseline` summaries over every prediction each baseline produced, plus `paired`, which restricts every baseline to the market-cutoff pairs all of them scored. Each summary includes `brierScore`, `logLoss`, `averageAbsoluteError`, `expectedCalibrationError`, `winRateVsPolymarket`, and `sampleSize`.
 - `sliceResults`
 - `replayFidelity`
 - `leakageWarnings`
 - `createdAt`
+
+Benchmark markets carry `endDate`, the scheduled end, alongside `resolvedAt`, the close time. Replay uses `endDate` as the event deadline.
 
 ### `BenchmarkSetSummary`
 
