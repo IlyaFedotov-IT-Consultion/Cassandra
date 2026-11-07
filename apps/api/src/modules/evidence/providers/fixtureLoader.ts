@@ -34,8 +34,20 @@ export async function loadProviderFixture<T>(
   question: string,
   fixtureRoot = defaultFixtureRoot,
 ): Promise<T> {
-  const fixturePath = resolve(fixtureRoot, providerName, `${slugifyEventQuestion(question)}.json`);
-  const content = await readFile(fixturePath, "utf8");
+  const slug = slugifyEventQuestion(question);
+  const fixturePath = resolve(fixtureRoot, providerName, `${slug}.json`);
+  let content: string;
+
+  try {
+    content = await readFile(fixturePath, "utf8");
+  } catch (error) {
+    // This message reaches traces and the UI, so name the fixture without the server's absolute path.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`No ${providerName} fixture for "${slug}"`);
+    }
+    throw error;
+  }
+
   return JSON.parse(content) as T;
 }
 
