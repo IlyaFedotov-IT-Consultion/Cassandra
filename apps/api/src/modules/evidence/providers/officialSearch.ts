@@ -6,7 +6,7 @@ import {
   loadProviderFixture,
   type ProviderDocument,
 } from "./fixtureLoader.js";
-import { searchWithZaiCli } from "./zaiCli.js";
+import { createZaiWebSearch, searchWithPlannedQueries, type WebSearchFn } from "./webSearch.js";
 
 interface OfficialPayload {
   results: Array<
@@ -16,7 +16,11 @@ interface OfficialPayload {
   >;
 }
 
-export function createOfficialSearchProvider(config: { zaiApiKey?: string } = {}): EvidenceProvider {
+export function createOfficialSearchProvider(
+  config: { zaiApiKey?: string; search?: WebSearchFn } = {},
+): EvidenceProvider {
+  const search = config.search ?? createZaiWebSearch(config.zaiApiKey);
+
   return {
     name: "officialSearch",
     async collect(input): Promise<EvidenceItem[]> {
@@ -24,13 +28,17 @@ export function createOfficialSearchProvider(config: { zaiApiKey?: string } = {}
         input.mode === "fixture"
           ? await loadProviderFixture<OfficialPayload>("officialSearch", input.event.question)
           : {
-              results: await searchWithZaiCli({
-                apiKey: config.zaiApiKey,
-                count: 4,
-                providerName: "officialSearch",
-                query: `${input.event.question} ${input.event.entities.join(" ")} official press release investor relations announcement`,
-                recency: "oneYear",
-              }),
+              results: await searchWithPlannedQueries(
+                search,
+                {
+                  count: 4,
+                  providerName: "officialSearch",
+                  query: `${input.event.question} ${input.event.entities.join(" ")} official press release investor relations announcement`,
+                  recency: "oneYear",
+                },
+                input.queries,
+                (query) => `${query} official statement`,
+              ),
             };
 
       return payload.results.map((document) =>

@@ -5,13 +5,18 @@ import {
   createProviderEvidenceItem,
   loadProviderFixture,
 } from "./fixtureLoader.js";
-import { searchWithZaiCli } from "./zaiCli.js";
+import type { ProviderDocument } from "./fixtureLoader.js";
+import { createZaiWebSearch, searchWithPlannedQueries, type WebSearchFn } from "./webSearch.js";
 
 interface WebPayload {
-  results: Awaited<ReturnType<typeof searchWithZaiCli>>;
+  results: ProviderDocument[];
 }
 
-export function createWebProvider(config: { zaiApiKey?: string } = {}): EvidenceProvider {
+export function createWebProvider(
+  config: { zaiApiKey?: string; search?: WebSearchFn } = {},
+): EvidenceProvider {
+  const search = config.search ?? createZaiWebSearch(config.zaiApiKey);
+
   return {
     name: "web",
     async collect(input): Promise<EvidenceItem[]> {
@@ -19,13 +24,16 @@ export function createWebProvider(config: { zaiApiKey?: string } = {}): Evidence
         input.mode === "fixture"
           ? await loadProviderFixture<WebPayload>("web", input.event.question)
           : {
-              results: await searchWithZaiCli({
-                apiKey: config.zaiApiKey,
-                count: 5,
-                providerName: "web",
-                query: `${input.event.question} ${input.event.entities.join(" ")} latest reporting analysis in English`,
-                recency: "oneYear",
-              }),
+              results: await searchWithPlannedQueries(
+                search,
+                {
+                  count: 5,
+                  providerName: "web",
+                  query: `${input.event.question} ${input.event.entities.join(" ")} latest reporting analysis in English`,
+                  recency: "oneYear",
+                },
+                input.queries,
+              ),
             };
 
       return payload.results.map((document) =>

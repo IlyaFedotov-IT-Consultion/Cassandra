@@ -15,7 +15,14 @@ interface PolymarketClobPayload {
 interface ClobMarketResponse {
   condition_id: string;
   question?: string;
-  tokens: Array<{ token_id: string; outcome: string }>;
+  tokens: Array<{ token_id: string; outcome: string; price?: number | string }>;
+}
+
+function toProbability(value: unknown): number | null {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
+    ? parsed
+    : null;
 }
 
 export function createPolymarketClobProvider(config: { baseUrl?: string } = {}): EvidenceProvider {
@@ -37,63 +44,64 @@ export function createPolymarketClobProvider(config: { baseUrl?: string } = {}):
         );
       }
 
-      // The CLOB price endpoint requires a token_id from the Gamma market data.
-      // Without a known token_id we cannot fetch pricing, so return empty.
-      // The Gamma provider is responsible for discovering markets and returning
-      // price metadata from outcomePrices. This provider supplements with
-      // order-book depth when a polymarketMarketId resolves to a known token.
-      if (!input.event.polymarketMarketId) {
+      // CLOB markets are keyed by condition id (0x...). Slugs and numeric Gamma ids
+      // belong to the Gamma provider, so skip them instead of issuing a doomed request.
+      const conditionId = input.event.polymarketMarketId;
+      if (!conditionId || !/^0x[0-9a-f]+$/i.test(conditionId)) {
         return [];
       }
 
-      // Use the sampling-markets endpoint to get market details including token IDs
       let market: ClobMarketResponse;
       try {
         market = await fetchProviderJson<ClobMarketResponse>(
-          `${baseUrl}/markets/${encodeURIComponent(input.event.polymarketMarketId)}`,
+          `${baseUrl}/markets/${encodeURIComponent(conditionId)}`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("404")) {
           return [];
         }
-        throw new Error(
-          `polymarketClob failed for condition_id "${input.event.polymarketMarketId}": ${message}`,
-        );
+        throw new Error(`polymarketClob failed for condition_id "${conditionId}": ${message}`);
       }
 
-      const tokens = market.tokens ?? [];
-      if (tokens.length === 0) {
+      const yesToken = (market.tokens ?? []).find(
+        (token) => String(token.outcome ?? "").trim().toLowerCase() === "yes" && token.token_id,
+      );
+      if (!yesToken) {
         return [];
       }
 
-      const prices: ProviderDocument[] = [];
-      for (const token of tokens) {
-        const tokenId = token.token_id;
-        if (!tokenId) continue;
-
-        try {
-          const priceData = await fetchProviderJson<{ price: number }>(
-            `${baseUrl}/price?token_id=${encodeURIComponent(tokenId)}&side=BUY`,
-          );
-          prices.push({
-            title: `${input.event.question} — ${String(token.outcome ?? "Yes")}`,
-            url: `https://polymarket.com/event/${input.event.polymarketMarketId}`,
-            publisher: "Polymarket CLOB",
-            publishedAt: new Date().toISOString(),
-            summary: `Current ${String(token.outcome ?? "Yes")} price: ${priceData.price}`,
-            metadata: {
-              provider: "polymarketClob",
-              price: priceData.price,
-              tokenId,
-              outcome: token.outcome,
-            },
-            qualitySignals: {},
-          });
-        } catch {
-          // Skip tokens with no pricing data
-        }
+      let probability = toProbability(yesToken.price);
+      try {
+        const midpoint = await fetchProviderJson<{ mid?: string | number }>(
+          `${baseUrl}/midpoint?token_id=${encodeURIComponent(yesToken.token_id)}`,
+        );
+        probability = toProbability(midpoint.mid) ?? probability;
+      } catch {
+        // Fall back to the token price embedded in the market payload.
       }
+
+      if (probability === null) {
+        return [];
+      }
+
+      const prices: ProviderDocument[] = [
+        {
+          title: market.question ?? input.event.question,
+          url: `https://polymarket.com/market/${conditionId}`,
+          publisher: "Polymarket CLOB",
+          publishedAt: new Date().toISOString(),
+          summary: `Yes midpoint price: ${probability}`,
+          metadata: {
+            provider: "polymarketClob",
+            probability,
+            tokenId: yesToken.token_id,
+            outcome: "Yes",
+            conditionId,
+          },
+          qualitySignals: {},
+        },
+      ];
 
       return prices.map((document) =>
         createProviderEvidenceItem({

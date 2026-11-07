@@ -11,6 +11,8 @@ export interface CollectEvidenceInput {
   event: EventRecord;
   evaluationTime: string;
   mode: AdapterMode;
+  /** Planned sub-question search queries (pipeline stage 1); search providers add them to their own query. */
+  queries?: string[];
 }
 
 export interface EvidenceProvider {
@@ -32,6 +34,7 @@ export interface CollectEvidenceArgs {
   evaluationTime: string;
   mode: AdapterMode;
   providers: EvidenceProvider[];
+  queries?: string[];
 }
 
 export interface CollectEvidenceResult {
