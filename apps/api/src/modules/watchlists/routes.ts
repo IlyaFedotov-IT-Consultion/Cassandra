@@ -3,6 +3,10 @@ import type { Pool } from "pg";
 
 import { WatchlistInputSchema } from "@cassandra/shared";
 
+import type { AppEnv } from "../../config/env.js";
+import type { EvidenceProvider } from "../evidence/types.js";
+import { createDefaultEvidenceProviders } from "../judgments/service.js";
+import { discoverWatchlistCandidates } from "./discovery.js";
 import {
   createWatchlist,
   getWatchlistById,
@@ -10,7 +14,17 @@ import {
   listWatchlists,
 } from "./repository.js";
 
-export function registerWatchlistRoutes(app: FastifyInstance, pool: Pool) {
+export function registerWatchlistRoutes(
+  app: FastifyInstance,
+  args: {
+    pool: Pool;
+    env: AppEnv;
+    /** Overrides the configured evidence providers (tests, fixtures). */
+    evidenceProviders?: EvidenceProvider[];
+  },
+) {
+  const { pool, env } = args;
+  const logger = app.log.child({ area: "watchlists" });
   app.get("/watchlists", async () => listWatchlists(pool));
 
   app.get("/watchlists/:id", async (request, reply) => {
@@ -57,6 +71,36 @@ export function registerWatchlistRoutes(app: FastifyInstance, pool: Pool) {
     }
 
     return listCandidateEventsForWatchlist(pool, watchlistId);
+  });
+
+  // Runs discovery inline: it only collects and clusters evidence (no judge call), so it fits one request.
+  app.post("/watchlists/:id/discover", async (request, reply) => {
+    const { id: watchlistId } = request.params as { id?: string };
+    const watchlist = watchlistId ? await getWatchlistById(pool, watchlistId) : null;
+
+    if (!watchlist) {
+      reply.code(404);
+      return {
+        error: "Watchlist not found",
+      };
+    }
+
+    const result = await discoverWatchlistCandidates({
+      pool,
+      watchlist,
+      providers: args.evidenceProviders ?? createDefaultEvidenceProviders(env),
+      evaluationTime: new Date().toISOString(),
+      mode: env.CASSANDRA_ADAPTER_MODE,
+    });
+
+    for (const failure of result.failedProviders) {
+      logger.warn(
+        { event: "watchlist_discovery_provider_failed", watchlistId: watchlist.id, ...failure },
+        "watchlist discovery provider failed",
+      );
+    }
+
+    return result;
   });
 
   app.post("/watchlists", async (request, reply) => {

@@ -87,4 +87,52 @@ describe("outcome and backtest routes", () => {
       await app.close();
     }
   });
+
+  it("lists an event's outcomes newest first so a correction wins", async () => {
+    const eventInput = {
+      resolutionCriteria: "Counts only if the official source confirms it.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    };
+    const event = await createEvent(pool, { ...eventInput, question: "Will Example Corp ship by 2026-12-31?" });
+    const otherEvent = await createEvent(pool, { ...eventInput, question: "Will Other Corp ship by 2026-12-31?" });
+    const app = buildApp({ dbPool: pool });
+
+    try {
+      for (const payload of [
+        { eventId: event.id, resolvedValue: true, resolutionSourceUrl: "https://example.com/first" },
+        { eventId: otherEvent.id, resolvedValue: true, resolutionSourceUrl: "https://example.com/other" },
+        { eventId: event.id, resolvedValue: false, resolutionSourceUrl: "https://example.com/correction" },
+      ]) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/outcomes",
+          payload: { ...payload, resolvedAt: "2026-12-31T23:59:59Z" },
+        });
+        expect(response.statusCode).toBe(201);
+      }
+
+      const listResponse = await app.inject({ method: "GET", url: `/outcomes?eventId=${event.id}` });
+
+      expect(listResponse.statusCode).toBe(200);
+      const outcomes = listResponse.json();
+      expect(outcomes).toHaveLength(2);
+      expect(outcomes[0]).toMatchObject({
+        eventId: event.id,
+        resolvedValue: false,
+        resolutionSourceUrl: "https://example.com/correction",
+      });
+      expect(outcomes[1]).toMatchObject({ resolutionSourceUrl: "https://example.com/first" });
+      expect(Object.keys(outcomes[0]).sort()).toEqual(
+        ["createdAt", "eventId", "id", "resolutionSourceUrl", "resolvedAt", "resolvedValue"],
+      );
+
+      const malformed = await app.inject({ method: "GET", url: "/outcomes?eventId=not-a-uuid" });
+      expect(malformed.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
 });

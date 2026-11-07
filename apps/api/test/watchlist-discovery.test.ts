@@ -133,7 +133,7 @@ describe("watchlist discovery", () => {
       },
     };
 
-    const initial = await discoverWatchlistCandidates({
+    const { candidates: initial } = await discoverWatchlistCandidates({
       pool,
       watchlist,
       providers: [provider],
@@ -148,7 +148,7 @@ describe("watchlist discovery", () => {
       initial[0]?.id,
     ]);
 
-    const rerun = await runWatchlistDiscoveryWorker({
+    const { candidates: rerun } = await runWatchlistDiscoveryWorker({
       pool,
       watchlist,
       providers: [provider],
@@ -201,7 +201,7 @@ describe("watchlist discovery", () => {
       },
     };
 
-    const initial = await discoverWatchlistCandidates({
+    const { candidates: initial } = await discoverWatchlistCandidates({
       pool,
       watchlist,
       providers: [initialProvider],
@@ -209,7 +209,7 @@ describe("watchlist discovery", () => {
       mode: "fixture",
     });
 
-    const rerun = await runWatchlistDiscoveryWorker({
+    const { candidates: rerun } = await runWatchlistDiscoveryWorker({
       pool,
       watchlist,
       providers: [rerunProvider],
