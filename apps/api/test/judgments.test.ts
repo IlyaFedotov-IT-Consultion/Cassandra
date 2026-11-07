@@ -20,7 +20,6 @@ import {
   listJudgments,
 } from "../src/modules/judgments/repository.js";
 import {
-  buildInsufficientEvidenceVerdictTraceForEvidence,
   createDefaultEvidenceProviders,
   evaluateEventForecast,
   type JudgeClient,
@@ -434,7 +433,7 @@ describe("judgment routes and service", () => {
       expect(response.statusCode).toBe(409);
       expect(response.json()).toEqual({
         error:
-          "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.",
+          "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY, OPENROUTER_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.",
       });
       expect(await listJudgments(pool)).toHaveLength(0);
     } finally {
@@ -630,82 +629,6 @@ describe("judgment routes and service", () => {
     });
 
     expect(trace.priorProbability).toBe(0.74);
-  });
-
-  it("uses prediction-market probability metadata when insufficient-evidence fallback builds the prior", () => {
-    const trace = buildInsufficientEvidenceVerdictTraceForEvidence({
-      env: createFixtureEnv({
-        CASSANDRA_ADAPTER_MODE: "live",
-      }),
-      event: {
-        id: "event-1",
-        question: "Will Example Corp launch Product X by 2026-12-31?",
-        resolutionCriteria: "Launch must be publicly announced.",
-        deadline: "2026-12-31T23:59:59Z",
-        status: "open",
-        entities: ["Example Corp", "Product X"],
-        referenceClass: null,
-        marketSymbols: [],
-        polymarketMarketId: "example-product-x",
-        createdAt: "2026-10-01T00:00:00Z",
-        updatedAt: "2026-10-01T00:00:00Z",
-      },
-      evaluationTime: "2026-10-11T12:00:00Z",
-      calibrationSnapshot: buildCalibrationSnapshot(),
-      evidence: [
-        buildEvidenceItem({
-          sourceFamily: "prediction_market",
-          sourceType: "quote_snapshot",
-          metadata: {
-            provider: "polymarketGamma",
-            probability: 0.72,
-            liquidity: 500_000,
-          },
-        }),
-      ],
-    });
-
-    expect(trace.status).toBe("insufficient_evidence");
-    expect(trace.priorProbability).toBeGreaterThan(0.6);
-    expect(trace.finalProbability).toBeCloseTo(trace.priorProbability, 6);
-  });
-
-  it("uses prediction-market outcomePrices metadata when insufficient-evidence fallback builds the prior", () => {
-    const trace = buildInsufficientEvidenceVerdictTraceForEvidence({
-      env: createFixtureEnv({
-        CASSANDRA_ADAPTER_MODE: "live",
-      }),
-      event: {
-        id: "event-1",
-        question: "Will Example Corp launch Product X by 2026-12-31?",
-        resolutionCriteria: "Launch must be publicly announced.",
-        deadline: "2026-12-31T23:59:59Z",
-        status: "open",
-        entities: ["Example Corp", "Product X"],
-        referenceClass: null,
-        marketSymbols: [],
-        polymarketMarketId: "example-product-x",
-        createdAt: "2026-10-01T00:00:00Z",
-        updatedAt: "2026-10-01T00:00:00Z",
-      },
-      evaluationTime: "2026-10-11T12:00:00Z",
-      calibrationSnapshot: buildCalibrationSnapshot(),
-      evidence: [
-        buildEvidenceItem({
-          sourceFamily: "prediction_market",
-          sourceType: "polymarket_market",
-          metadata: {
-            provider: "polymarketGamma",
-            outcomePrices: ["0.72", "0.28"],
-            liquidity: 500_000,
-          },
-        }),
-      ],
-    });
-
-    expect(trace.status).toBe("insufficient_evidence");
-    expect(trace.priorProbability).toBeGreaterThan(0.6);
-    expect(trace.finalProbability).toBeCloseTo(trace.priorProbability, 6);
   });
 
   it("preserves calibration metadata returned by the judge service in fixture mode", async () => {
@@ -1527,7 +1450,16 @@ describe("judgment routes and service", () => {
       marketSymbols: [],
     });
     const queued = await createJudgmentRun(pool, event.id);
-    const judgeSpy = vi.fn();
+    const judgeSpy = vi.fn(async (input: Parameters<JudgeClient["judge"]>[0]) =>
+      buildJudgeTrace({
+        eventId: input.event.id,
+        referenceClass: input.event.referenceClass,
+        evaluationTime: input.evaluationTime,
+        calibrationSnapshot: input.calibrationSnapshot,
+        evidence: input.evidence,
+        status: "insufficient_evidence",
+      }),
+    );
 
     const stored = await runJudgment({
       pool,
@@ -1560,7 +1492,8 @@ describe("judgment routes and service", () => {
       } as never,
     });
 
-    expect(judgeSpy).not.toHaveBeenCalled();
+    expect(judgeSpy).toHaveBeenCalledTimes(1);
+    expect(judgeSpy.mock.calls[0]?.[0].priorOnly).toBe(true);
     expect(stored.status).toBe("insufficient_evidence");
     expect(stored.verdictTrace).toMatchObject({
       eventId: event.id,
@@ -1569,6 +1502,52 @@ describe("judgment routes and service", () => {
     expect(stored.verdictTrace?.missingEvidence.map((entry) => entry.sourceFamily)).toEqual(
       expect.arrayContaining(["official", "community", "web"]),
     );
+  });
+
+  it("plans sub-question queries before retrieval and records every pipeline stage", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Launch must be publicly announced.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const queued = await createJudgmentRun(pool, event.id);
+    const receivedQueries: Array<string[] | undefined> = [];
+    const judgeClient: JudgeClient = {
+      ...createFixtureJudgeClient(),
+      async plan() {
+        return {
+          subQuestions: ["Has Example Corp set a launch date?"],
+          queries: ["Example Corp Product X launch date"],
+          model: "utility-model",
+        };
+      },
+    };
+
+    const stored = await runJudgment({
+      pool,
+      env: createFixtureEnv(),
+      input: { judgmentId: queued.id, eventId: event.id, evaluationTime: "2026-10-11T12:00:00Z" },
+      evidenceProviders: [
+        {
+          name: "web",
+          async collect(input) {
+            receivedQueries.push(input.queries);
+            return [buildEvidenceItem({ eventId: event.id })];
+          },
+        },
+      ],
+      judgeClient,
+    });
+
+    expect(receivedQueries).toEqual([["Example Corp Product X launch date"]]);
+    expect(stored.verdictTrace?.pipelineStages.slice(0, 2)).toMatchObject([
+      { stage: "query_planning", status: "completed", details: { queries: ["Example Corp Product X launch date"] } },
+      { stage: "retrieval", status: "completed", details: { plannedQueries: 1, evidenceCount: 1 } },
+    ]);
+    expect(stored.executionLog.map((entry) => entry.stage)).toContain("planning");
   });
 
   it("fails live judgments when every evidence provider returns zero items", async () => {

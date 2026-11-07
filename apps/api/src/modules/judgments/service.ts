@@ -7,6 +7,7 @@ import {
   VerdictTraceSchema,
   type CalibrationSnapshot,
   type JudgeOpinion,
+  type PipelineStage,
   type VerdictTrace,
 } from "@cassandra/shared";
 import type { Redis } from "ioredis";
@@ -28,6 +29,11 @@ import { createPerplexityProvider } from "../evidence/providers/perplexity.js";
 import { createPolymarketClobProvider } from "../evidence/providers/polymarketClob.js";
 import { createPolymarketGammaProvider } from "../evidence/providers/polymarketGamma.js";
 import { createWebProvider } from "../evidence/providers/web.js";
+import {
+  createOpenRouterWebSearch,
+  createZaiWebSearch,
+  type WebSearchFn,
+} from "../evidence/providers/webSearch.js";
 import type { AdapterMode, EvidenceProvider } from "../evidence/types.js";
 import { getEventById, type EventRecord } from "../events/repository.js";
 import { countOutcomes } from "../outcomes/repository.js";
@@ -35,18 +41,6 @@ import {
   getLatestCalibrationSnapshot,
   retrainCalibrationSnapshot,
 } from "../backtests/repository.js";
-import {
-  probabilityToLogOdds,
-  logOddsToProbability,
-  clamp,
-  average,
-  variance,
-  computeFreshnessDecay,
-  buildDependencyMatrix,
-  computeDependencyDiscount,
-  computeDisagreementShrinkage,
-  computePosteriorWithShrinkage,
-} from "./aggregation.js";
 import {
   InMemoryJudgeCacheStore,
   createRedisJudgeCacheStore,
@@ -65,10 +59,11 @@ import {
 } from "./repository.js";
 
 const DEFAULT_EVALUATION_TIME = () => new Date().toISOString();
-const PROMPT_VERSION = "prompt-v1";
+const PROMPT_VERSION = "prompt-v3";
 const MIN_COMPLETED_LIVE_CITATIONS = 2;
-const MAX_EVIDENCE_ITEMS_FOR_JUDGE = 12;
-const MAX_EVIDENCE_ITEMS_PER_FAMILY = 4;
+// The judge service's relevance stage ranks and filters these candidates.
+const MAX_EVIDENCE_ITEMS_PER_JUDGE = 6;
+const MAX_MARKET_PRIOR_ITEMS = 4;
 const CITATION_RELEVANCE_STOP_WORDS = new Set([
   "a",
   "an",
@@ -100,7 +95,7 @@ const CITATION_RELEVANCE_STOP_WORDS = new Set([
   "with",
 ]);
 export const LIVE_AUTHORITATIVE_SEARCH_PROVIDER_REQUIRED_MESSAGE =
-  "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.";
+  "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY, OPENROUTER_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.";
 const PANEL_JUDGES = [
   {
     judgeName: "official_records",
@@ -114,20 +109,10 @@ const PANEL_JUDGES = [
   },
   {
     judgeName: "open_web_research",
-    sourceFamilies: ["web", "llm_research", "market", "prediction_market"] as const,
+    sourceFamilies: ["web", "llm_research"] as const,
     missingSourceFamily: "web",
   },
 ] as const;
-
-const EVIDENCE_STRENGTH_TO_LOG_BF: Record<JudgeOpinion["evidenceStrength"], number> = {
-  strong_against: -3,
-  moderate_against: -1.5,
-  weak_against: -0.5,
-  neutral: 0,
-  weak_for: 0.5,
-  moderate_for: 1.5,
-  strong_for: 3,
-};
 
 type CitationRecord = VerdictTrace["citations"][number];
 type SourceFamily = CitationRecord["sourceFamily"];
@@ -155,8 +140,24 @@ export interface JudgeClient {
     evidence: JudgmentEvidenceItem[];
     calibrationSnapshot: CalibrationSnapshot;
     mode: AdapterMode;
+    /** Coverage was too weak for the panel: return a prior-only insufficient_evidence trace. */
+    priorOnly?: boolean;
   }): Promise<VerdictTrace>;
+  /** Pipeline stage 1: decompose the question into sub-questions with search queries. */
+  plan?(input: {
+    event: EventRecord;
+    evaluationTime: string;
+    maxQueries: number;
+  }): Promise<QueryPlanResult>;
 }
+
+export interface QueryPlanResult {
+  subQuestions: string[];
+  queries: string[];
+  model?: string | null;
+}
+
+const MAX_PLANNED_QUERIES = 3;
 
 interface JudgmentEvidenceItem {
   id: string;
@@ -281,7 +282,9 @@ function buildJudgeModelVersion(env: AppEnv): string {
   return [
     env.CASSANDRA_ADAPTER_MODE,
     env.CASSANDRA_JUDGE_LLM ?? "default-judge-llm",
-    env.OPENROUTER_JUDGE_MODEL ?? "default-judge",
+    env.OPENROUTER_JUDGE_MODELS ?? env.OPENROUTER_JUDGE_MODEL ?? "default-judge",
+    env.OPENROUTER_JUDGE_REASONING_EFFORT ?? "default-effort",
+    env.OPENROUTER_UTILITY_MODEL ?? "default-utility",
     env.OPENROUTER_CROSS_EXAMINER_MODEL ?? "default-cross",
     env.OPENROUTER_SEARCH_MODEL ?? "default-search",
     env.ZAI_MODEL ?? "default-zai",
@@ -342,410 +345,6 @@ export function assessLiveCoverageForEvidence(
   return assessLiveCoverage(event, mapEvidenceForJudge(evidence));
 }
 
-
-function selectCalibrationMethod(snapshot: CalibrationSnapshot): VerdictTrace["calibrationMethod"] {
-  const method = snapshot.calibrationParams.method;
-
-  if (
-    method === "identity" ||
-    method === "isotonic" ||
-    method === "logistic" ||
-    method === "beta"
-  ) {
-    return method;
-  }
-
-  return snapshot.weightRegime === "steady"
-    ? "isotonic"
-    : snapshot.weightRegime === "warming"
-      ? "logistic"
-      : "identity";
-}
-
-function readNumericRecord(
-  value: unknown,
-): Record<string, number> | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const result: Record<string, number> = {};
-
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === "number" && Number.isFinite(entry)) {
-      result[key] = entry;
-    }
-  }
-
-  return Object.keys(result).length > 0 ? result : null;
-}
-
-function readNumericValue(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  return null;
-}
-
-function readFirstNumericFromCollection(value: unknown): number | null {
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      const numericEntry = readNumericValue(entry);
-
-      if (numericEntry !== null) {
-        return numericEntry;
-      }
-    }
-
-    return null;
-  }
-
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      return readFirstNumericFromCollection(parsed);
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function readMarketProbability(metadata: Record<string, unknown>): number | null {
-  const directProbability =
-    readNumericValue(metadata.price)
-    ?? readNumericValue(metadata.probability)
-    ?? readNumericValue(metadata.yesPrice)
-    ?? readNumericValue(metadata.lastTradePrice);
-
-  if (directProbability !== null) {
-    return clamp(directProbability, 1e-6, 1 - 1e-6);
-  }
-
-  const outcomePrice = readFirstNumericFromCollection(metadata.outcomePrices);
-
-  if (outcomePrice !== null) {
-    return clamp(outcomePrice, 1e-6, 1 - 1e-6);
-  }
-
-  return null;
-}
-
-function computeFixtureBaseRate(args: {
-  referenceClass: string | null;
-  calibrationSnapshot: CalibrationSnapshot;
-}): {
-  probability: number;
-  alpha: number;
-  usedFallback: boolean;
-} {
-  const params = args.calibrationSnapshot.baseRateParams;
-  const minimumSample =
-    typeof params.minimumSample === "number" && Number.isFinite(params.minimumSample)
-      ? Math.max(1, params.minimumSample)
-      : 20;
-  const historicalCounts =
-    params.historicalCounts && typeof params.historicalCounts === "object"
-      ? (params.historicalCounts as Record<string, unknown>)
-      : {};
-
-  if (!args.referenceClass) {
-    return {
-      probability: 0.5,
-      alpha: 0,
-      usedFallback: true,
-    };
-  }
-
-  const counts = historicalCounts[args.referenceClass];
-
-  if (!counts || typeof counts !== "object") {
-    return {
-      probability: 0.5,
-      alpha: 0,
-      usedFallback: true,
-    };
-  }
-
-  const countRecord = counts as Record<string, unknown>;
-  const successes =
-    typeof countRecord.successes === "number" && Number.isFinite(countRecord.successes)
-      ? Math.max(0, countRecord.successes)
-      : 0;
-  const total =
-    typeof countRecord.total === "number" && Number.isFinite(countRecord.total)
-      ? Math.max(0, countRecord.total)
-      : 0;
-
-  if (total <= 0) {
-    return {
-      probability: 0.5,
-      alpha: 0,
-      usedFallback: true,
-    };
-  }
-
-  return {
-    probability: (successes + 1) / (total + 2),
-    alpha: Math.min(total / minimumSample, 1),
-    usedFallback: total < minimumSample,
-  };
-}
-
-function collectFixtureMarketSignals(
-  evidence: JudgmentEvidenceItem[],
-): {
-  price: number;
-  spread: number;
-  depth: number;
-  volatility: number;
-} {
-  for (const item of evidence) {
-    if (item.sourceFamily !== "market" && item.sourceFamily !== "prediction_market") {
-      continue;
-    }
-
-    const metadata =
-      item.metadata && typeof item.metadata === "object"
-        ? (item.metadata as Record<string, unknown>)
-        : null;
-
-    if (!metadata) {
-      continue;
-    }
-
-    const price = readMarketProbability(metadata);
-
-    if (price === null) {
-      continue;
-    }
-
-    const numericMetadata = readNumericRecord(metadata) ?? {};
-
-    return {
-      price,
-      spread: typeof numericMetadata.spread === "number" ? numericMetadata.spread : 0.05,
-      depth:
-        typeof numericMetadata.depth === "number"
-          ? numericMetadata.depth
-          : typeof numericMetadata.liquidity === "number"
-            ? numericMetadata.liquidity
-            : typeof numericMetadata.volume === "number"
-              ? numericMetadata.volume
-              : 0,
-      volatility: typeof numericMetadata.volatility === "number" ? numericMetadata.volatility : 0.1,
-    };
-  }
-
-  return {
-    price: 0.5,
-    spread: 0.05,
-    depth: 0,
-    volatility: 0.1,
-  };
-}
-
-function liquidityAdjustedMarketProbability(args: {
-  price: number;
-  spread: number;
-  depth: number;
-  volatility: number;
-}): number {
-  const boundedPrice = clamp(args.price, 1e-6, 1 - 1e-6);
-  const spreadPenalty = Math.max(0, 1 - Math.min(args.spread, 0.9));
-  const volatilityPenalty = Math.max(0, 1 - Math.min(args.volatility, 0.9));
-  const depthSupport = 1 - Math.exp(-Math.max(args.depth, 0) / 50_000);
-  const confidence = clamp(spreadPenalty * volatilityPenalty * depthSupport, 0, 1);
-
-  return 0.5 + confidence * (boundedPrice - 0.5);
-}
-
-function computeFixturePrior(args: {
-  event: EventRecord;
-  evidence: JudgmentEvidenceItem[];
-  calibrationSnapshot: CalibrationSnapshot;
-}): {
-  priorProbability: number;
-  referenceClassFallback: string | null;
-} {
-  const baseRate = computeFixtureBaseRate({
-    referenceClass: args.event.referenceClass,
-    calibrationSnapshot: args.calibrationSnapshot,
-  });
-  const marketSignals = collectFixtureMarketSignals(args.evidence);
-  const marketProbability = liquidityAdjustedMarketProbability(marketSignals);
-  const marketPriorAlpha =
-    typeof args.calibrationSnapshot.marketPriorParams.defaultAlpha === "number" &&
-    Number.isFinite(args.calibrationSnapshot.marketPriorParams.defaultAlpha)
-      ? args.calibrationSnapshot.marketPriorParams.defaultAlpha
-      : 0.6;
-  const alpha = baseRate.usedFallback ? 0 : marketPriorAlpha;
-  const priorLogOdds =
-    alpha * probabilityToLogOdds(baseRate.probability) +
-    (1 - alpha) * probabilityToLogOdds(marketProbability);
-
-  return {
-    priorProbability: logOddsToProbability(priorLogOdds),
-    referenceClassFallback: baseRate.usedFallback ? "global_baseline" : null,
-  };
-}
-
-function applyCalibrationToProbability(args: {
-  probability: number;
-  calibrationSnapshot: CalibrationSnapshot;
-}): number {
-  const method = selectCalibrationMethod(args.calibrationSnapshot);
-  const params = args.calibrationSnapshot.calibrationParams;
-
-  if (method === "identity") {
-    return args.probability;
-  }
-
-  if (method === "isotonic") {
-    const thresholds = Array.isArray(params.thresholds) ? params.thresholds : [];
-    const outputs = Array.isArray(params.outputs) ? params.outputs : [];
-    const points = thresholds.length > 0 && outputs.length > 0
-      ? thresholds.flatMap((threshold, index) => {
-          const output = outputs[index];
-
-          return typeof threshold === "number" && typeof output === "number"
-            ? [{ threshold, output: clamp(output, 0, 1) }]
-            : [];
-        }).sort((left, right) => left.threshold - right.threshold)
-      : [];
-
-    if (points.length === 0) {
-      return args.probability;
-    }
-
-    if (args.probability <= points[0]!.threshold) {
-      return points[0]!.output;
-    }
-
-    const lastPoint = points[points.length - 1];
-
-    if (lastPoint && args.probability >= lastPoint.threshold) {
-      return lastPoint.output;
-    }
-
-    for (let index = 1; index < points.length; index += 1) {
-      const left = points[index - 1];
-      const right = points[index];
-
-      if (!left || !right || args.probability > right.threshold) {
-        continue;
-      }
-
-      if (right.threshold <= left.threshold) {
-        return right.output;
-      }
-
-      const ratio =
-        (args.probability - left.threshold) / (right.threshold - left.threshold);
-
-      return clamp(left.output + ratio * (right.output - left.output), 0, 1);
-    }
-
-    return lastPoint?.output ?? args.probability;
-  }
-
-  const slope =
-    typeof params.slope === "number" && Number.isFinite(params.slope)
-      ? params.slope
-      : 1;
-  const intercept =
-    typeof params.intercept === "number" && Number.isFinite(params.intercept)
-      ? params.intercept
-      : 0;
-  const calibratedLogOdds = slope * probabilityToLogOdds(args.probability) + intercept;
-
-  return logOddsToProbability(calibratedLogOdds);
-}
-
-
-function mapEvidenceStrength(score: number): JudgeOpinion["evidenceStrength"] {
-  if (score >= 2.5) {
-    return "strong_for";
-  }
-
-  if (score >= 1.5) {
-    return "moderate_for";
-  }
-
-  if (score >= 0.5) {
-    return "weak_for";
-  }
-
-  if (score <= -2.5) {
-    return "strong_against";
-  }
-
-  if (score <= -1.5) {
-    return "moderate_against";
-  }
-
-  if (score <= -0.5) {
-    return "weak_against";
-  }
-
-  return "neutral";
-}
-
-function stanceToScore(stance: JudgmentEvidenceItem["stance"]): number {
-  switch (stance) {
-    case "supports":
-      return 1;
-    case "contradicts":
-      return -1;
-    case "neutral":
-    case "unknown":
-      return 0;
-  }
-}
-
-
-function buildConflicts(judgeOpinions: JudgeOpinion[]): ConflictRecord[] {
-  const conflicts: ConflictRecord[] = [];
-
-  for (let i = 0; i < judgeOpinions.length; i += 1) {
-    const left = judgeOpinions[i];
-
-    if (!left) {
-      continue;
-    }
-
-    for (let j = i + 1; j < judgeOpinions.length; j += 1) {
-      const right = judgeOpinions[j];
-
-      if (!right) {
-        continue;
-      }
-
-      const probabilityGap = Math.abs(left.probability - right.probability);
-
-      if (probabilityGap < 0.2) {
-        continue;
-      }
-
-      conflicts.push({
-        judgeA: left.judgeName,
-        judgeB: right.judgeName,
-        reason: `Probability gap of ${probabilityGap.toFixed(2)} across overlapping evidence.`,
-        severity: probabilityGap >= 0.35 ? "high" : probabilityGap >= 0.25 ? "medium" : "low",
-      });
-    }
-  }
-
-  return conflicts;
-}
-
 function buildMissingEvidence(
   event: EventRecord,
   evidence: JudgmentEvidenceItem[],
@@ -781,24 +380,6 @@ function buildMissingEvidence(
   }
 
   return missing;
-}
-
-function buildWeightBreakdown(
-  judgeOpinions: JudgeOpinion[],
-  dependencyMatrix: VerdictTrace["dependencyMatrix"],
-): VerdictTrace["weightBreakdown"] {
-  return judgeOpinions.map((opinion) => ({
-    source: opinion.judgeName,
-    weight: opinion.baseWeight,
-    details: {
-      dependencyDiscount: opinion.dependencyDiscount,
-      freshnessDecay: opinion.freshnessDecay,
-      effectiveLogOddsContribution: opinion.effectiveLogOddsContribution,
-      overlapCount: dependencyMatrix.filter((entry) => {
-        return entry.judgeA === opinion.judgeName || entry.judgeB === opinion.judgeName;
-      }).length,
-    },
-  }));
 }
 
 function tokenizeCitationRelevance(value: string): string[] {
@@ -878,6 +459,17 @@ function compareEvidenceForJudging(left: JudgmentEvidenceItem, right: JudgmentEv
   return left.id.localeCompare(right.id);
 }
 
+function readLiquidity(item: JudgmentEvidenceItem): number {
+  const value = item.metadata.liquidity ?? item.metadata.depth;
+  const parsed = typeof value === "string" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Per-judge quotas: each panel judge gets up to MAX_EVIDENCE_ITEMS_PER_JUDGE items,
+ * round-robin across its source families so no family starves another. Prediction-market
+ * items feed the prior (not a judge), so they are selected separately, most liquid first.
+ */
 function selectEvidenceForJudgeInput(
   event: EventRecord,
   evidence: JudgmentEvidenceItem[],
@@ -885,25 +477,37 @@ function selectEvidenceForJudgeInput(
   const relevantEvidence = evidence.filter((item) => isEventRelevantEvidence(event, item));
   const candidateEvidence = relevantEvidence.length > 0 ? relevantEvidence : evidence;
   const sortedEvidence = [...candidateEvidence].sort(compareEvidenceForJudging);
-  const perFamilyCount = new Map<SourceFamily, number>();
   const selectedEvidence: JudgmentEvidenceItem[] = [];
 
-  for (const item of sortedEvidence) {
-    const familyCount = perFamilyCount.get(item.sourceFamily) ?? 0;
+  for (const panelJudge of PANEL_JUDGES) {
+    const familyQueues = panelJudge.sourceFamilies.map((family) =>
+      sortedEvidence.filter((item) => item.sourceFamily === family),
+    );
+    let taken = 0;
 
-    if (familyCount >= MAX_EVIDENCE_ITEMS_PER_FAMILY) {
-      continue;
-    }
+    for (let round = 0; taken < MAX_EVIDENCE_ITEMS_PER_JUDGE; round += 1) {
+      const roundItems = familyQueues.flatMap((queue) => {
+        const item = queue[round];
+        return item ? [item] : [];
+      });
 
-    selectedEvidence.push(item);
-    perFamilyCount.set(item.sourceFamily, familyCount + 1);
+      if (roundItems.length === 0) {
+        break;
+      }
 
-    if (selectedEvidence.length >= MAX_EVIDENCE_ITEMS_FOR_JUDGE) {
-      break;
+      for (const item of roundItems.slice(0, MAX_EVIDENCE_ITEMS_PER_JUDGE - taken)) {
+        selectedEvidence.push(item);
+        taken += 1;
+      }
     }
   }
 
-  return selectedEvidence;
+  const marketPriorEvidence = sortedEvidence
+    .filter((item) => item.sourceFamily === "prediction_market")
+    .sort((left, right) => readLiquidity(right) - readLiquidity(left))
+    .slice(0, MAX_MARKET_PRIOR_ITEMS);
+
+  return [...selectedEvidence, ...marketPriorEvidence];
 }
 
 function buildCitations(evidence: JudgmentEvidenceItem[]): CitationRecord[] {
@@ -979,101 +583,6 @@ function sanitizeTraceCitations(args: {
   });
 }
 
-function buildFallbackCitation(event: EventRecord): CitationRecord {
-  return {
-    title: event.question,
-    url: "https://example.invalid/no-evidence",
-    sourceFamily: "web",
-  };
-}
-
-function buildInsufficientEvidenceVerdictTrace(args: {
-  env: AppEnv;
-  event: EventRecord;
-  evidence: JudgmentEvidenceItem[];
-  evaluationTime: string;
-  calibrationSnapshot: CalibrationSnapshot;
-}): VerdictTrace {
-  const prior = computeFixturePrior({
-    event: args.event,
-    evidence: args.evidence,
-    calibrationSnapshot: args.calibrationSnapshot,
-  });
-  const judgeEvidenceSets = PANEL_JUDGES.map((panelJudge) => ({
-    judgeName: panelJudge.judgeName,
-    evidence: [] as JudgmentEvidenceItem[],
-    missingSourceFamily: panelJudge.missingSourceFamily,
-  }));
-  const evidenceIdSets = judgeEvidenceSets.map((j) => ({
-    judgeName: j.judgeName,
-    evidenceIds: j.evidence.map((e) => e.id),
-  }));
-  const judgeOpinions = judgeEvidenceSets.map((j) =>
-    buildJudgeOpinion({
-      judgeName: j.judgeName,
-      evidence: j.evidence,
-      calibrationSnapshot: args.calibrationSnapshot,
-      evaluationTime: args.evaluationTime,
-      missingSourceFamily: j.missingSourceFamily,
-      dependencyDiscount: computeDependencyDiscount(j.judgeName, evidenceIdSets),
-    }),
-  );
-  const dependencyMatrix = buildDependencyMatrix(judgeOpinions);
-  const citations = args.evidence.length > 0
-    ? buildCitations(args.evidence)
-    : [buildFallbackCitation(args.event)];
-  const finalProbability = applyCalibrationToProbability({
-    probability: prior.priorProbability,
-    calibrationSnapshot: args.calibrationSnapshot,
-  });
-
-  return VerdictTraceSchema.parse({
-    id: randomUUID(),
-    eventId: args.event.id,
-    evaluationTime: args.evaluationTime,
-    referenceClass: args.event.referenceClass,
-    referenceClassFallback: prior.referenceClassFallback,
-    priorProbability: prior.priorProbability,
-    rawPosteriorProbability: prior.priorProbability,
-    finalProbability,
-    confidenceLow: clamp(finalProbability - 0.15, 0, finalProbability),
-    confidenceHigh: clamp(finalProbability + 0.15, finalProbability, 1),
-    dependencyMatrix,
-    disagreementShrinkage: 0,
-    judgeOpinions,
-    weightBreakdown: buildWeightBreakdown(judgeOpinions, dependencyMatrix),
-    ensembleMethod: "logarithmic_opinion_pool",
-    calibrationMethod: selectCalibrationMethod(args.calibrationSnapshot),
-    uncertaintyMethod: "none",
-    weightRegime: args.calibrationSnapshot.weightRegime,
-    replayFidelity: "approximate",
-    conflicts: [],
-    missingEvidence: buildMissingEvidence(args.event, args.evidence),
-    citations,
-    cacheEvents: [],
-    modelVersion: buildJudgeModelVersion(args.env),
-    weightVersion: args.calibrationSnapshot.id,
-    calibrationVersion: args.calibrationSnapshot.id,
-    status: "insufficient_evidence",
-  });
-}
-
-export function buildInsufficientEvidenceVerdictTraceForEvidence(args: {
-  env: AppEnv;
-  event: EventRecord;
-  evidence: EvidenceItem[];
-  evaluationTime: string;
-  calibrationSnapshot: CalibrationSnapshot;
-}): VerdictTrace {
-  return buildInsufficientEvidenceVerdictTrace({
-    env: args.env,
-    event: args.event,
-    evidence: mapEvidenceForJudge(args.evidence),
-    evaluationTime: args.evaluationTime,
-    calibrationSnapshot: args.calibrationSnapshot,
-  });
-}
-
 function appendJudgeCacheEvent(
   trace: VerdictTrace,
   cacheStatus: CacheTraceRecord["status"],
@@ -1091,170 +600,15 @@ function appendJudgeCacheEvent(
   });
 }
 
-function buildJudgeOpinion(args: {
-  judgeName: string;
-  evidence: JudgmentEvidenceItem[];
-  calibrationSnapshot: CalibrationSnapshot;
-  evaluationTime: string;
-  missingSourceFamily: SourceFamily;
-  dependencyDiscount?: number;
-}): JudgeOpinion {
-  const evidenceScore = args.evidence.reduce((sum, item) => sum + stanceToScore(item.stance), 0);
-  const evidenceStrength = mapEvidenceStrength(evidenceScore);
-  const logBayesFactor = EVIDENCE_STRENGTH_TO_LOG_BF[evidenceStrength] ?? 0;
-  const baseWeightValue = args.calibrationSnapshot.judgeWeights[args.judgeName];
-  const baseWeight =
-    typeof baseWeightValue === "number" ? baseWeightValue : 1 / PANEL_JUDGES.length;
-  const dependencyDiscount = args.dependencyDiscount ?? 1;
-  const freshnessDecay =
-    args.evidence.length === 0
-      ? 1
-      : average(
-          args.evidence.map((item) =>
-            computeFreshnessDecay(item.publishedAt, args.evaluationTime),
-          ),
-        );
-  const effectiveLogOddsContribution =
-    logBayesFactor * baseWeight * dependencyDiscount * freshnessDecay;
-  const probability = clamp(logOddsToProbability(logBayesFactor), 0.05, 0.95);
-
-  return {
-    judgeName: args.judgeName,
-    probability,
-    confidence: clamp(0.55 + args.evidence.length * 0.08, 0.55, 0.92),
-    evidenceStrength,
-    rationale:
-      args.evidence.length > 0
-        ? `Used ${args.evidence.length} evidence item(s) to produce a ${evidenceStrength.replaceAll("_", " ")} read.`
-        : "No direct evidence matched this judge's source family, so the opinion remains neutral.",
-    evidenceIds: args.evidence.map((item) => item.id),
-    warnings:
-      args.evidence.length > 0
-        ? []
-        : [`No ${args.missingSourceFamily} evidence was available for ${args.judgeName}.`],
-    logBayesFactor,
-    baseWeight,
-    dependencyDiscount,
-    freshnessDecay,
-    effectiveLogOddsContribution,
-    missingEvidence:
-      args.evidence.length > 0
-        ? []
-        : [`Missing ${args.missingSourceFamily} evidence for ${args.judgeName}.`],
-  };
-}
-
-function buildFixtureVerdictTrace(args: {
-  env: AppEnv;
-  event: EventRecord;
-  evidence: JudgmentEvidenceItem[];
-  evaluationTime: string;
-  calibrationSnapshot: CalibrationSnapshot;
-}): VerdictTrace {
-  const prior = computeFixturePrior({
-    event: args.event,
-    evidence: args.evidence,
-    calibrationSnapshot: args.calibrationSnapshot,
-  });
-  const priorProbability = prior.priorProbability;
-  const judgeEvidenceSets = PANEL_JUDGES.map((panelJudge) => ({
-    judgeName: panelJudge.judgeName,
-    evidence: args.evidence.filter((item) =>
-      (panelJudge.sourceFamilies as readonly SourceFamily[]).includes(item.sourceFamily),
-    ),
-    missingSourceFamily: panelJudge.missingSourceFamily,
-  }));
-  const evidenceIdSets = judgeEvidenceSets.map((j) => ({
-    judgeName: j.judgeName,
-    evidenceIds: j.evidence.map((e) => e.id),
-  }));
-  const judgeOpinions = judgeEvidenceSets.map((j) =>
-    buildJudgeOpinion({
-      judgeName: j.judgeName,
-      evidence: j.evidence,
-      calibrationSnapshot: args.calibrationSnapshot,
-      evaluationTime: args.evaluationTime,
-      missingSourceFamily: j.missingSourceFamily,
-      dependencyDiscount: computeDependencyDiscount(j.judgeName, evidenceIdSets),
-    }),
-  );
-  const dependencyMatrix = buildDependencyMatrix(judgeOpinions);
-  const rawPosteriorLogOdds =
-    probabilityToLogOdds(priorProbability) +
-    judgeOpinions.reduce(
-      (sum, opinion) => sum + opinion.effectiveLogOddsContribution,
-      0,
-    );
-  const rawPosteriorProbability = logOddsToProbability(rawPosteriorLogOdds);
-  const disagreementShrinkage = computeDisagreementShrinkage(
-    judgeOpinions.map((opinion) => opinion.logBayesFactor),
-  );
-  const priorLogOdds = probabilityToLogOdds(priorProbability);
-  const posteriorProbability = computePosteriorWithShrinkage({
-    rawPosteriorLogOdds,
-    priorLogOdds,
-    shrinkage: disagreementShrinkage,
-  });
-  const finalProbability = applyCalibrationToProbability({
-    probability: posteriorProbability,
-    calibrationSnapshot: args.calibrationSnapshot,
-  });
-  const noEvidence = args.evidence.length === 0;
-  const confidenceHalfWidth = noEvidence
-    ? 0.15
-    : clamp(0.08 + disagreementShrinkage * 0.2, 0.08, 0.2);
-  const citations = noEvidence
-    ? [buildFallbackCitation(args.event)]
-    : buildCitations(args.evidence);
-  const verdictTrace = {
-    id: randomUUID(),
-    eventId: args.event.id,
-    evaluationTime: args.evaluationTime,
-    referenceClass: args.event.referenceClass,
-    referenceClassFallback: prior.referenceClassFallback,
-    priorProbability,
-    rawPosteriorProbability,
-    finalProbability,
-    confidenceLow: clamp(finalProbability - confidenceHalfWidth, 0, finalProbability),
-    confidenceHigh: clamp(finalProbability + confidenceHalfWidth, finalProbability, 1),
-    dependencyMatrix,
-    disagreementShrinkage,
-    judgeOpinions,
-    weightBreakdown: buildWeightBreakdown(judgeOpinions, dependencyMatrix),
-    ensembleMethod: "logarithmic_opinion_pool" as const,
-    calibrationMethod: selectCalibrationMethod(args.calibrationSnapshot),
-    uncertaintyMethod: "none" as const,
-    weightRegime: args.calibrationSnapshot.weightRegime,
-    replayFidelity: noEvidence ? "approximate" as const : "exact" as const,
-    conflicts: buildConflicts(judgeOpinions),
-    missingEvidence: buildMissingEvidence(args.event, args.evidence),
-    citations,
-    cacheEvents: [],
-    modelVersion: buildJudgeModelVersion(args.env),
-    weightVersion: args.calibrationSnapshot.id,
-    calibrationVersion: args.calibrationSnapshot.id,
-    status: noEvidence ? "insufficient_evidence" as const : "completed" as const,
-  };
-
-  return VerdictTraceSchema.parse(verdictTrace);
-}
-
 class DefaultJudgeClient implements JudgeClient {
   constructor(private readonly env: AppEnv) {}
 
-  async judge(input: {
-    event: EventRecord;
-    evaluationTime: string;
-    evidence: JudgmentEvidenceItem[];
-    calibrationSnapshot: CalibrationSnapshot;
-    mode: AdapterMode;
-  }): Promise<VerdictTrace> {
+  async judge(input: Parameters<JudgeClient["judge"]>[0]): Promise<VerdictTrace> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.env.JUDGE_REQUEST_TIMEOUT_MS);
 
-    let response: Response;
     try {
-      response = await fetch(`${this.env.JUDGE_BASE_URL}/judge`, {
+      const response = await fetch(`${this.env.JUDGE_BASE_URL}/judge`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -1274,18 +628,120 @@ class DefaultJudgeClient implements JudgeClient {
           evaluationTime: input.evaluationTime,
           evidence: input.evidence,
           calibrationSnapshot: input.calibrationSnapshot,
+          priorOnly: input.priorOnly ?? false,
         }),
       });
+
+      if (!response.ok) {
+        throw new Error(`Judge service returned ${response.status} ${response.statusText}`);
+      }
+
+      // The timeout also covers reading the body, not only receiving headers.
+      return VerdictTraceSchema.parse(await response.json());
     } finally {
       clearTimeout(timeout);
     }
-
-    if (!response.ok) {
-      throw new Error(`Judge service returned ${response.status} ${response.statusText}`);
-    }
-
-    return VerdictTraceSchema.parse(await response.json());
   }
+
+  async plan(input: { event: EventRecord; evaluationTime: string; maxQueries: number }): Promise<QueryPlanResult> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.env.JUDGE_REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(`${this.env.JUDGE_BASE_URL}/plan`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          event: {
+            question: input.event.question,
+            resolutionCriteria: input.event.resolutionCriteria,
+            deadline: input.event.deadline,
+            entities: input.event.entities,
+            referenceClass: input.event.referenceClass,
+            marketSymbols: input.event.marketSymbols,
+            polymarketMarketId: input.event.polymarketMarketId,
+          },
+          evaluationTime: input.evaluationTime,
+          maxQueries: input.maxQueries,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Judge service planning returned ${response.status} ${response.statusText}`);
+      }
+
+      const payload = (await response.json()) as Partial<QueryPlanResult>;
+      return {
+        subQuestions: Array.isArray(payload.subQuestions) ? payload.subQuestions.map(String) : [],
+        queries: Array.isArray(payload.queries) ? payload.queries.map(String) : [],
+        model: typeof payload.model === "string" ? payload.model : null,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function pipelineStage(
+  stage: string,
+  status: PipelineStage["status"],
+  details: Record<string, unknown>,
+): PipelineStage {
+  return { stage, status, details };
+}
+
+/**
+ * Pipeline stage 1. Planning is best effort: when the client cannot plan or planning
+ * fails, retrieval falls back to each provider's templated query.
+ */
+export async function planEventQueries(args: {
+  env: AppEnv;
+  event: EventRecord;
+  evaluationTime: string;
+  judgeClient?: JudgeClient;
+}): Promise<{ queries: string[]; stage: PipelineStage }> {
+  const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
+
+  if (typeof judgeClient.plan !== "function") {
+    return {
+      queries: [],
+      stage: pipelineStage("query_planning", "skipped", { reason: "judge client cannot plan" }),
+    };
+  }
+
+  try {
+    const plan = await judgeClient.plan({
+      event: args.event,
+      evaluationTime: args.evaluationTime,
+      maxQueries: MAX_PLANNED_QUERIES,
+    });
+    const queries = plan.queries.map((query) => query.trim()).filter(Boolean).slice(0, MAX_PLANNED_QUERIES);
+
+    return {
+      queries,
+      stage: pipelineStage("query_planning", queries.length > 0 ? "completed" : "skipped", {
+        subQuestions: plan.subQuestions,
+        queries,
+        model: plan.model ?? null,
+      }),
+    };
+  } catch (error) {
+    return {
+      queries: [],
+      stage: pipelineStage("query_planning", "failed", {
+        error: error instanceof Error ? error.message : String(error),
+        fallback: "templated provider queries",
+      }),
+    };
+  }
+}
+
+function withLeadingPipelineStages(trace: VerdictTrace, stages: PipelineStage[]): VerdictTrace {
+  return VerdictTraceSchema.parse({
+    ...trace,
+    pipelineStages: [...stages, ...(trace.pipelineStages ?? [])],
+  });
 }
 
 function hasConfiguredSecret(value: string | undefined): boolean {
@@ -1294,8 +750,40 @@ function hasConfiguredSecret(value: string | undefined): boolean {
   return Boolean(trimmed && trimmed.toLowerCase() !== "replace-me");
 }
 
+const OPENROUTER_GOVERNMENT_DOMAINS = ["*.gov", "*.gov.uk", "europa.eu", "*.europa.eu", "*.int"];
+
+function resolveSearchBackend(env: AppEnv): "zai" | "openrouter" | null {
+  const zaiConfigured = hasConfiguredSecret(env.ZAI_API_KEY);
+  const openRouterConfigured = hasConfiguredSecret(env.OPENROUTER_API_KEY);
+
+  switch (env.CASSANDRA_SEARCH_BACKEND) {
+    case "zai":
+      return zaiConfigured ? "zai" : null;
+    case "openrouter":
+      return openRouterConfigured ? "openrouter" : null;
+    case "auto":
+      return zaiConfigured ? "zai" : openRouterConfigured ? "openrouter" : null;
+  }
+}
+
+/** The configured live web search, shared by evidence providers and research runs. */
+export function createConfiguredWebSearch(env: AppEnv): WebSearchFn | null {
+  switch (resolveSearchBackend(env)) {
+    case "zai":
+      return createZaiWebSearch(env.ZAI_API_KEY);
+    case "openrouter":
+      return createOpenRouterWebSearch({
+        apiKey: env.OPENROUTER_API_KEY ?? "",
+        model: env.OPENROUTER_WEB_SEARCH_MODEL,
+        engine: env.OPENROUTER_WEB_SEARCH_ENGINE,
+      });
+    default:
+      return null;
+  }
+}
+
 function hasConfiguredAuthoritativeSearchProvider(env: AppEnv): boolean {
-  return hasConfiguredSecret(env.ZAI_API_KEY) || hasConfiguredSecret(env.PERPLEXITY_API_KEY);
+  return resolveSearchBackend(env) !== null || hasConfiguredSecret(env.PERPLEXITY_API_KEY);
 }
 
 export function assertLiveAuthoritativeSearchProviderConfigured(env: AppEnv): void {
@@ -1324,20 +812,19 @@ function hasConfiguredCustomMarketBaseUrl(value: string | undefined): boolean {
 export function createDefaultEvidenceProviders(env: AppEnv): EvidenceProvider[] {
   const providers: EvidenceProvider[] = [];
 
-  if (hasConfiguredSecret(env.ZAI_API_KEY)) {
+  const search = createConfiguredWebSearch(env);
+
+  if (search) {
+    const backend = resolveSearchBackend(env);
     providers.push(
-      createOfficialSearchProvider({
-        zaiApiKey: env.ZAI_API_KEY,
-      }),
+      createOfficialSearchProvider({ search }),
       createGovernmentSearchProvider({
-        zaiApiKey: env.ZAI_API_KEY,
+        search,
+        // OpenRouter accepts wildcard domain filters, so it can cover every government TLD.
+        domains: backend === "openrouter" ? OPENROUTER_GOVERNMENT_DOMAINS : undefined,
       }),
-      createCommunitySearchProvider({
-        zaiApiKey: env.ZAI_API_KEY,
-      }),
-      createWebProvider({
-        zaiApiKey: env.ZAI_API_KEY,
-      }),
+      createCommunitySearchProvider({ search }),
+      createWebProvider({ search }),
     );
   }
 
@@ -1483,6 +970,40 @@ export async function evaluateEventForecast(
   );
 }
 
+/**
+ * Coverage was too weak for a panel verdict: ask the judge service for a prior-only
+ * trace (market and base-rate prior, no LLM calls) so the prior math lives in one place.
+ */
+export async function evaluatePriorOnlyForecast(
+  args: EvaluateEventForecastArgs,
+): Promise<VerdictTrace> {
+  const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
+  const evidenceForJudge = selectEvidenceForJudgeInput(
+    args.event,
+    mapEvidenceForJudge(args.evidence),
+  );
+  const trace = await judgeClient.judge({
+    event: args.event,
+    evaluationTime: args.evaluationTime,
+    evidence: evidenceForJudge,
+    calibrationSnapshot: args.calibrationSnapshot,
+    mode: args.env.CASSANDRA_ADAPTER_MODE,
+    priorOnly: true,
+  });
+
+  if (trace.eventId !== args.event.id) {
+    throw new Error(
+      `Judge trace eventId mismatch: expected ${args.event.id}, got ${trace.eventId}`,
+    );
+  }
+
+  return VerdictTraceSchema.parse({
+    ...trace,
+    status: "insufficient_evidence",
+    missingEvidence: buildMissingEvidence(args.event, evidenceForJudge),
+  });
+}
+
 export async function runJudgment(args: JudgmentServiceDeps & {
   input: RunJudgmentInput;
 }): Promise<JudgmentRecordDetails> {
@@ -1548,6 +1069,26 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       },
       "judgment started",
     );
+    const planning = await planEventQueries({
+      env: args.env,
+      event,
+      evaluationTime,
+      judgeClient,
+    });
+    await recordJudgmentExecutionLog({
+      pool: args.pool,
+      judgmentId: judgment.id,
+      logger,
+      entry: buildJudgmentExecutionLogEntry({
+        stage: "planning",
+        level: planning.stage.status === "failed" ? "warn" : "info",
+        message:
+          planning.stage.status === "completed"
+            ? "Planned sub-question search queries."
+            : "Query planning did not produce queries; using templated provider queries.",
+        details: planning.stage.details,
+      }),
+    });
     const collected = await collectEvidenceForEventWithCache({
       pool: args.pool,
       event,
@@ -1556,7 +1097,22 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       providers: evidenceProviders,
       cacheStore: evidenceCacheStore,
       logger,
+      queries: planning.queries,
     });
+    const retrievalStage = pipelineStage(
+      "retrieval",
+      collected.providerRuns.every((run) => run.error) ? "failed" : "completed",
+      {
+        plannedQueries: planning.queries.length,
+        evidenceCount: collected.items.length,
+        providers: collected.providerRuns.map((run) => ({
+          name: run.providerName,
+          rawCount: run.rawCount,
+          cacheStatus: run.cacheStatus,
+          error: run.error ?? null,
+        })),
+      },
+    );
     const failedProviders = collected.providerRuns.filter((run) => run.error);
     await recordJudgmentExecutionLog({
       pool: args.pool,
@@ -1677,14 +1233,15 @@ export async function runJudgment(args: JudgmentServiceDeps & {
         }),
       });
     }
-    const verdictTrace =
+    const panelTrace =
       liveCoverage && !liveCoverage.hasEnoughCitationCoverage
-        ? buildInsufficientEvidenceVerdictTrace({
+        ? await evaluatePriorOnlyForecast({
             env: args.env,
             event,
-            evidence: evidenceForCoverage,
             evaluationTime,
+            evidence: collected.items,
             calibrationSnapshot,
+            judgeClient,
           })
         : await evaluateEventForecast({
             env: args.env,
@@ -1695,6 +1252,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
             judgeCacheStore,
             judgeClient,
           });
+    const verdictTrace = withLeadingPipelineStages(panelTrace, [planning.stage, retrievalStage]);
     await recordJudgmentExecutionLog({
       pool: args.pool,
       judgmentId: judgment.id,

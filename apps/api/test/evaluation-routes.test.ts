@@ -567,7 +567,7 @@ describe("evaluation routes", () => {
       expect(response.statusCode).toBe(409);
       expect(response.json()).toEqual({
         error:
-          "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.",
+          "Live judgments require at least one configured authoritative search provider. Set ZAI_API_KEY, OPENROUTER_API_KEY or PERPLEXITY_API_KEY, or switch to CASSANDRA_ADAPTER_MODE=fixture.",
       });
     } finally {
       await app.close();

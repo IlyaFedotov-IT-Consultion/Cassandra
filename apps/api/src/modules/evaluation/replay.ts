@@ -21,9 +21,10 @@ import { InMemoryJudgeCacheStore, type JudgeCacheStore } from "../judgments/judg
 import {
   assessLiveCoverageForEvidence,
   assertLiveAuthoritativeSearchProviderConfigured,
-  buildInsufficientEvidenceVerdictTraceForEvidence,
   createDefaultEvidenceProviders as createDefaultJudgmentEvidenceProviders,
   evaluateEventForecast,
+  evaluatePriorOnlyForecast,
+  type JudgeClient,
 } from "../judgments/service.js";
 import {
   assertNoPolymarketLeak,
@@ -105,6 +106,7 @@ export interface EvaluateModelBaselineArgs {
   evidenceCacheStore: EvidenceCacheStore;
   judgeCacheStore: JudgeCacheStore;
   sharedEvidenceStore: Map<string, EvidenceItem[]>;
+  judgeClient?: JudgeClient;
 }
 
 export interface RunHistoricalEvaluationArgs {
@@ -114,6 +116,7 @@ export interface RunHistoricalEvaluationArgs {
   evidenceProviders?: EvidenceProvider[];
   evidenceCacheStore?: EvidenceCacheStore;
   judgeCacheStore?: JudgeCacheStore;
+  judgeClient?: JudgeClient;
   listBenchmarkMarkets?: (pool: Pool, benchmarkSetId: string) => Promise<BenchmarkMarket[]>;
   listPriceSnapshotsForBenchmark?: (
     pool: Pool,
@@ -409,12 +412,13 @@ async function defaultEvaluateModelBaseline(
       : null;
   const verdictTrace =
     liveCoverage && !liveCoverage.hasEnoughCitationCoverage
-      ? buildInsufficientEvidenceVerdictTraceForEvidence({
+      ? await evaluatePriorOnlyForecast({
           env: args.env,
           event: args.event,
           evidence: replayEvidence,
           evaluationTime: args.cutoff.cutoffAt,
           calibrationSnapshot: args.calibrationSnapshot,
+          judgeClient: args.judgeClient,
         })
       : await evaluateEventForecast({
           env: args.env,
@@ -423,6 +427,7 @@ async function defaultEvaluateModelBaseline(
           evidence: replayEvidence,
           calibrationSnapshot: args.calibrationSnapshot,
           judgeCacheStore: args.judgeCacheStore,
+          judgeClient: args.judgeClient,
         });
 
   return {
@@ -532,6 +537,7 @@ export async function runHistoricalEvaluation(
               evidenceCacheStore,
               judgeCacheStore,
               sharedEvidenceStore,
+              judgeClient: args.judgeClient,
             });
             predictedProbability = evaluated.probability;
 
