@@ -1061,18 +1061,18 @@ describe("workspace app", () => {
     expect(screen.getByRole("link", { name: "Evaluation" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Calibration" })).toBeVisible();
 
-    expect(await screen.findByRole("heading", { name: /events workspace/i })).toBeVisible();
-    expect(screen.getByText(/workspace mode/i)).toBeVisible();
-    expect(screen.getByText(/^Live$/i)).toBeVisible();
-    expect(screen.getByText(/Will Example Corp launch Product X/i)).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "Events" })).toBeVisible();
+    expect(screen.getByRole("status", { name: /service status/i })).toHaveTextContent(/live mode/i);
+    expect(screen.getByRole("link", { name: /Will Example Corp launch Product X/i })).toBeVisible();
     expect(screen.getAllByText("63.0%").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/evidence collection finished/i).length).toBeGreaterThan(0);
   });
 
   it("renders the structured judgment trace view", async () => {
+    const user = userEvent.setup();
+
     renderApp(["/judgments/judgment-1"]);
 
-    expect(await screen.findByRole("heading", { name: /judgment trace/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: /Will Example Corp launch Product X/i })).toBeVisible();
     expect(screen.getByRole("link", { name: /back to judgments/i })).toHaveAttribute("href", "/judgments");
     expect(screen.getAllByText("63.0%").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Official release indicates launch readiness/i).length).toBeGreaterThan(0);
@@ -1087,25 +1087,27 @@ describe("workspace app", () => {
       "https://example.com/community",
       "https://example.com/background",
     ]);
-    expect(screen.getByRole("heading", { name: /execution logs/i })).toBeVisible();
+    expect(screen.getByText(/evidence collection finished/i)).not.toBeVisible();
+    await user.click(screen.getByText(/^Execution log/i));
     expect(screen.getByText(/evidence collection finished/i)).toBeVisible();
-    expect(screen.getByText(/officialSearch/i)).toBeVisible();
+    expect(screen.getByText(/officialSearch/i)).toBeInTheDocument();
   });
 
   it("shows a failure-specific state when a judgment run fails without a trace", async () => {
     renderApp(["/judgments/judgment-failed"]);
 
-    expect(await screen.findByRole("heading", { name: /judgment trace/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: /Will Example Corp launch Product X/i })).toBeVisible();
     expect(screen.getByText(/judgment failed/i)).toBeVisible();
     expect(screen.getAllByText(/failed before a complete trace could be persisted/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/trace unavailable/i)).toBeVisible();
-    expect(screen.getByText(/judge service returned invalid response/i)).toBeVisible();
+    const unavailable = screen.getByRole("heading", { name: /trace unavailable/i }).closest("section")!;
+    expect(within(unavailable).getByText(/judge service returned invalid response/i)).toBeVisible();
   });
 
   it("shows an insufficient-evidence banner for degraded completed judgments", async () => {
     renderApp(["/judgments/judgment-insufficient"]);
 
-    expect(await screen.findByRole("heading", { name: /judgment trace/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: /Will Example Corp launch Product X/i })).toBeVisible();
     expect(screen.getAllByText(/insufficient evidence/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/coverage was too weak/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/single source report/i)).toBeVisible();
@@ -1116,7 +1118,7 @@ describe("workspace app", () => {
 
     renderApp(["/watchlists/watchlist-1"]);
 
-    expect(await screen.findByRole("heading", { name: /watchlist detail/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: /biotech approvals/i })).toBeVisible();
     expect(screen.getByRole("link", { name: /back to watchlists/i })).toHaveAttribute("href", "/watchlists");
     expect(screen.getByText(/Example Therapy receives FDA fast-track decision/i)).toBeVisible();
 
@@ -1130,6 +1132,8 @@ describe("workspace app", () => {
   });
 
   it("renders evaluation details and prediction tables", async () => {
+    const user = userEvent.setup();
+
     renderApp(["/evaluation/runs/run-1"]);
 
     expect(await screen.findByRole("heading", { name: /evaluation run/i })).toBeVisible();
@@ -1137,6 +1141,7 @@ describe("workspace app", () => {
     expect(screen.getByText(/benchmark-set-1/i)).toBeVisible();
     expect(screen.getAllByText(/technology/i).length).toBeGreaterThan(0);
     expect(screen.getByText("0.19")).toBeVisible();
+    await user.click(screen.getByText(/^Predictions \(1\)$/));
     expect(screen.getByText("0.62")).toBeVisible();
   });
 
@@ -1145,7 +1150,7 @@ describe("workspace app", () => {
 
     renderApp(["/evaluation"]);
 
-    expect(await screen.findByRole("heading", { name: /evaluation workspace/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "Evaluation" })).toBeVisible();
     expect(screen.getByText(/No benchmark sets yet/i)).toBeVisible();
 
     await user.type(screen.getByLabelText(/benchmark set id/i), "macro-replay-pack");
@@ -1164,15 +1169,16 @@ describe("workspace app", () => {
   it("adds a local return path on event detail views", async () => {
     renderApp(["/events/event-1"]);
 
-    expect(await screen.findByRole("heading", { name: /event detail/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: /Will Example Corp launch Product X/i })).toBeVisible();
     expect(screen.getByRole("link", { name: /back to events/i })).toHaveAttribute("href", "/events");
-    expect(screen.getByText(/evidence collection finished/i)).toBeVisible();
+    const runs = screen.getByRole("list", { name: /runs/i });
+    expect(within(runs).getByRole("link", { name: /63\.0%/ })).toHaveAttribute("href", "/judgments/judgment-1");
   });
 
   it("shows a runtime activity feed in the judgments workspace", async () => {
     renderApp(["/judgments"]);
 
-    expect(await screen.findByRole("heading", { name: /judgments workspace/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "Judgments" })).toBeVisible();
     expect(screen.getByRole("heading", { name: /live activity feed/i })).toBeVisible();
     expect(screen.getAllByText(/evidence collection finished/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/judgment judgment-1/i).length).toBeGreaterThan(0);
@@ -1183,7 +1189,7 @@ describe("workspace app", () => {
 
     renderApp(["/runtime"]);
 
-    expect(await screen.findByRole("heading", { name: /runtime console/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "Runtime" })).toBeVisible();
     expect(screen.getByText(/evidence collection finished/i)).toBeVisible();
 
     await user.selectOptions(screen.getByLabelText(/runtime stage filter/i), "queue");
@@ -1203,7 +1209,7 @@ describe("workspace app", () => {
 
     renderApp(["/events"]);
 
-    expect(await screen.findByRole("heading", { name: /events workspace/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "Events" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: /create event/i }));
 
     const dialog = await screen.findByRole("dialog", { name: /create event/i });
@@ -1222,7 +1228,7 @@ describe("workspace app", () => {
 
     renderApp(["/calibration"]);
 
-    expect(await screen.findByRole("heading", { name: /calibration workspace/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "Calibration" })).toBeVisible();
     expect(screen.getByText(/snapshot-1/i)).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: /retrain snapshot/i }));
@@ -1237,7 +1243,7 @@ describe("workspace app", () => {
 
     renderApp(["/calibration"]);
 
-    expect(await screen.findByRole("heading", { name: /calibration workspace/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "Calibration" })).toBeVisible();
     expect(screen.getByText(/snapshot-1/i)).toBeVisible();
 
     const approveButton = await screen.findByRole("button", { name: /approve snapshot/i });
