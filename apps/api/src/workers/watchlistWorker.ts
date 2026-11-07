@@ -1,8 +1,11 @@
 import type { Pool } from "pg";
 
 import type { AdapterMode, EvidenceProvider } from "../modules/evidence/types.js";
-import { discoverWatchlistCandidates } from "../modules/watchlists/discovery.js";
-import type { CandidateEventRecord, WatchlistRecord } from "../modules/watchlists/repository.js";
+import {
+  discoverWatchlistCandidates,
+  type WatchlistDiscoveryOutcome,
+} from "../modules/watchlists/discovery.js";
+import type { WatchlistRecord } from "../modules/watchlists/repository.js";
 
 export async function runWatchlistDiscoveryWorker(args: {
   pool: Pool;
@@ -10,6 +13,6 @@ export async function runWatchlistDiscoveryWorker(args: {
   providers: EvidenceProvider[];
   evaluationTime: string;
   mode: AdapterMode;
-}): Promise<CandidateEventRecord[]> {
+}): Promise<WatchlistDiscoveryOutcome> {
   return discoverWatchlistCandidates(args);
 }

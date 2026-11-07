@@ -196,6 +196,25 @@ Errors:
 - `400` if `id` is missing
 - `404` if the watchlist does not exist
 
+### `POST /watchlists/:id/discover`
+
+Runs candidate discovery for the watchlist now and returns the result. The run works like this:
+
+- It collects evidence from the configured providers, using the watchlist keywords as the query, in the current `CASSANDRA_ADAPTER_MODE`. In `live` mode that means paid search calls.
+- It clusters the evidence into candidates. Candidates already stored are upserted by signature, so a rerun keeps their promotion status.
+- It runs inside the request, with no queue, because it never calls the judge.
+
+No request body.
+
+Success: status `200`, with a `WatchlistDiscoveryResult` body:
+
+- `candidates`: the candidates found by this run, in the same shape as `GET /watchlists/:id/candidates`.
+- `failedProviders`: `{ providerName, error }[]`. A failing provider is reported here and logged as `watchlist_discovery_provider_failed`. It does not fail the run.
+
+Errors:
+
+- `404` if the watchlist does not exist
+
 ### `POST /watchlists`
 
 Creates a watchlist from `WatchlistInput`.
@@ -225,6 +244,20 @@ Success:
 Validation errors:
 
 - `400` with `error: "Invalid outcome input"`
+
+### `GET /outcomes`
+
+Lists recorded outcomes, newest first.
+
+Query parameters:
+
+- `eventId` (optional, UUID): only outcomes for that event. An event can have several outcomes; the first one returned is the latest and acts as a correction of earlier ones.
+
+Success: status `200` with `OutcomeRecord[]` items. Each item holds `id`, `eventId`, `resolvedValue`, `resolvedAt`, `resolutionSourceUrl` and `createdAt`.
+
+Errors:
+
+- `400` with `error: "Invalid outcome query"` for a malformed `eventId` or an unknown parameter
 
 ### `GET /judgments/:id`
 

@@ -1,4 +1,8 @@
+import { randomUUID } from "node:crypto";
+
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+import { WatchlistDiscoveryResultSchema, type EvidenceItem } from "@cassandra/shared";
 
 import { buildApp } from "../src/app.js";
 import { createDbPool } from "../src/lib/db.js";
@@ -107,6 +111,84 @@ describe("watchlist routes", () => {
       expect(response.json()).toEqual({
         error: "Watchlist not found",
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("runs discovery on demand and reports providers that failed without losing the rest", async () => {
+    const evidence = (title: string): EvidenceItem => ({
+      id: randomUUID(),
+      sourceFamily: "web",
+      sourceType: "web_article",
+      title,
+      url: `https://example.com/${randomUUID()}`,
+      publisher: "Example News",
+      publishedAt: "2026-10-10T09:00:00Z",
+      retrievedAt: "2026-10-10T10:00:00Z",
+      summary: "Example Corp appears close to launching Product X.",
+      rawText: null,
+      entities: ["Example Corp", "Product X"],
+      claims: ["Example Corp may launch Product X soon"],
+      stance: "supports",
+      qualitySignals: {},
+      metadata: {},
+    });
+    const app = buildApp({
+      dbPool: pool,
+      watchlistEvidenceProviders: [
+        {
+          name: "fixtureNews",
+          async collect() {
+            return [
+              evidence("Example Corp prepares Product X launch"),
+              evidence("Reports say Example Corp is preparing Product X launch"),
+            ];
+          },
+        },
+        {
+          name: "polymarketGamma",
+          async collect() {
+            throw new Error("request timed out");
+          },
+        },
+      ],
+    });
+
+    try {
+      const created = (
+        await app.inject({
+          method: "POST",
+          url: "/watchlists",
+          payload: {
+            name: "Product launches",
+            keywords: ["product launch", "Example Corp"],
+            jurisdictions: [],
+            cadence: "daily",
+            sourceToggles: {},
+          },
+        })
+      ).json();
+
+      const discoverResponse = await app.inject({
+        method: "POST",
+        url: `/watchlists/${created.id}/discover`,
+      });
+
+      expect(discoverResponse.statusCode).toBe(200);
+      const result = WatchlistDiscoveryResultSchema.parse(discoverResponse.json());
+      expect(result.candidates).toHaveLength(1);
+      expect(result.candidates[0]).toMatchObject({ watchlistId: created.id, promotionStatus: "pending" });
+      expect(result.failedProviders).toEqual([{ providerName: "polymarketGamma", error: "request timed out" }]);
+
+      const stored = await app.inject({ method: "GET", url: `/watchlists/${created.id}/candidates` });
+      expect(stored.json()).toHaveLength(1);
+
+      const missing = await app.inject({
+        method: "POST",
+        url: "/watchlists/00000000-0000-0000-0000-000000000000/discover",
+      });
+      expect(missing.statusCode).toBe(404);
     } finally {
       await app.close();
     }

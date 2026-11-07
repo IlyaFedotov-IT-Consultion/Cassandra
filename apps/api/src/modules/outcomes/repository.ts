@@ -1,12 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import type { OutcomeInput } from "@cassandra/shared";
+import type { OutcomeInput, OutcomeRecord } from "@cassandra/shared";
 import type { Pool } from "pg";
 
-export interface OutcomeRecord extends OutcomeInput {
-  id: string;
-  createdAt: string;
-}
+export type { OutcomeRecord };
 
 function toIsoString(value: unknown): string {
   return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
@@ -40,6 +37,15 @@ export async function createOutcome(pool: Pool, input: OutcomeInput): Promise<Ou
   );
 
   return mapOutcomeRow(result.rows[0] as Record<string, unknown>);
+}
+
+// Newest recorded first: a later outcome for the same event is a correction of an earlier one.
+export async function listOutcomes(pool: Pool, eventId?: string): Promise<OutcomeRecord[]> {
+  const result = eventId
+    ? await pool.query(`SELECT * FROM outcomes WHERE event_id = $1 ORDER BY created_at DESC`, [eventId])
+    : await pool.query(`SELECT * FROM outcomes ORDER BY created_at DESC`);
+
+  return result.rows.map((row) => mapOutcomeRow(row as Record<string, unknown>));
 }
 
 export async function countOutcomes(pool: Pool): Promise<number> {

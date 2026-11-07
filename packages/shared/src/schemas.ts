@@ -146,6 +146,19 @@ export const CandidateEventRecordSchema = CandidateEventSchema.extend({
   candidateSignature: JsonMapSchema.nullable().default(null),
 }).strict();
 
+export const WatchlistDiscoveryResultSchema = z
+  .object({
+    candidates: CandidateEventRecordSchema.array(),
+    failedProviders: z
+      .object({
+        providerName: z.string().min(1),
+        error: z.string(),
+      })
+      .strict()
+      .array(),
+  })
+  .strict();
+
 export const EvidenceItemSchema = z
   .object({
     id: IdSchema,
@@ -342,6 +355,14 @@ export const OutcomeInputSchema = z
   })
   .strict();
 
+export const OutcomeRecordSchema = z
+  .object({
+    ...OutcomeInputSchema.shape,
+    id: IdSchema,
+    createdAt: TimestampSchema,
+  })
+  .strict();
+
 export const CalibrationSnapshotSchema = z
   .object({
     id: IdSchema,
@@ -503,6 +524,7 @@ export type WatchlistInput = z.infer<typeof WatchlistInputSchema>;
 export type WatchlistRecord = z.infer<typeof WatchlistRecordSchema>;
 export type CandidateEvent = z.infer<typeof CandidateEventSchema>;
 export type CandidateEventRecord = z.infer<typeof CandidateEventRecordSchema>;
+export type WatchlistDiscoveryResult = z.infer<typeof WatchlistDiscoveryResultSchema>;
 export type EvidenceItem = z.infer<typeof EvidenceItemSchema>;
 export type JudgeOpinion = z.infer<typeof JudgeOpinionSchema>;
 export type VerdictTrace = z.infer<typeof VerdictTraceSchema>;
@@ -512,6 +534,7 @@ export type RuntimeEventRecord = z.infer<typeof RuntimeEventRecordSchema>;
 export type JudgmentRecordSummary = z.infer<typeof JudgmentRecordSummarySchema>;
 export type JudgmentRecordDetails = z.infer<typeof JudgmentRecordDetailsSchema>;
 export type OutcomeInput = z.infer<typeof OutcomeInputSchema>;
+export type OutcomeRecord = z.infer<typeof OutcomeRecordSchema>;
 export type CalibrationSnapshot = z.infer<typeof CalibrationSnapshotSchema>;
 export type CalibrationSnapshotSummary = z.infer<typeof CalibrationSnapshotSummarySchema>;
 export type BenchmarkMarket = z.infer<typeof BenchmarkMarketSchema>;
