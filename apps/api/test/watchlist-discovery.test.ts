@@ -231,4 +231,35 @@ describe("watchlist discovery", () => {
 
     expect(stored).toHaveLength(1);
   });
+
+  it("only asks the sources the watchlist has switched on", async () => {
+    const watchlist = await createWatchlist(pool, {
+      name: "Product launches",
+      keywords: ["product launch", "Example Corp"],
+      jurisdictions: [],
+      cadence: "daily",
+      sourceToggles: { official: true, community: false, predictionMarkets: false },
+    });
+    const asked: string[] = [];
+    const provider = (name: string) => ({
+      name,
+      async collect() {
+        asked.push(name);
+        return [buildEvidenceItem({ eventId: watchlist.id, title: `Example Corp prepares Product X launch (${name})` })];
+      },
+    });
+
+    await discoverWatchlistCandidates({
+      pool,
+      watchlist,
+      providers: ["officialSearch", "communitySearch", "polymarketGamma", "polymarketClob", "governmentSearch", "web"].map(
+        provider,
+      ),
+      evaluationTime: "2026-10-11T12:00:00Z",
+      mode: "fixture",
+    });
+
+    // Switched off: community and prediction markets. Not mentioned (government) or untoggleable (web): still asked.
+    expect(asked.sort()).toEqual(["governmentSearch", "officialSearch", "web"]);
+  });
 });

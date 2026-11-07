@@ -13,6 +13,30 @@ export interface WatchlistDiscoveryOutcome {
   failedProviders: WatchlistDiscoveryResult["failedProviders"];
 }
 
+// Which evidence providers each watchlist source toggle controls. Providers without a toggle
+// (general web search, Perplexity) always run.
+const PROVIDERS_BY_SOURCE_TOGGLE: Record<string, readonly string[]> = {
+  official: ["officialSearch"],
+  government: ["governmentSearch"],
+  community: ["communitySearch"],
+  markets: ["marketProvider"],
+  predictionMarkets: ["polymarketGamma", "polymarketClob"],
+};
+
+/** Drops providers whose source the watchlist explicitly switched off; an absent toggle means on. */
+export function selectWatchlistProviders(
+  providers: EvidenceProvider[],
+  sourceToggles: Record<string, boolean>,
+): EvidenceProvider[] {
+  const disabled = new Set(
+    Object.entries(PROVIDERS_BY_SOURCE_TOGGLE)
+      .filter(([toggle]) => sourceToggles[toggle] === false)
+      .flatMap(([, providerNames]) => providerNames),
+  );
+
+  return providers.filter((provider) => !disabled.has(provider.name));
+}
+
 export async function discoverWatchlistCandidates(args: {
   pool: Pool;
   watchlist: WatchlistRecord;
@@ -20,9 +44,10 @@ export async function discoverWatchlistCandidates(args: {
   evaluationTime: string;
   mode: AdapterMode;
 }): Promise<WatchlistDiscoveryOutcome> {
+  const providers = selectWatchlistProviders(args.providers, args.watchlist.sourceToggles);
   // One slow or failing source (live search, Polymarket) must not discard what the others found.
   const settled = await Promise.allSettled(
-    args.providers.map((provider) =>
+    providers.map((provider) =>
       provider.collect({
         event: {
           id: args.watchlist.id,
@@ -46,7 +71,7 @@ export async function discoverWatchlistCandidates(args: {
     outcome.status === "rejected"
       ? [
           {
-            providerName: args.providers[index]!.name,
+            providerName: providers[index]!.name,
             error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
           },
         ]
