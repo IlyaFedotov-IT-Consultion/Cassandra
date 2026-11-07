@@ -16,6 +16,7 @@ import {
   RuntimeEventRecordSchema,
   WatchlistDiscoveryResultSchema,
   WatchlistInputSchema,
+  WatchlistScheduleSchema,
   WatchlistRecordSchema,
   type CalibrationSnapshot,
   type BenchmarkMarket,
@@ -31,6 +32,7 @@ import {
   type RuntimeEventRecord,
   type WatchlistInput,
   type WatchlistRecord,
+  type WatchlistSchedule,
 } from "@cassandra/shared";
 
 const eventListSchema = EventRecordSchema.array();
@@ -270,6 +272,11 @@ export function runWatchlistDiscovery(watchlistId: string) {
   });
 }
 
+/** When discovery next runs for the watchlist (null when it runs only on demand). */
+export function fetchWatchlistSchedule(watchlistId: string) {
+  return requestJson(`/watchlists/${encodeURIComponent(watchlistId)}/schedule`, WatchlistScheduleSchema);
+}
+
 export function listCandidates(watchlistId: string) {
   return requestJson(
     `/watchlists/${encodeURIComponent(watchlistId)}/candidates`,
@@ -437,4 +444,5 @@ export type {
   JudgmentRecordDetails,
   JudgmentRecordSummary,
   WatchlistRecord,
+  WatchlistSchedule,
 };

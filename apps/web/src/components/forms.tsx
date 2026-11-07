@@ -1,3 +1,4 @@
+import { WATCHLIST_CADENCES } from "@cassandra/shared";
 import {
   type FormEvent,
   useId,
@@ -12,6 +13,7 @@ import {
 import {
   InlineError,
 } from "../components/ui";
+import { humanizeToken } from "../format";
 
 export const referenceClassValues = [
   "regulatory_approval",
@@ -175,7 +177,13 @@ export function WatchlistComposerForm({
       </label>
       <label>
         <span>Cadence</span>
-        <input defaultValue="daily" name="cadence" required />
+        <select defaultValue="daily" name="cadence">
+          {WATCHLIST_CADENCES.map((cadence) => (
+            <option key={cadence} value={cadence}>
+              {humanizeToken(cadence)}
+            </option>
+          ))}
+        </select>
       </label>
       <label>
         <span>Keywords</span>

@@ -14,9 +14,12 @@ import {
 } from "react-router-dom";
 import {
   type CandidateEventRecord,
+  type WatchlistRecord,
+  type WatchlistSchedule,
   createEvent,
   createWatchlist,
   fetchWatchlist,
+  fetchWatchlistSchedule,
   listCandidates,
   listWatchlists,
   runWatchlistDiscovery,
@@ -40,6 +43,7 @@ import {
 } from "../components/ui";
 import {
   formatDateTime,
+  formatShortDate,
   humanizeProviderName,
   humanizeToken,
 } from "../format";
@@ -148,6 +152,35 @@ export function WatchlistsPage() {
   );
 }
 
+function plural(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function describeSchedule(cadence: string, schedule: WatchlistSchedule | undefined, failed: boolean) {
+  if (failed) {
+    return "Couldn't load the schedule";
+  }
+  if (!schedule) {
+    return "Checking the schedule…";
+  }
+  if (schedule.nextRunAt) {
+    return `Next run ${formatDateTime(schedule.nextRunAt)}`;
+  }
+  if (schedule.intervalMs !== null) {
+    return "Scheduling is switched off; runs only when started";
+  }
+  return cadence.trim().toLowerCase() === "manual"
+    ? "Runs only when started"
+    : `"${cadence}" is not a schedule; runs only when started`;
+}
+
+function describeDiscoveryRun(run: NonNullable<WatchlistRecord["lastDiscovery"]>) {
+  const failed = run.failedProviders.length;
+  return `${humanizeToken(run.trigger)} run, ${plural(run.candidateCount, "candidate")}${
+    failed > 0 ? `, ${plural(failed, "source")} failed` : ""
+  }`;
+}
+
 export function WatchlistDetailPage() {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -163,10 +196,18 @@ export function WatchlistDetailPage() {
     queryFn: () => listCandidates(watchlistId ?? ""),
     enabled: Boolean(watchlistId),
   });
+  // The schedule is secondary: if it fails to load the page still works, it just cannot say when the next run is.
+  const scheduleQuery = useQuery({
+    queryKey: ["watchlist-schedule", watchlistId],
+    queryFn: () => fetchWatchlistSchedule(watchlistId ?? ""),
+    enabled: Boolean(watchlistId),
+  });
   const discoveryMutation = useMutation({
     mutationFn: () => runWatchlistDiscovery(watchlistId ?? ""),
     onSuccess() {
       void queryClient.invalidateQueries({ queryKey: ["candidates", watchlistId] });
+      void queryClient.invalidateQueries({ queryKey: ["watchlist", watchlistId] });
+      void queryClient.invalidateQueries({ queryKey: ["watchlist-schedule", watchlistId] });
     },
     onError(error) {
       pushToast(error instanceof Error ? error.message : "Unable to run discovery", "error");
@@ -216,12 +257,16 @@ export function WatchlistDetailPage() {
   const lastRun = discoveryMutation.data;
   const foundCount = lastRun?.candidates.length ?? 0;
   const failures = lastRun?.failedProviders ?? [];
+  const schedule = scheduleQuery.data;
+  const recorded = watchlist.lastDiscovery;
 
   return (
     <div className="page-stack">
       <PageIntro
         title={watchlist.name}
-        description={`Watching for ${watchlist.keywords.join(", ")}. ${humanizeToken(watchlist.status)}, updated ${formatDateTime(watchlist.updatedAt)}.`}
+        description={`Watching for ${watchlist.keywords.join(", ")}${
+          watchlist.jurisdictions.length > 0 ? ` in ${watchlist.jurisdictions.join(", ")}` : ""
+        }.`}
         returnLink={{
           to: "/watchlists",
           label: "Back to watchlists",
@@ -258,8 +303,16 @@ export function WatchlistDetailPage() {
       ) : null}
       <section className="metric-grid">
         <MetricTile label="Candidates" value={String(candidates.length)} />
-        <MetricTile label="Cadence" value={humanizeToken(watchlist.cadence)} />
-        <MetricTile label="Jurisdictions" value={watchlist.jurisdictions.join(", ") || "Global"} />
+        <MetricTile
+          label="Schedule"
+          value={humanizeToken(watchlist.cadence)}
+          detail={describeSchedule(watchlist.cadence, schedule, scheduleQuery.isError)}
+        />
+        <MetricTile
+          label="Last run"
+          value={recorded ? formatShortDate(recorded.ranAt) : "Never"}
+          detail={recorded ? describeDiscoveryRun(recorded) : "Discovery has not run yet"}
+        />
       </section>
       <SectionCard title="Candidates">
         {candidates.length === 0 ? (

@@ -540,6 +540,7 @@ describe("watchlist discovery", () => {
     status: "active",
     createdAt: "2026-11-01T09:00:00Z",
     updatedAt: "2026-11-01T09:00:00Z",
+    lastDiscovery: { ranAt: "2026-11-07T09:00:00Z", trigger: "scheduled", candidateCount: 0, failedProviders: [] },
   };
   const candidate = {
     id: "candidate-1",
@@ -554,15 +555,34 @@ describe("watchlist discovery", () => {
 
   beforeEach(() => {
     let stored: unknown[] = [];
+    let current: Record<string, unknown> = watchlist;
     const base = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
       const method = init?.method ?? "GET";
-      if (method === "GET" && url.pathname === "/watchlists/watchlist-fed") return json(watchlist);
+      if (method === "GET" && url.pathname === "/watchlists") return json([current]);
+      if (method === "POST" && url.pathname === "/watchlists") {
+        const body = JSON.parse(String(init?.body));
+        requests.push({ method, path: url.pathname, body });
+        return json({ ...watchlist, ...body, id: "watchlist-new", lastDiscovery: null }, 201);
+      }
+      if (method === "GET" && url.pathname === "/watchlists/watchlist-fed") return json(current);
       if (method === "GET" && url.pathname === "/watchlists/watchlist-fed/candidates") return json(stored);
+      if (method === "GET" && url.pathname === "/watchlists/watchlist-fed/schedule") {
+        return json({ cadence: "daily", intervalMs: 86_400_000, nextRunAt: "2026-11-08T09:00:00.000Z" });
+      }
       if (method === "POST" && url.pathname === "/watchlists/watchlist-fed/discover") {
         requests.push({ method, path: url.pathname, body: undefined });
         stored = [candidate];
+        current = {
+          ...watchlist,
+          lastDiscovery: {
+            ranAt: "2026-11-07T12:00:00Z",
+            trigger: "manual",
+            candidateCount: 1,
+            failedProviders: [{ providerName: "polymarketGamma", error: "request timed out" }],
+          },
+        };
         return json({
           candidates: [candidate],
           failedProviders: [{ providerName: "polymarketGamma", error: "request timed out" }],
@@ -585,6 +605,42 @@ describe("watchlist discovery", () => {
     expect(requests.filter((request) => request.path === "/watchlists/watchlist-fed/discover")).toHaveLength(1);
     expect(await screen.findByText(/discovery found 1 candidate\b/i)).toBeVisible();
     expect(screen.getByText(/polymarket gamma failed: request timed out/i)).toBeVisible();
+    expect(await screen.findByText(/manual run, 1 candidate, 1 source failed/i)).toBeVisible();
+  });
+
+  it("shows when discovery runs next and how the last run went", async () => {
+    renderAt("/watchlists/watchlist-fed");
+
+    expect(await screen.findByText(/next run nov 8, 2026/i)).toBeVisible();
+    expect(screen.getByText("Daily")).toBeVisible();
+    expect(screen.getByText(/scheduled run, 0 candidates/i)).toBeVisible();
+  });
+
+  it("creates a watchlist on one of the supported cadences", async () => {
+    const user = userEvent.setup();
+    renderAt("/watchlists");
+
+    await user.click(await screen.findByRole("button", { name: /create watchlist/i }));
+    const dialog = await screen.findByRole("dialog", { name: /create watchlist/i });
+    const cadence = within(dialog).getByRole("combobox", { name: /cadence/i });
+
+    expect(within(cadence).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Manual",
+      "Hourly",
+      "Daily",
+      "Weekly",
+    ]);
+    expect(cadence).toHaveValue("daily");
+
+    await user.selectOptions(cadence, "weekly");
+    await user.type(within(dialog).getByLabelText(/^name$/i), "ECB decisions");
+    await user.type(within(dialog).getByLabelText(/keywords/i), "ECB, deposit rate");
+    await user.click(within(dialog).getByRole("button", { name: /create watchlist/i }));
+
+    await waitFor(() => {
+      const posted = requests.find((request) => request.method === "POST" && request.path === "/watchlists");
+      expect(posted?.body).toMatchObject({ name: "ECB decisions", cadence: "weekly", keywords: ["ECB", "deposit rate"] });
+    });
   });
 });
 
