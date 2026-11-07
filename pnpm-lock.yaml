@@ -59,6 +59,15 @@ importers:
       '@cassandra/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@fontsource/barlow':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/barlow-semi-condensed':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/martian-mono':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@tanstack/react-query':
         specifier: ^5.99.0
         version: 5.99.0(react@19.2.5)
@@ -365,6 +374,15 @@ packages:
 
   '@fastify/proxy-addr@5.1.0':
     resolution: {integrity: sha512-INS+6gh91cLUjB+PVHfu1UqcB76Sqtpyp7bnL+FYojhjygvOPA9ctiD/JDKsyD9Xgu4hUhCSJBPig/w7duNajw==}
+
+  '@fontsource/barlow-semi-condensed@5.3.0':
+    resolution: {integrity: sha512-EdpQ1GlLMofGqDsQhEw+g6DonNKmzt21p8y/oNbTl4BFzEkqYkFyE2fj25YGxmZBL/LZZGAxe74FlvEWcgc31w==}
+
+  '@fontsource/barlow@5.3.0':
+    resolution: {integrity: sha512-tGR0y6QObRtKv71MOth44222+mdNFM/ZWFWDV1VLzNbG4oK9PNRlyJzmkck4vHAi9ibHBXgt4SlY51amFP55CA==}
+
+  '@fontsource/martian-mono@5.3.0':
+    resolution: {integrity: sha512-0iTnU6SZi6j5z4ymwlZGep6akvp/xWm+r+WyZO9hMfDJWX+dsFLipQp9zO02S0lkUQ+zAahcZNy3XLiNP+gVqQ==}
 
   '@ioredis/commands@1.5.1':
     resolution: {integrity: sha512-JH8ZL/ywcJyR9MmJ5BNqZllXNZQqQbnVZOqpPQqE1vHiFgAw4NHbvE0FOduNU8IX9babitBT46571OnPTT0Zcw==}
@@ -811,6 +829,7 @@ packages:
   cron-parser@4.9.0:
     resolution: {integrity: sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==}
     engines: {node: '>=12.0.0'}
+    deprecated: v4 is no longer maintained, upgrade to v5
 
   css-tree@3.2.1:
     resolution: {integrity: sha512-X7sjQzceUhu1u7Y/ylrRZFU2FS6LRiFVp6rKLPg23y3x3c3DOKAwuXGDp+PAGjh6CSnCjYeAul8pcT8bAl+lSA==}
@@ -1722,6 +1741,12 @@ snapshots:
     dependencies:
       '@fastify/forwarded': 3.0.1
       ipaddr.js: 2.3.0
+
+  '@fontsource/barlow-semi-condensed@5.3.0': {}
+
+  '@fontsource/barlow@5.3.0': {}
+
+  '@fontsource/martian-mono@5.3.0': {}
 
   '@ioredis/commands@1.5.1': {}
 
