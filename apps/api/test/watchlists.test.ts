@@ -184,6 +184,13 @@ describe("watchlist routes", () => {
       const stored = await app.inject({ method: "GET", url: `/watchlists/${created.id}/candidates` });
       expect(stored.json()).toHaveLength(1);
 
+      const detail = (await app.inject({ method: "GET", url: `/watchlists/${created.id}` })).json();
+      expect(detail.lastDiscovery).toMatchObject({
+        trigger: "manual",
+        candidateCount: 1,
+        failedProviders: [{ providerName: "polymarketGamma", error: "request timed out" }],
+      });
+
       const missing = await app.inject({
         method: "POST",
         url: "/watchlists/00000000-0000-0000-0000-000000000000/discover",
@@ -191,6 +198,53 @@ describe("watchlist routes", () => {
       expect(missing.statusCode).toBe(404);
     } finally {
       await app.close();
+    }
+  });
+
+  it("keeps each watchlist's discovery schedule in step with its cadence", async () => {
+    const synced: Array<{ id: string; cadence: string }> = [];
+    const app = buildApp({
+      dbPool: pool,
+      watchlistDiscoveryScheduler: {
+        async sync(watchlist) {
+          synced.push({ id: watchlist.id, cadence: watchlist.cadence });
+        },
+        async describe(watchlist) {
+          return { cadence: watchlist.cadence, intervalMs: 86_400_000, nextRunAt: "2026-11-08T09:00:00.000Z" };
+        },
+        async remove() {},
+        async close() {},
+      },
+    });
+    const unscheduledApp = buildApp({ dbPool: pool });
+
+    try {
+      const created = (
+        await app.inject({
+          method: "POST",
+          url: "/watchlists",
+          payload: { name: "Fed decisions", keywords: ["FOMC"], jurisdictions: [], cadence: "daily", sourceToggles: {} },
+        })
+      ).json();
+
+      expect(synced).toEqual([{ id: created.id, cadence: "daily" }]);
+
+      const schedule = await app.inject({ method: "GET", url: `/watchlists/${created.id}/schedule` });
+      expect(schedule.statusCode).toBe(200);
+      expect(schedule.json()).toEqual({ cadence: "daily", intervalMs: 86_400_000, nextRunAt: "2026-11-08T09:00:00.000Z" });
+
+      // Without a scheduler (e.g. scheduling switched off) the cadence is still described, with no next run.
+      const unscheduled = await unscheduledApp.inject({ method: "GET", url: `/watchlists/${created.id}/schedule` });
+      expect(unscheduled.json()).toEqual({ cadence: "daily", intervalMs: 86_400_000, nextRunAt: null });
+
+      const missing = await app.inject({
+        method: "GET",
+        url: "/watchlists/00000000-0000-0000-0000-000000000000/schedule",
+      });
+      expect(missing.statusCode).toBe(404);
+    } finally {
+      await app.close();
+      await unscheduledApp.close();
     }
   });
 });

@@ -166,6 +166,7 @@ Response items include:
 - `status`
 - `createdAt`
 - `updatedAt`
+- `lastDiscovery`: `{ ranAt, trigger, candidateCount, failedProviders }` for the latest discovery run, or `null` if discovery has never run. `trigger` is `"manual"` or `"scheduled"`.
 
 ### `GET /watchlists/:id`
 
@@ -174,6 +175,24 @@ Returns a single persisted watchlist.
 Errors:
 
 - `400` if `id` is missing
+- `404` if the watchlist does not exist
+
+### `GET /watchlists/:id/schedule`
+
+Describes when discovery runs for the watchlist. Response: `{ cadence, intervalMs, nextRunAt }`.
+
+The cadences `hourly`, `daily` and `weekly` are scheduled. Any other value, including `manual`, gets `intervalMs: null` and runs only on demand.
+
+`nextRunAt` is `null` when nothing is scheduled. That includes a scheduled cadence while `CASSANDRA_DISCOVERY_SCHEDULE=off`.
+
+How scheduling works:
+- **Where it runs:** the API process runs scheduled discovery on a BullMQ queue (`watchlist-discovery`), one run at a time, and records each run in `lastDiscovery`.
+- **Timing:** creating a watchlist schedules its first run one interval out. Discovery never starts on creation.
+- **Restarts:** on start the API syncs every watchlist's schedule. An unchanged schedule keeps its next run, so restarts do not trigger extra runs.
+- **Deleted watchlists:** a scheduled run for a watchlist that no longer exists removes that schedule.
+
+Errors:
+
 - `404` if the watchlist does not exist
 
 ### `GET /watchlists/:id/candidates`
@@ -209,6 +228,7 @@ Runs candidate discovery for the watchlist now and returns the result. The run w
   - `predictionMarkets`: `polymarketGamma` and `polymarketClob`
 - It clusters the evidence into candidates. Candidates already stored are upserted by signature, so a rerun keeps their promotion status.
 - It runs inside the request, with no queue, because it never calls the judge.
+- It records the run on the watchlist as `lastDiscovery`, with `trigger: "manual"`.
 
 No request body.
 

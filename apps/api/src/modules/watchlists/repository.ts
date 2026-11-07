@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { CandidateEvent, WatchlistInput } from "@cassandra/shared";
+import type { CandidateEvent, WatchlistDiscoveryRun, WatchlistInput } from "@cassandra/shared";
 import type { Pool } from "pg";
 import type { CandidateSignature } from "./cluster.js";
 
@@ -14,6 +14,7 @@ export interface WatchlistRecord {
   status: string;
   createdAt: string;
   updatedAt: string;
+  lastDiscovery: WatchlistDiscoveryRun | null;
 }
 
 export interface CandidateEventRecord extends CandidateEvent {
@@ -38,6 +39,10 @@ function mapWatchlistRow(row: Record<string, unknown>): WatchlistRecord {
     status: String(row.status),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
+    lastDiscovery:
+      row.last_discovery && typeof row.last_discovery === "object"
+        ? (row.last_discovery as WatchlistDiscoveryRun)
+        : null,
   };
 }
 
@@ -195,4 +200,16 @@ export async function upsertCandidateEvent(
   );
 
   return mapCandidateEventRow(result.rows[0] as Record<string, unknown>);
+}
+
+/** Stores the outcome of the latest discovery run; `updated_at` is left alone because the watchlist itself did not change. */
+export async function recordWatchlistDiscovery(
+  pool: Pool,
+  watchlistId: string,
+  run: WatchlistDiscoveryRun,
+): Promise<void> {
+  await pool.query(`UPDATE watchlists SET last_discovery = $2::jsonb WHERE id = $1`, [
+    watchlistId,
+    JSON.stringify(run),
+  ]);
 }

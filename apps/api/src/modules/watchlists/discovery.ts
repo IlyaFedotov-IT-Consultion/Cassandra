@@ -1,9 +1,9 @@
-import type { WatchlistDiscoveryResult } from "@cassandra/shared";
+import type { WatchlistDiscoveryResult, WatchlistDiscoveryRun } from "@cassandra/shared";
 
 import { normalizeEvidenceItems } from "../evidence/normalize.js";
 import type { AdapterMode, EvidenceProvider } from "../evidence/types.js";
 import type { CandidateEventRecord, WatchlistRecord } from "./repository.js";
-import { upsertCandidateEvent } from "./repository.js";
+import { recordWatchlistDiscovery, upsertCandidateEvent } from "./repository.js";
 import { clusterCandidateEvidence } from "./cluster.js";
 import type { Pool } from "pg";
 
@@ -99,4 +99,25 @@ export async function discoverWatchlistCandidates(args: {
   );
 
   return { candidates, failedProviders };
+}
+
+/** Runs discovery and records the run on the watchlist, so the workspace can show when and how it last ran. */
+export async function runWatchlistDiscovery(args: {
+  pool: Pool;
+  watchlist: WatchlistRecord;
+  providers: EvidenceProvider[];
+  evaluationTime: string;
+  mode: AdapterMode;
+  trigger: WatchlistDiscoveryRun["trigger"];
+}): Promise<WatchlistDiscoveryOutcome> {
+  const outcome = await discoverWatchlistCandidates(args);
+
+  await recordWatchlistDiscovery(args.pool, args.watchlist.id, {
+    ranAt: new Date(args.evaluationTime).toISOString(),
+    trigger: args.trigger,
+    candidateCount: outcome.candidates.length,
+    failedProviders: outcome.failedProviders,
+  });
+
+  return outcome;
 }

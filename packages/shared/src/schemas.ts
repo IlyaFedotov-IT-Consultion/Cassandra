@@ -123,12 +123,40 @@ export const WatchlistInputSchema = z
   })
   .strict();
 
+/** Cadences the API knows how to schedule; anything else (including "manual") runs only on demand. */
+export const WATCHLIST_CADENCES = ["manual", "hourly", "daily", "weekly"] as const;
+
+export const ProviderFailureSchema = z
+  .object({
+    providerName: z.string().min(1),
+    error: z.string(),
+  })
+  .strict();
+
+export const WatchlistDiscoveryRunSchema = z
+  .object({
+    ranAt: TimestampSchema,
+    trigger: z.enum(["manual", "scheduled"]),
+    candidateCount: z.number().int().min(0),
+    failedProviders: ProviderFailureSchema.array(),
+  })
+  .strict();
+
 export const WatchlistRecordSchema = WatchlistInputSchema.extend({
   id: IdSchema,
   status: z.string().min(1),
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
+  lastDiscovery: WatchlistDiscoveryRunSchema.nullable().default(null),
 }).strict();
+
+export const WatchlistScheduleSchema = z
+  .object({
+    cadence: z.string().min(1),
+    intervalMs: z.number().int().positive().nullable(),
+    nextRunAt: TimestampSchema.nullable(),
+  })
+  .strict();
 
 export const CandidateEventSchema = z
   .object({
@@ -149,13 +177,7 @@ export const CandidateEventRecordSchema = CandidateEventSchema.extend({
 export const WatchlistDiscoveryResultSchema = z
   .object({
     candidates: CandidateEventRecordSchema.array(),
-    failedProviders: z
-      .object({
-        providerName: z.string().min(1),
-        error: z.string(),
-      })
-      .strict()
-      .array(),
+    failedProviders: ProviderFailureSchema.array(),
   })
   .strict();
 
@@ -522,6 +544,8 @@ export type EventInput = z.infer<typeof EventInputSchema>;
 export type EventRecord = z.infer<typeof EventRecordSchema>;
 export type WatchlistInput = z.infer<typeof WatchlistInputSchema>;
 export type WatchlistRecord = z.infer<typeof WatchlistRecordSchema>;
+export type WatchlistDiscoveryRun = z.infer<typeof WatchlistDiscoveryRunSchema>;
+export type WatchlistSchedule = z.infer<typeof WatchlistScheduleSchema>;
 export type CandidateEvent = z.infer<typeof CandidateEventSchema>;
 export type CandidateEventRecord = z.infer<typeof CandidateEventRecordSchema>;
 export type WatchlistDiscoveryResult = z.infer<typeof WatchlistDiscoveryResultSchema>;

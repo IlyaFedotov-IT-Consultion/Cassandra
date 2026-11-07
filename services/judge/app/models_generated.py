@@ -88,6 +88,29 @@ class WatchlistInput(BaseModel):
     sourceToggles: SourceToggles = Field({}, validate_default=True)
 
 
+class Trigger(StrEnum):
+    manual = 'manual'
+    scheduled = 'scheduled'
+
+
+class FailedProvider(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    providerName: constr(min_length=1)
+    error: str
+
+
+class LastDiscovery(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    ranAt: constr(min_length=1)
+    trigger: Trigger
+    candidateCount: conint(ge=0, le=9007199254740991)
+    failedProviders: list[FailedProvider]
+
+
 class WatchlistRecord(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -101,6 +124,7 @@ class WatchlistRecord(BaseModel):
     status: constr(min_length=1)
     createdAt: constr(min_length=1)
     updatedAt: constr(min_length=1)
+    lastDiscovery: LastDiscovery | None
 
 
 class PromotionStatus(StrEnum):
