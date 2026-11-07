@@ -20,6 +20,13 @@ class JudgeRequest(BaseModel):
     evaluation_time: str = Field(alias="evaluationTime")
     evidence: list[EvidenceItem]
     calibration_snapshot: CalibrationSnapshot = Field(alias="calibrationSnapshot")
+    prior_only: bool = Field(default=False, alias="priorOnly")
+
+
+class PlanRequest(BaseModel):
+    event: EventInput
+    evaluation_time: str | None = Field(default=None, alias="evaluationTime")
+    max_queries: int = Field(default=4, alias="maxQueries", ge=1, le=8)
 
 
 class CalibrationRequest(BaseModel):

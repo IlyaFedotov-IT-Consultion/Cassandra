@@ -219,6 +219,7 @@ export const JudgmentExecutionLogLevelSchema = z.enum(["info", "warn", "error"])
 export const JudgmentExecutionStageSchema = z.enum([
   "queue",
   "run",
+  "planning",
   "evidence",
   "coverage",
   "calibration",
@@ -281,6 +282,15 @@ export const MissingEvidenceRecordSchema = z
   })
   .strict();
 
+/** One stage of the forecasting pipeline (query planning, retrieval, relevance, panel, ...). */
+export const PipelineStageSchema = z
+  .object({
+    stage: z.string().min(1),
+    status: z.enum(["completed", "skipped", "failed"]),
+    details: JsonMapSchema.default({}),
+  })
+  .strict();
+
 export const VerdictTraceSchema = z
   .object({
     id: IdSchema,
@@ -290,6 +300,7 @@ export const VerdictTraceSchema = z
     referenceClassFallback: NullableStringSchema.default(null),
     priorProbability: ProbabilitySchema,
     rawPosteriorProbability: ProbabilitySchema,
+    preCalibrationProbability: ProbabilitySchema.nullable().default(null),
     finalProbability: ProbabilitySchema,
     confidenceLow: ProbabilitySchema,
     confidenceHigh: ProbabilitySchema,
@@ -306,6 +317,7 @@ export const VerdictTraceSchema = z
     missingEvidence: z.array(MissingEvidenceRecordSchema).default([]),
     citations: z.array(CitationSchema).min(1),
     cacheEvents: z.array(CacheTraceEntrySchema).default([]),
+    pipelineStages: z.array(PipelineStageSchema).default([]),
     modelVersion: z.string().min(1),
     weightVersion: z.string().min(1),
     calibrationVersion: z.string().min(1),
@@ -369,6 +381,8 @@ export const BenchmarkMarketSchema = z
     volume: z.number().min(0),
     liquidity: z.number().min(0),
     resolvedAt: TimestampSchema,
+    /** Scheduled end of the market; markets that resolve YES early close before it. */
+    endDate: TimestampSchema.nullable().default(null),
     resolvedValue: z.boolean(),
     marketUrl: z.string().url(),
   })
@@ -492,6 +506,7 @@ export type CandidateEventRecord = z.infer<typeof CandidateEventRecordSchema>;
 export type EvidenceItem = z.infer<typeof EvidenceItemSchema>;
 export type JudgeOpinion = z.infer<typeof JudgeOpinionSchema>;
 export type VerdictTrace = z.infer<typeof VerdictTraceSchema>;
+export type PipelineStage = z.infer<typeof PipelineStageSchema>;
 export type JudgmentExecutionLogEntry = z.infer<typeof JudgmentExecutionLogEntrySchema>;
 export type RuntimeEventRecord = z.infer<typeof RuntimeEventRecordSchema>;
 export type JudgmentRecordSummary = z.infer<typeof JudgmentRecordSummarySchema>;

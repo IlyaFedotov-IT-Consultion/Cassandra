@@ -14,6 +14,9 @@ class RawJudgeOpinion:
     evidence_ids: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     missing_evidence: list[str] = field(default_factory=list)
+    # Ensembles report an aggregated log Bayes factor that may fall between labels.
+    log_bayes_factor: float | None = None
+    samples: list[dict] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -35,7 +38,7 @@ class BaseRateResult:
 class PriorResult:
     prior_log_odds: float
     base_rate_probability: float
-    market_probability: float
+    market_probability: float | None
     alpha: float
     reference_class_fallback: bool
 
@@ -49,6 +52,8 @@ class AggregateResult:
     raw_probability: float
     posterior_probability: float
     shrinkage: float
+    informative_contributions: list[float] = field(default_factory=list)
+    informative_weighted_log_odds: list[float] = field(default_factory=list)
 
 
 @dataclass(slots=True)

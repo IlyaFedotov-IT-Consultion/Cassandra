@@ -209,9 +209,8 @@ def test_judge_endpoint_reports_the_blended_prior_probability() -> None:
     assert response.status_code == 200
     payload = response.json()
     base_rate_probability = (15 + 1) / (20 + 2)
-    market_probability = 0.5 + (
-        min(max((1 - 0.05) * (1 - 0.1) * (1 - exp(-50000 / 50000)), 0.0), 1.0) * (0.7 - 0.5)
-    )
+    market_confidence = (1 - 0.05) * (1 - 0.1) * (1 - exp(-50000 / 50000))
+    market_probability = 1 / (1 + exp(-market_confidence * log(0.7 / 0.3)))
     expected_prior = 1 / (
         1
         + exp(
@@ -378,3 +377,182 @@ def test_judge_endpoint_prioritizes_english_citations() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["citations"][0]["url"] == "https://news.example.com/product-x"
+
+
+def _review_snapshot(**overrides) -> dict:
+    snapshot = {
+        "id": "snapshot-review",
+        "createdAt": "2026-10-01T00:00:00Z",
+        "trainingWindow": "all_time",
+        "judgeWeights": {},
+        "baseRateParams": {},
+        "marketPriorParams": {},
+        "calibrationParams": {"method": "identity"},
+        "onlineLearningParams": {"enabled": False},
+        "metrics": {},
+        "weightRegime": "cold_start",
+        "resolvedOutcomeCount": 0,
+        "approved": False,
+    }
+    snapshot.update(overrides)
+    return snapshot
+
+
+def _review_evidence(evidence_id: str, source_family: str, metadata: dict | None = None) -> dict:
+    return {
+        "id": evidence_id,
+        "eventId": "event-review",
+        "sourceFamily": source_family,
+        "sourceType": "quote_snapshot" if source_family == "prediction_market" else "web_article",
+        "title": f"Example Corp Product X {evidence_id}",
+        "url": f"https://example.com/{evidence_id}",
+        "publisher": "Example",
+        "publishedAt": "2026-10-10T09:00:00Z",
+        "retrievedAt": "2026-10-11T12:00:00Z",
+        "summary": "Example Corp Product X update",
+        "rawText": None,
+        "entities": ["Example Corp"],
+        "claims": [],
+        "stance": "unknown",
+        "qualitySignals": {},
+        "metadata": metadata or {},
+    }
+
+
+def _post_review_judge(evidence: list[dict], snapshot: dict | None = None) -> dict:
+    app.dependency_overrides[_llm_dependency] = lambda: FakeLLMClient({})
+    try:
+        response = client.post(
+            "/judge",
+            json={
+                "eventId": "event-review",
+                "event": {
+                    "question": "Will Example Corp launch Product X by 2026-12-31?",
+                    "resolutionCriteria": "Official launch announcement.",
+                    "deadline": "2026-12-31T23:59:59Z",
+                    "entities": ["Example Corp", "Product X"],
+                    "referenceClass": None,
+                    "marketSymbols": [],
+                },
+                "evaluationTime": "2026-10-11T12:00:00Z",
+                "evidence": evidence,
+                "calibrationSnapshot": snapshot or _review_snapshot(),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_judge_prior_reflects_a_priced_benchmark_market_snapshot() -> None:
+    payload = _post_review_judge(
+        [_review_evidence("market-1", "prediction_market", {"price": 0.85, "liquidity": 250000})]
+    )
+
+    assert 0.8 < payload["priorProbability"] <= 0.85
+
+
+def test_judge_reports_pre_calibration_probability_separately_from_final() -> None:
+    payload = _post_review_judge(
+        [_review_evidence("market-1", "prediction_market", {"price": 0.7, "liquidity": 250000})],
+        snapshot=_review_snapshot(calibrationParams={"method": "logistic", "slope": 1.0, "intercept": 1.0}),
+    )
+
+    assert abs(payload["preCalibrationProbability"] - payload["priorProbability"]) < 1e-9
+    assert payload["finalProbability"] > payload["preCalibrationProbability"]
+
+
+def test_judge_traces_have_unique_ids() -> None:
+    first = _post_review_judge([_review_evidence("web-1", "web")])
+    second = _post_review_judge([_review_evidence("web-1", "web")])
+
+    assert first["id"] != second["id"]
+
+
+class _NoCallLLM:
+    def judge_panel(self, **_kwargs):
+        raise AssertionError("prior-only judgments must not call the panel LLM")
+
+    def cross_examine(self, **_kwargs):
+        raise AssertionError("prior-only judgments must not call the cross-examiner")
+
+    def search_web(self, **_kwargs):
+        raise AssertionError("unexpected search")
+
+
+def test_prior_only_judgment_returns_insufficient_evidence_without_llm_calls() -> None:
+    app.dependency_overrides[_llm_dependency] = lambda: _NoCallLLM()
+    try:
+        response = client.post(
+            "/judge",
+            json={
+                "eventId": "event-review",
+                "event": {
+                    "question": "Will Example Corp launch Product X by 2026-12-31?",
+                    "resolutionCriteria": "Official launch announcement.",
+                    "deadline": "2026-12-31T23:59:59Z",
+                    "entities": ["Example Corp", "Product X"],
+                    "referenceClass": None,
+                    "marketSymbols": [],
+                },
+                "evaluationTime": "2026-10-11T12:00:00Z",
+                "priorOnly": True,
+                "evidence": [
+                    _review_evidence("web-1", "web"),
+                    _review_evidence(
+                        "market-1",
+                        "prediction_market",
+                        {"outcomePrices": '["0.8", "0.2"]', "outcomes": '["Yes", "No"]', "liquidity": 500000},
+                    ),
+                ],
+                "calibrationSnapshot": _review_snapshot(),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "insufficient_evidence"
+    assert payload["uncertaintyMethod"] == "none"
+    assert 0.75 < payload["priorProbability"] <= 0.8
+    assert payload["finalProbability"] == payload["priorProbability"]
+    assert {opinion["evidenceStrength"] for opinion in payload["judgeOpinions"]} == {"neutral"}
+
+
+def test_ensemble_samples_and_model_version_are_recorded_in_the_trace() -> None:
+    from app.llm.ensemble import EnsembleLLMClient
+
+    members = [
+        ("model-a", FakeLLMClient({"open_web_research": {"probability": 0.6, "evidenceStrength": "weak_for", "rationale": "a"}})),
+        ("model-b", FakeLLMClient({"open_web_research": {"probability": 0.8, "evidenceStrength": "moderate_for", "rationale": "b"}})),
+    ]
+    app.dependency_overrides[_llm_dependency] = lambda: EnsembleLLMClient(members)
+    try:
+        response = client.post(
+            "/judge",
+            json={
+                "eventId": "event-review",
+                "event": {
+                    "question": "Will Example Corp launch Product X by 2026-12-31?",
+                    "resolutionCriteria": "Official launch announcement.",
+                    "deadline": "2026-12-31T23:59:59Z",
+                    "entities": ["Example Corp", "Product X"],
+                    "referenceClass": None,
+                    "marketSymbols": [],
+                },
+                "evaluationTime": "2026-10-11T12:00:00Z",
+                "evidence": [_review_evidence("web-1", "web")],
+                "calibrationSnapshot": _review_snapshot(),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = response.json()
+    assert payload["modelVersion"] == "ensemble[model-a,model-b]"
+    web = next(entry for entry in payload["weightBreakdown"] if entry["source"] == "open_web_research")
+    assert [sample["model"] for sample in web["details"]["samples"]] == ["model-a", "model-b"]
+    opinion = next(item for item in payload["judgeOpinions"] if item["judgeName"] == "open_web_research")
+    assert opinion["logBayesFactor"] == 1.0

@@ -4,8 +4,10 @@ from typing import Any
 
 from app.llm.client import (
     CrossExaminerResponse,
+    EvidenceRating,
     LLMClient,
     PanelJudgeResponse,
+    QueryPlan,
     SearchResult,
 )
 from app.models_generated import EventInput, EvidenceItem
@@ -14,6 +16,9 @@ from app.scoring.types import RawJudgeOpinion
 
 CROSS_EXAMINER_KEY = "__cross_examiner__"
 SEARCH_KEY = "__search__"
+RELEVANCE_KEY = "__relevance__"
+PLAN_KEY = "__plan__"
+DEFAULT_FAKE_RELEVANCE = 5
 
 
 class FakeLLMClient(LLMClient):
@@ -29,6 +34,7 @@ class FakeLLMClient(LLMClient):
         event: EventInput,
         evidence: list[EvidenceItem],
         default_rationale: str,
+        evaluation_time: str | None = None,
     ) -> PanelJudgeResponse:
         if judge_name in self._responses:
             canned = dict(self._responses[judge_name])
@@ -100,3 +106,40 @@ class FakeLLMClient(LLMClient):
         # evidence in unit tests. Tests that want a search signal can seed the
         # ``__search__`` key.
         return SearchResult(content="", citations=[])
+
+    def rate_evidence(
+        self,
+        *,
+        event: EventInput,
+        evidence: list[EvidenceItem],
+        evaluation_time: str | None = None,
+    ) -> list[EvidenceRating]:
+        # Default: everything is relevant and keeps its own summary, so tests that do not
+        # seed ratings see the evidence they supplied.
+        canned = self._responses.get(RELEVANCE_KEY, {})
+        ratings: list[EvidenceRating] = []
+        for item in evidence:
+            entry = canned.get(item.id, {})
+            ratings.append(
+                EvidenceRating(
+                    id=item.id,
+                    relevance=int(entry.get("relevance", DEFAULT_FAKE_RELEVANCE)),
+                    summary=str(entry.get("summary", item.summary)),
+                )
+            )
+        return ratings
+
+    def plan_queries(
+        self,
+        *,
+        event: EventInput,
+        evaluation_time: str | None = None,
+        max_queries: int = 4,
+    ) -> QueryPlan:
+        if PLAN_KEY in self._responses:
+            canned = self._responses[PLAN_KEY]
+            return QueryPlan(
+                subQuestions=list(canned.get("subQuestions", [])),
+                queries=list(canned.get("queries", [])),
+            )
+        return QueryPlan(subQuestions=[event.question], queries=[])

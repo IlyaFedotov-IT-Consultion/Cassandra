@@ -6,6 +6,7 @@ from app.scoring.calibration import (
     expected_calibration_error,
     fit_calibration_snapshot,
     log_loss,
+    pool_adjacent_violators,
     reliability_bins,
 )
 from fastapi.testclient import TestClient
@@ -180,3 +181,116 @@ def test_calibrate_endpoint_returns_versioned_snapshot_payload() -> None:
     payload = response.json()
     assert payload["weightRegime"] == "cold_start"
     assert payload["resolvedOutcomeCount"] == 0
+
+
+def _calibrated_pairs(count: int, seed: int) -> list[dict]:
+    import random
+
+    rng = random.Random(seed)
+    pairs = []
+    for _ in range(count):
+        probability = rng.random()
+        pairs.append({"predicted": probability, "outcome": 1 if rng.random() < probability else 0})
+    return pairs
+
+
+def _traces_for(pairs: list[dict], **trace_fields) -> tuple[list[dict], list[dict]]:
+    traces = [
+        {
+            "eventId": f"event-{index}",
+            "evaluationTime": "2026-01-01T00:00:00Z",
+            "referenceClass": None,
+            "finalProbability": pair["predicted"],
+            "judgeOpinions": [],
+            **trace_fields,
+        }
+        for index, pair in enumerate(pairs)
+    ]
+    outcomes = [
+        {
+            "eventId": f"event-{index}",
+            "resolvedValue": bool(pair["outcome"]),
+            "resolvedAt": "2026-02-01T00:00:00Z",
+        }
+        for index, pair in enumerate(pairs)
+    ]
+    return traces, outcomes
+
+
+def test_pool_adjacent_violators_pools_decreasing_runs() -> None:
+    assert pool_adjacent_violators([0.0, 1.0, 0.0, 1.0]) == [0.0, 0.5, 0.5, 1.0]
+    assert pool_adjacent_violators([1.0, 0.0, 0.0]) == [1 / 3, 1 / 3, 1 / 3]
+
+
+def test_isotonic_fit_on_calibrated_forecasts_stays_close_to_identity() -> None:
+    traces, outcomes = _traces_for(_calibrated_pairs(2000, seed=7))
+
+    snapshot = fit_calibration_snapshot(historical_traces=traces, resolved_outcomes=outcomes)
+
+    assert snapshot.calibrationParams["method"] == "isotonic"
+    for probability in (0.1, 0.3, 0.5, 0.7, 0.9):
+        assert abs(apply_probability_calibration(probability, snapshot.calibrationParams) - probability) < 0.08
+
+
+def test_logistic_fit_corrects_overconfident_forecasts() -> None:
+    pairs = [{"predicted": 0.9, "outcome": index % 2} for index in range(30)]
+    pairs += [{"predicted": 0.1, "outcome": index % 2} for index in range(30)]
+    traces, outcomes = _traces_for(pairs)
+
+    snapshot = fit_calibration_snapshot(historical_traces=traces, resolved_outcomes=outcomes)
+
+    assert snapshot.weightRegime == "warming"
+    assert 0.4 < apply_probability_calibration(0.9, snapshot.calibrationParams) < 0.6
+    assert 0.4 < apply_probability_calibration(0.1, snapshot.calibrationParams) < 0.6
+
+
+def test_logistic_fit_keeps_calibrated_forecasts_near_identity() -> None:
+    traces, outcomes = _traces_for(_calibrated_pairs(80, seed=11))
+
+    snapshot = fit_calibration_snapshot(historical_traces=traces, resolved_outcomes=outcomes)
+
+    assert abs(apply_probability_calibration(0.8, snapshot.calibrationParams) - 0.8) < 0.12
+
+
+def test_calibration_fits_on_pre_calibration_probability() -> None:
+    pairs = [{"predicted": 0.9, "outcome": index % 2} for index in range(30)]
+    pairs += [{"predicted": 0.1, "outcome": index % 2} for index in range(30)]
+    traces, outcomes = _traces_for(pairs, calibrationMethod="logistic")
+    for trace, pair in zip(traces, pairs):
+        trace["preCalibrationProbability"] = pair["predicted"]
+        trace["finalProbability"] = 0.5
+
+    snapshot = fit_calibration_snapshot(historical_traces=traces, resolved_outcomes=outcomes)
+
+    assert snapshot.resolvedOutcomeCount == 60
+    assert apply_probability_calibration(0.9, snapshot.calibrationParams) < 0.6
+
+
+def test_calibration_skips_calibrated_traces_without_a_pre_calibration_probability() -> None:
+    traces, outcomes = _traces_for(_calibrated_pairs(30, seed=3), calibrationMethod="logistic")
+
+    snapshot = fit_calibration_snapshot(historical_traces=traces, resolved_outcomes=outcomes)
+
+    assert snapshot.resolvedOutcomeCount == 0
+    assert snapshot.weightRegime == "cold_start"
+
+
+def test_calibration_ignores_judgments_made_after_resolution() -> None:
+    traces, outcomes = _traces_for(_calibrated_pairs(30, seed=5))
+    for trace in traces[:15]:
+        trace["evaluationTime"] = "2026-03-01T00:00:00Z"
+
+    snapshot = fit_calibration_snapshot(historical_traces=traces, resolved_outcomes=outcomes)
+
+    assert snapshot.resolvedOutcomeCount == 15
+    assert snapshot.weightRegime == "cold_start"
+
+
+def test_calibration_keeps_the_latest_pre_resolution_trace_per_event() -> None:
+    traces, outcomes = _traces_for([{"predicted": 0.2, "outcome": 1}])
+    later = dict(traces[0], evaluationTime="2026-01-20T00:00:00Z", finalProbability=0.9)
+
+    snapshot = fit_calibration_snapshot(historical_traces=[traces[0], later], resolved_outcomes=outcomes)
+
+    assert snapshot.resolvedOutcomeCount == 1
+    assert round(snapshot.metrics["brierScore"], 4) == 0.01

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime
 from math import exp, log
 from statistics import mean
 
@@ -56,21 +58,47 @@ def disagreement_shrinkage(
     return min(max(k_disagree * dispersion, 0.0), shrinkage_max)
 
 
+FAMILY_HALF_LIFE_HOURS: dict[str, float] = {
+    "official": 24 * 90,
+    "government": 24 * 90,
+    "web": 24 * 14,
+    "llm_research": 24 * 14,
+    "community": 24 * 3,
+    "market": 24,
+    "prediction_market": 24,
+}
+DEFAULT_HALF_LIFE_HOURS = 24 * 14
+FRESHNESS_FLOOR = 0.1
+UNKNOWN_DATE_FRESHNESS = 0.5
+
+
+def item_freshness(item: EvidenceItem, evaluation_time: str) -> float:
+    """Freshness for one item; undated items (publishedAt is only a retrieval placeholder) get a neutral 0.5."""
+    if (item.metadata or {}).get("publishedAtSource") == "unknown":
+        return UNKNOWN_DATE_FRESHNESS
+    return freshness_decay(item.publishedAt, evaluation_time, source_family=str(item.sourceFamily))
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def freshness_decay(
     published_at: str,
     evaluation_time: str,
     *,
-    half_life_hours: float = 24 * 7,
+    source_family: str | None = None,
+    half_life_hours: float | None = None,
 ) -> float:
-    age_seconds = max(
-        0.0,
-        (
-            __import__("datetime").datetime.fromisoformat(evaluation_time.replace("Z", "+00:00"))
-            - __import__("datetime").datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-        ).total_seconds(),
+    """Half-life decay (0.5 after one half-life) per source family, floored at FRESHNESS_FLOOR."""
+    half_life = half_life_hours or FAMILY_HALF_LIFE_HOURS.get(
+        source_family or "", DEFAULT_HALF_LIFE_HOURS
     )
-    age_hours = age_seconds / 3600
-    return exp(-age_hours / half_life_hours)
+    age_hours = max(
+        0.0,
+        (_parse_timestamp(evaluation_time) - _parse_timestamp(published_at)).total_seconds() / 3600,
+    )
+    return max(FRESHNESS_FLOOR, 0.5 ** (age_hours / half_life))
 
 
 def evidence_quality_modifier(evidence_items: list[EvidenceItem]) -> float:
@@ -140,20 +168,39 @@ def aggregate_posterior(
     weighted_log_odds: list[float] = []
     raw_posterior_log_odds = prior_log_odds
 
+    informative_contributions: list[float] = []
+
     for raw in raw_opinions:
         evidence_items = [evidence_lookup[evidence_id] for evidence_id in raw.evidence_ids if evidence_id in evidence_lookup]
-        log_bayes_factor = to_log_bf(raw.evidence_strength, mapping)
+        if not evidence_items:
+            # Absence of evidence is not evidence: the judge cannot move the posterior
+            # and must not register as disagreement.
+            raw = replace(
+                raw,
+                evidence_strength="neutral",
+                log_bayes_factor=None,
+                warnings=[*raw.warnings, "Opinion neutralized: no cited evidence was available."],
+            )
+        log_bayes_factor = (
+            raw.log_bayes_factor
+            if raw.log_bayes_factor is not None
+            else to_log_bf(raw.evidence_strength, mapping)
+        )
         base_weight = base_weights.get(raw.judge_name, 1.0)
         dependency_discount = discounts.get(raw.judge_name, 1.0)
         freshness = (
-            mean([freshness_decay(item.publishedAt, evaluation_time) for item in evidence_items])
+            mean(
+                [item_freshness(item, evaluation_time) for item in evidence_items]
+            )
             if evidence_items
             else 1.0
         )
         quality = evidence_quality_modifier(evidence_items)
         effective = base_weight * dependency_discount * quality * freshness * log_bayes_factor
         raw_posterior_log_odds += effective
-        weighted_log_odds.append(base_weight * log_bayes_factor)
+        if evidence_items:
+            weighted_log_odds.append(base_weight * log_bayes_factor)
+            informative_contributions.append(effective)
         finalized_opinions.append(
             finalize_judge_opinion(
                 raw,
@@ -180,4 +227,6 @@ def aggregate_posterior(
         raw_probability=log_odds_to_probability(raw_posterior_log_odds),
         posterior_probability=log_odds_to_probability(posterior_log_odds),
         shrinkage=shrinkage,
+        informative_contributions=informative_contributions,
+        informative_weighted_log_odds=weighted_log_odds,
     )

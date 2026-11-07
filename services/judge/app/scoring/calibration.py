@@ -185,44 +185,148 @@ def calibration_error_by_reference_class(
     }
 
 
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _training_probability(trace: dict[str, Any]) -> float | None:
+    """The probability the calibration map is applied to at inference time.
+
+    Traces that were calibrated by an earlier snapshot without recording their
+    pre-calibration probability cannot be used: their final value is already remapped.
+    """
+    pre_calibration = trace.get("preCalibrationProbability")
+    if isinstance(pre_calibration, int | float):
+        return float(pre_calibration)
+    if trace.get("calibrationMethod") in (None, "identity"):
+        final = trace.get("finalProbability")
+        if isinstance(final, int | float):
+            return float(final)
+    return None
+
+
 def _join_traces_and_outcomes(
     historical_traces: list[dict[str, Any]],
     resolved_outcomes: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    outcomes_by_event_id = {
-        str(item["eventId"]): bool(item["resolvedValue"]) for item in resolved_outcomes
-    }
-    joined: list[dict[str, Any]] = []
+    """One training pair per resolved event: its latest judgment made before resolution."""
+    outcomes_by_event_id = {str(item["eventId"]): item for item in resolved_outcomes}
+    selected: dict[str, tuple[datetime | None, dict[str, Any], float]] = {}
     for trace in historical_traces:
         event_id = str(trace["eventId"])
-        if event_id not in outcomes_by_event_id:
+        outcome = outcomes_by_event_id.get(event_id)
+        if outcome is None:
             continue
-        joined.append(
-            {
-                "eventId": event_id,
-                "referenceClass": trace.get("referenceClass"),
-                "predicted": float(trace.get("finalProbability", 0.5)),
-                "outcome": int(outcomes_by_event_id[event_id]),
-                "judgeOpinions": list(trace.get("judgeOpinions", [])),
-            }
-        )
-    return joined
+        probability = _training_probability(trace)
+        if probability is None:
+            continue
+        evaluated_at = _parse_time(trace.get("evaluationTime"))
+        resolved_at = _parse_time(outcome.get("resolvedAt"))
+        if evaluated_at and resolved_at and evaluated_at >= resolved_at:
+            continue
+        current = selected.get(event_id)
+        if current is None or (evaluated_at and (current[0] is None or evaluated_at >= current[0])):
+            selected[event_id] = (evaluated_at, trace, probability)
+
+    return [
+        {
+            "eventId": event_id,
+            "referenceClass": trace.get("referenceClass"),
+            "predicted": probability,
+            "outcome": int(bool(outcomes_by_event_id[event_id]["resolvedValue"])),
+            "judgeOpinions": list(trace.get("judgeOpinions", [])),
+        }
+        for event_id, (_, trace, probability) in selected.items()
+    ]
+
+
+def pool_adjacent_violators(values: list[float], weights: list[float] | None = None) -> list[float]:
+    """Least-squares non-decreasing fit of `values` (already ordered by their predictor)."""
+    blocks: list[list[float]] = []  # [weighted_sum, weight, count]
+    for index, value in enumerate(values):
+        weight = 1.0 if weights is None else weights[index]
+        blocks.append([value * weight, weight, 1])
+        while len(blocks) > 1 and blocks[-2][0] / blocks[-2][1] > blocks[-1][0] / blocks[-1][1]:
+            last = blocks.pop()
+            blocks[-1] = [blocks[-1][0] + last[0], blocks[-1][1] + last[1], blocks[-1][2] + last[2]]
+    fitted: list[float] = []
+    for weighted_sum, weight, count in blocks:
+        fitted.extend([weighted_sum / weight] * int(count))
+    return fitted
+
+
+ISOTONIC_OUTPUT_BOUNDS = (0.005, 0.995)
 
 
 def _fit_isotonic_outputs(pairs: list[dict[str, Any]]) -> dict[str, Any]:
-    sorted_pairs = sorted(pairs, key=lambda pair: float(pair["predicted"]))
-    thresholds = [float(pair["predicted"]) for pair in sorted_pairs]
+    grouped: dict[float, list[int]] = defaultdict(list)
+    for pair in pairs:
+        grouped[float(pair["predicted"])].append(int(pair["outcome"]))
+    xs = sorted(grouped)
+    means = [mean(grouped[x]) for x in xs]
+    counts = [float(len(grouped[x])) for x in xs]
+    fitted = pool_adjacent_violators(means, counts)
+
+    thresholds: list[float] = []
     outputs: list[float] = []
-    running_max = 0.0
-    for index in range(len(sorted_pairs)):
-        observed_mean = mean(float(item["outcome"]) for item in sorted_pairs[: index + 1])
-        running_max = max(running_max, observed_mean)
-        outputs.append(running_max)
-    return {
-        "method": "isotonic",
-        "thresholds": thresholds,
-        "outputs": outputs,
-    }
+    index = 0
+    while index < len(xs):
+        end = index
+        while end + 1 < len(xs) and fitted[end + 1] == fitted[index]:
+            end += 1
+        block_weight = sum(counts[index : end + 1])
+        thresholds.append(sum(xs[i] * counts[i] for i in range(index, end + 1)) / block_weight)
+        low, high = ISOTONIC_OUTPUT_BOUNDS
+        outputs.append(min(max(fitted[index], low), high))
+        index = end + 1
+    return {"method": "isotonic", "thresholds": thresholds, "outputs": outputs}
+
+
+def fit_platt_scaling(
+    pairs: list[dict[str, Any]],
+    *,
+    l2_toward_identity: float = 1.0,
+    iterations: int = 50,
+) -> dict[str, Any]:
+    """Fit p' = sigmoid(slope * logit(p) + intercept) by penalized Newton-Raphson.
+
+    The L2 penalty pulls (slope, intercept) toward the identity map (1, 0), which keeps
+    small samples from producing wild recalibrations.
+    """
+    slope, intercept = 1.0, 0.0
+    features = [_logit(float(pair["predicted"])) for pair in pairs]
+    labels = [float(pair["outcome"]) for pair in pairs]
+    for _ in range(iterations):
+        grad_slope = l2_toward_identity * (slope - 1.0)
+        grad_intercept = l2_toward_identity * intercept
+        h_ss = h_si = h_ii = 0.0
+        for x, y in zip(features, labels):
+            q = _sigmoid(slope * x + intercept)
+            residual = q - y
+            curvature = q * (1 - q)
+            grad_slope += residual * x
+            grad_intercept += residual
+            h_ss += curvature * x * x
+            h_si += curvature * x
+            h_ii += curvature
+        h_ss += l2_toward_identity
+        h_ii += l2_toward_identity
+        determinant = h_ss * h_ii - h_si * h_si
+        if determinant <= 1e-12:
+            break
+        step_slope = (h_ii * grad_slope - h_si * grad_intercept) / determinant
+        step_intercept = (h_ss * grad_intercept - h_si * grad_slope) / determinant
+        slope -= step_slope
+        intercept -= step_intercept
+        if abs(step_slope) + abs(step_intercept) < 1e-10:
+            break
+    return {"method": "logistic", "slope": slope, "intercept": intercept}
 
 
 def _judge_regrets(joined_pairs: list[dict[str, Any]], judge_names: list[str]) -> dict[str, float]:
@@ -249,9 +353,9 @@ def fit_calibration_snapshot(
     historical_traces: list[dict[str, Any]],
     resolved_outcomes: list[dict[str, Any]],
 ) -> CalibrationSnapshot:
-    resolved_outcome_count = len(resolved_outcomes)
-    regime = select_regime(resolved_outcome_count)
     joined_pairs = _join_traces_and_outcomes(historical_traces, resolved_outcomes)
+    resolved_outcome_count = len(joined_pairs)
+    regime = select_regime(resolved_outcome_count)
     judge_names = sorted(
         {
             str(opinion["judgeName"])
@@ -275,12 +379,7 @@ def fit_calibration_snapshot(
             resolved_outcome_count=resolved_outcome_count,
         )
         if regime == "warming":
-            method = "logistic" if len({pair["predicted"] for pair in joined_pairs}) > 1 else "beta"
-            calibration_params = {
-                "method": method,
-                "slope": 1.0,
-                "intercept": mean(pair["outcome"] for pair in joined_pairs) - mean(pair["predicted"] for pair in joined_pairs),
-            }
+            calibration_params = fit_platt_scaling(joined_pairs)
             online_learning_params = {"enabled": True, "stepSizeScale": 0.5}
         else:
             unique_predictions = len({pair["predicted"] for pair in joined_pairs})
@@ -288,7 +387,7 @@ def fit_calibration_snapshot(
             if unique_predictions >= 3 and unique_outcomes >= 2:
                 calibration_params = _fit_isotonic_outputs(joined_pairs)
             else:
-                calibration_params = {"method": "logistic", "slope": 1.0, "intercept": 0.0}
+                calibration_params = fit_platt_scaling(joined_pairs)
             online_learning_params = {"enabled": True, "stepSizeScale": 1.0}
 
     base_rate_params = build_base_rate_params(joined_pairs)
