@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from math import exp
+from math import exp, log
 from urllib.parse import urlparse
-from fastapi import APIRouter, Depends
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.llm import LLMClient, get_llm_client
-from app.models import CalibrationRequest, JudgeRequest, VerdictTrace
+from app.llm.client import LLMError
+from app.models import CalibrationRequest, JudgeRequest, PlanRequest, VerdictTrace
 from app.models_generated import EvidenceItem
 from app.scoring.aggregate import aggregate_posterior
 from app.scoring.calibration import apply_probability_calibration, fit_calibration_snapshot
@@ -14,16 +19,23 @@ from app.scoring.judges.community_signal import evaluate as evaluate_community_s
 from app.scoring.judges.cross_examiner import evaluate as evaluate_cross_examiner
 from app.scoring.judges.official_records import evaluate as evaluate_official_records
 from app.scoring.judges.open_web_research import evaluate as evaluate_open_web_research
-from app.scoring.priors import build_prior_log_odds
-from app.scoring.uncertainty import bootstrap_confidence_interval
+from app.scoring.priors import build_prior_log_odds, extract_market_signal
+from app.scoring.types import CrossExaminerResult
+from app.scoring.uncertainty import posterior_bootstrap_interval
 from app.scoring.weights import default_judge_weights, select_regime
 
 
 router = APIRouter()
 
 
-def _llm_dependency() -> LLMClient:
-    return get_llm_client()
+def _llm_dependency() -> Iterator[LLMClient]:
+    llm = get_llm_client()
+    try:
+        yield llm
+    finally:
+        close = getattr(llm, "close", None)
+        if callable(close):
+            close()
 
 
 def _utc_now() -> str:
@@ -32,26 +44,6 @@ def _utc_now() -> str:
 
 def _log_odds_to_probability(log_odds: float) -> float:
     return 1 / (1 + exp(-log_odds))
-
-def _collect_market_signals(request: JudgeRequest) -> dict[str, float]:
-    for item in request.evidence:
-        if item.sourceFamily not in {"market", "prediction_market"}:
-            continue
-
-        price = item.metadata.get("price")
-        spread = item.metadata.get("spread")
-        depth = item.metadata.get("depth")
-        volatility = item.metadata.get("volatility")
-        if isinstance(price, int | float):
-            return {
-                "price": float(price),
-                "spread": float(spread) if isinstance(spread, int | float) else 0.05,
-                "depth": float(depth) if isinstance(depth, int | float) else 0.0,
-                "volatility": float(volatility) if isinstance(volatility, int | float) else 0.1,
-            }
-
-    return {"price": 0.5, "spread": 0.05, "depth": 0.0, "volatility": 0.1}
-
 
 def _looks_english(text: str) -> bool:
     latin_count = sum(1 for char in text if "a" <= char.lower() <= "z")
@@ -117,16 +109,74 @@ def _missing_evidence_records(request: JudgeRequest, raw_opinions: list) -> list
     return missing
 
 
-def _cluster_groups(request: JudgeRequest, judge_probabilities: list[float]) -> list[list[float]]:
-    if not request.evidence:
-        return [[0.5]]
+FALLBACK_HALF_WIDTH_LOG_ODDS = 1.0
+RELEVANCE_THRESHOLD = 4  # on the 1-6 scale (Halawi et al. 2024)
+MIN_RELEVANT_ITEMS = 2
+PRIOR_ONLY_FAMILIES = {"market", "prediction_market"}
 
-    by_family: dict[str, list[float]] = {}
-    baseline = judge_probabilities or [0.5]
-    for index, item in enumerate(request.evidence):
-        family = str(item.sourceFamily)
-        by_family.setdefault(family, []).append(baseline[index % len(baseline)])
-    return list(by_family.values())
+
+def _stage(stage: str, status: str, **details) -> dict:
+    return {"stage": stage, "status": status, "details": details}
+
+
+def _rate_relevance(
+    request: JudgeRequest,
+    evidence: list[EvidenceItem],
+    llm: LLMClient,
+) -> tuple[list[EvidenceItem], dict, bool]:
+    """Stage 3: rate each evidence item 1-6 for the question, keep >= threshold, and
+    replace snippets with question-focused summaries. Market items feed the prior and are
+    never rated. Returns (evidence for the panel, stage record, enough relevant evidence)."""
+    candidates = [item for item in evidence if str(item.sourceFamily) not in PRIOR_ONLY_FAMILIES]
+    market_items = [item for item in evidence if str(item.sourceFamily) in PRIOR_ONLY_FAMILIES]
+    rate = getattr(llm, "rate_evidence", None)
+    if request.prior_only or not candidates or not callable(rate):
+        reason = "prior-only request" if request.prior_only else "no rateable evidence" if not candidates else "client cannot rate"
+        return evidence, _stage("relevance_rating", "skipped", reason=reason), True
+
+    model = str(getattr(llm, "utility_model_version", getattr(llm, "model_version", "fake-llm")))
+    try:
+        ratings = rate(event=request.event, evidence=candidates, evaluation_time=request.evaluation_time)
+    except LLMError as error:
+        return evidence, _stage("relevance_rating", "failed", model=model, error=str(error)[:300], fallback="unfiltered"), True
+
+    by_id = {rating["id"]: rating for rating in ratings}
+    kept: list[EvidenceItem] = []
+    for item in candidates:
+        rating = by_id.get(item.id)
+        if rating is None:
+            # The rater skipped it; keep the item rather than silently losing evidence.
+            kept.append(item)
+            continue
+        if rating["relevance"] >= RELEVANCE_THRESHOLD:
+            kept.append(
+                item.model_copy(
+                    update={
+                        "summary": rating["summary"].strip() or item.summary,
+                        "metadata": {**item.metadata, "originalSummary": item.summary, "relevance": rating["relevance"]},
+                    }
+                )
+            )
+    # Raw evidence quantity is gated upstream; this gate only fires when rating rejected
+    # evidence and left less than the minimum.
+    enough = len(kept) >= min(MIN_RELEVANT_ITEMS, len(candidates))
+    record = _stage(
+        "relevance_rating",
+        "completed",
+        model=model,
+        threshold=RELEVANCE_THRESHOLD,
+        rated=len(by_id),
+        kept=len(kept),
+        unrated=len(candidates) - len(by_id),
+        scores={rating["id"]: rating["relevance"] for rating in ratings},
+        insufficientRelevantEvidence=not enough,
+    )
+    return kept + market_items, record, enough
+
+
+def _logit(probability: float) -> float:
+    bounded = min(max(probability, 1e-6), 1 - 1e-6)
+    return log(bounded / (1 - bounded))
 
 
 def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
@@ -148,12 +198,32 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             "sourceFamily": "web",
         }
     ]
-    raw_opinions = [
-        evaluate_official_records(request.event, ordered_evidence, llm=llm),
-        evaluate_community_signal(request.event, ordered_evidence, llm=llm),
-        evaluate_open_web_research(request.event, ordered_evidence, llm=llm),
-    ]
-    cross_examiner = evaluate_cross_examiner(raw_opinions, llm=llm)
+    relevant_evidence, relevance_stage, enough_relevant = _rate_relevance(request, ordered_evidence, llm)
+    # Prior-only runs (insufficient coverage, or too little relevant evidence after rating)
+    # keep the evidence for the market prior and citations, but give the panel nothing to
+    # read, so no LLM call is made.
+    prior_only = request.prior_only or not enough_relevant
+    panel_evidence = [] if prior_only else relevant_evidence
+    # The three judges are independent (and may each fan out to an ensemble), so run them
+    # concurrently; result order stays fixed.
+    panel = (evaluate_official_records, evaluate_community_signal, evaluate_open_web_research)
+    with ThreadPoolExecutor(max_workers=len(panel)) as pool:
+        raw_opinions = list(
+            pool.map(
+                lambda evaluate: evaluate(
+                    request.event, panel_evidence, llm=llm, evaluation_time=request.evaluation_time
+                ),
+                panel,
+            )
+        )
+    samples_by_judge = {opinion.judge_name: opinion.samples for opinion in raw_opinions}
+    informative_opinions = [opinion for opinion in raw_opinions if opinion.evidence_ids]
+    cross_examiner = (
+        evaluate_cross_examiner(informative_opinions, llm=llm)
+        if len(informative_opinions) >= 2
+        else CrossExaminerResult()
+    )
+    model_version = str(getattr(llm, "model_version", "fake-llm"))
     judge_names = [opinion.judge_name for opinion in raw_opinions]
     base_weights = default_judge_weights(judge_names)
     base_weights.update(
@@ -166,23 +236,29 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     prior = build_prior_log_odds(
         request.event,
         request.calibration_snapshot,
-        market_signals=_collect_market_signals(request),
+        market_signals=extract_market_signal(ordered_evidence),
     )
     aggregate = aggregate_posterior(
         prior_log_odds=prior.prior_log_odds,
         raw_opinions=raw_opinions,
         base_weights=base_weights,
-        evidence_lookup={item.id: item for item in ordered_evidence},
+        evidence_lookup={item.id: item for item in relevant_evidence},
         evaluation_time=request.evaluation_time,
     )
-    interval = bootstrap_confidence_interval(
-        cluster_groups=_cluster_groups(
-            request,
-            [opinion.probability for opinion in aggregate.finalized_opinions],
-        ),
-        judge_probabilities=[opinion.probability for opinion in aggregate.finalized_opinions],
-        seed=11,
-    )
+    uses_bootstrap = len(aggregate.informative_contributions) >= 2
+    if uses_bootstrap:
+        interval = posterior_bootstrap_interval(
+            prior_log_odds=prior.prior_log_odds,
+            contributions=aggregate.informative_contributions,
+            weighted_log_odds=aggregate.informative_weighted_log_odds,
+            seed=11,
+        )
+        interval_low, interval_high = interval.low, interval.high
+    else:
+        # Too few informative judges to resample: report a fixed, explicitly labelled band.
+        posterior_log_odds = _logit(aggregate.posterior_probability)
+        interval_low = _log_odds_to_probability(posterior_log_odds - FALLBACK_HALF_WIDTH_LOG_ODDS)
+        interval_high = _log_odds_to_probability(posterior_log_odds + FALLBACK_HALF_WIDTH_LOG_ODDS)
     calibration_method = request.calibration_snapshot.calibrationParams.get("method", "identity")
     if calibration_method not in {"identity", "isotonic", "logistic", "beta"}:
         calibration_method = "identity"
@@ -192,25 +268,61 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
         request.calibration_snapshot.calibrationParams,
     )
     calibrated_low = apply_probability_calibration(
-        interval.low,
+        interval_low,
         request.calibration_snapshot.calibrationParams,
     )
     calibrated_high = apply_probability_calibration(
-        interval.high,
+        interval_high,
         request.calibration_snapshot.calibrationParams,
     )
     confidence_low = min(calibrated_low, calibrated_high, final_probability)
     confidence_high = max(calibrated_low, calibrated_high, final_probability)
+    pipeline_stages = [
+        relevance_stage,
+        _stage(
+            "panel_reasoning",
+            "skipped" if prior_only else "completed",
+            models=model_version,
+            judges={
+                opinion.judge_name: {
+                    "evidenceCount": len(opinion.evidence_ids),
+                    "samples": len(opinion.samples),
+                    "excludedSamples": sum(1 for sample in opinion.samples if sample.get("excluded")),
+                }
+                for opinion in raw_opinions
+            },
+        ),
+        _stage(
+            "cross_examination",
+            "completed" if len(informative_opinions) >= 2 else "skipped",
+            conflicts=len(cross_examiner.conflicts),
+        ),
+        _stage(
+            "aggregation",
+            "completed",
+            priorProbability=_log_odds_to_probability(prior.prior_log_odds),
+            marketPriorUsed=prior.market_probability is not None,
+            rawPosteriorProbability=aggregate.raw_probability,
+            disagreementShrinkage=aggregate.shrinkage,
+        ),
+        _stage(
+            "calibration",
+            "completed" if calibration_method != "identity" else "skipped",
+            method=calibration_method,
+            snapshotId=request.calibration_snapshot.id,
+        ),
+    ]
 
     return VerdictTrace.model_validate(
         {
-            "id": f"trace-{request.calibration_snapshot.id}",
+            "id": f"trace-{uuid4()}",
             "eventId": request.event_id,
             "evaluationTime": request.evaluation_time,
             "referenceClass": request.event.referenceClass,
             "referenceClassFallback": None if not prior.reference_class_fallback else "global_baseline",
             "priorProbability": _log_odds_to_probability(prior.prior_log_odds),
             "rawPosteriorProbability": aggregate.raw_probability,
+            "preCalibrationProbability": aggregate.posterior_probability,
             "finalProbability": final_probability,
             "confidenceLow": confidence_low,
             "confidenceHigh": confidence_high,
@@ -225,22 +337,28 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
                         "dependencyDiscount": opinion.dependencyDiscount,
                         "freshnessDecay": opinion.freshnessDecay,
                         "effectiveLogOddsContribution": opinion.effectiveLogOddsContribution,
+                        **(
+                            {"samples": samples_by_judge[opinion.judgeName]}
+                            if samples_by_judge.get(opinion.judgeName)
+                            else {}
+                        ),
                     },
                 }
                 for opinion in aggregate.finalized_opinions
             ],
             "ensembleMethod": "logarithmic_opinion_pool",
             "calibrationMethod": calibration_method,
-            "uncertaintyMethod": "bootstrap",
+            "uncertaintyMethod": "bootstrap" if uses_bootstrap else "none",
             "weightRegime": select_regime(request.calibration_snapshot.resolvedOutcomeCount),
             "replayFidelity": "exact",
             "conflicts": cross_examiner.conflicts,
             "missingEvidence": _missing_evidence_records(request, raw_opinions),
             "citations": citations,
-            "modelVersion": "judge-service-task9-v1",
+            "pipelineStages": pipeline_stages,
+            "modelVersion": model_version,
             "weightVersion": request.calibration_snapshot.id,
             "calibrationVersion": request.calibration_snapshot.id,
-            "status": "completed",
+            "status": "insufficient_evidence" if prior_only else "completed",
         }
     )
 
@@ -257,6 +375,36 @@ def judge(
 ) -> dict:
     trace = _build_judge_trace(request, llm)
     return trace.model_dump(by_alias=True, exclude_none=True)
+
+
+@router.post("/plan")
+def plan(
+    request: PlanRequest,
+    llm: LLMClient = Depends(_llm_dependency),
+) -> dict:
+    """Stage 1: decompose the question into sub-questions with one search query each."""
+    plan_queries = getattr(llm, "plan_queries", None)
+    if not callable(plan_queries):
+        return {"subQuestions": [], "queries": [], "model": None}
+    try:
+        result = plan_queries(event=request.event, evaluation_time=request.evaluation_time, max_queries=request.max_queries)
+    except LLMError as error:
+        raise HTTPException(status_code=502, detail=f"query planning failed: {str(error)[:300]}") from error
+
+    seen: set[str] = {request.event.question.strip().lower()}
+    queries: list[str] = []
+    for query in result.get("queries", []):
+        normalized = " ".join(str(query).split())
+        if normalized and normalized.lower() not in seen:
+            seen.add(normalized.lower())
+            queries.append(normalized)
+    return {
+        "subQuestions": [" ".join(str(item).split()) for item in result.get("subQuestions", []) if str(item).strip()][
+            : request.max_queries
+        ],
+        "queries": queries[: request.max_queries],
+        "model": str(getattr(llm, "utility_model_version", getattr(llm, "model_version", "fake-llm"))),
+    }
 
 
 @router.post("/calibrate")

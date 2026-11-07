@@ -74,12 +74,14 @@ describe("evaluation repository", () => {
       {
         ...benchmark,
         resolvedAt: "2026-12-31T23:59:59.000Z",
+        endDate: null,
       },
     ]);
     expect(listed).toEqual([
       {
         ...benchmark,
         resolvedAt: "2026-12-31T23:59:59.000Z",
+        endDate: null,
       },
     ]);
     expect(query).toHaveBeenCalledTimes(2);

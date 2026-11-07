@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict
 
 from app.models_generated import EventInput, EvidenceItem
 from app.scoring.types import RawJudgeOpinion
@@ -33,6 +33,22 @@ class PanelJudgeResponse(TypedDict):
     probability: float
     evidenceStrength: str
     rationale: str
+    # Set by ensembles: the aggregated (possibly fractional) log Bayes factor, the
+    # individual member samples, and members that failed.
+    logBayesFactor: NotRequired[float]
+    samples: NotRequired[list[dict[str, Any]]]
+    warnings: NotRequired[list[str]]
+
+
+class EvidenceRating(TypedDict):
+    id: str
+    relevance: int  # 1 (unrelated) .. 6 (directly decisive)
+    summary: str
+
+
+class QueryPlan(TypedDict):
+    subQuestions: list[str]
+    queries: list[str]
 
 
 class CrossExaminerConflict(TypedDict, total=False):
@@ -67,6 +83,7 @@ class LLMClient(Protocol):
         event: EventInput,
         evidence: list[EvidenceItem],
         default_rationale: str,
+        evaluation_time: str | None = None,
     ) -> PanelJudgeResponse:
         ...
 
@@ -78,4 +95,22 @@ class LLMClient(Protocol):
         ...
 
     def search_web(self, *, query: str) -> SearchResult:
+        ...
+
+    def rate_evidence(
+        self,
+        *,
+        event: EventInput,
+        evidence: list[EvidenceItem],
+        evaluation_time: str | None = None,
+    ) -> list[EvidenceRating]:
+        ...
+
+    def plan_queries(
+        self,
+        *,
+        event: EventInput,
+        evaluation_time: str | None = None,
+        max_queries: int = 4,
+    ) -> QueryPlan:
         ...

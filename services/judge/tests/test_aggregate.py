@@ -115,3 +115,64 @@ def test_stale_evidence_decays_more_than_fresh_evidence() -> None:
 
 def test_zero_shrinkage_when_all_judges_agree() -> None:
     assert disagreement_shrinkage([0.5, 0.5, 0.5]) == 0.0
+
+
+def _family_evidence(evidence_id: str, source_family: str, published_at: str) -> EvidenceItem:
+    item = _evidence(evidence_id, published_at).model_dump()
+    item["sourceFamily"] = source_family
+    return EvidenceItem.model_validate(item)
+
+
+def test_judge_whose_evidence_is_missing_contributes_nothing() -> None:
+    result = aggregate_posterior(
+        prior_log_odds=0.0,
+        raw_opinions=[
+            _raw_opinion("official_records", ["o1"], "weak_for"),
+            _raw_opinion("community_signal", [], "strong_against"),
+        ],
+        base_weights={"official_records": 0.5, "community_signal": 0.5},
+        evidence_lookup={"o1": _family_evidence("o1", "official", "2026-10-01T12:00:00Z")},
+        evaluation_time="2026-10-11T12:00:00Z",
+    )
+
+    by_name = {opinion.judgeName: opinion for opinion in result.finalized_opinions}
+    assert by_name["community_signal"].effectiveLogOddsContribution == 0.0
+    assert by_name["community_signal"].evidenceStrength == "neutral"
+    assert result.shrinkage == 0.0
+    assert result.posterior_probability > 0.5
+
+
+def test_official_evidence_ages_slower_than_community_evidence() -> None:
+    month_old_official = freshness_decay(
+        "2026-09-11T12:00:00Z", "2026-10-11T12:00:00Z", source_family="official"
+    )
+    week_old_community = freshness_decay(
+        "2026-10-04T12:00:00Z", "2026-10-11T12:00:00Z", source_family="community"
+    )
+
+    assert month_old_official > 0.75
+    assert week_old_community < 0.25
+
+
+def test_freshness_is_a_true_half_life_with_a_floor() -> None:
+    one_half_life = freshness_decay(
+        "2026-09-27T12:00:00Z", "2026-10-11T12:00:00Z", source_family="web"
+    )
+    ancient = freshness_decay("2020-01-01T00:00:00Z", "2026-10-11T12:00:00Z", source_family="web")
+
+    assert abs(one_half_life - 0.5) < 1e-9
+    assert ancient == 0.1
+
+
+def test_evidence_with_an_unknown_publication_date_gets_neutral_freshness() -> None:
+    undated = _family_evidence("u1", "web", "2026-10-11T12:00:00Z").model_dump()
+    undated["metadata"] = {"publishedAtSource": "unknown"}
+    result = aggregate_posterior(
+        prior_log_odds=0.0,
+        raw_opinions=[_raw_opinion("open_web_research", ["u1"], "moderate_for")],
+        base_weights={"open_web_research": 1.0},
+        evidence_lookup={"u1": EvidenceItem.model_validate(undated)},
+        evaluation_time="2026-10-11T12:00:00Z",
+    )
+
+    assert result.finalized_opinions[0].freshnessDecay == 0.5

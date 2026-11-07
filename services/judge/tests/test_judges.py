@@ -152,7 +152,7 @@ def test_cross_examiner_flags_divergence_and_stays_quiet_on_agreement() -> None:
 
 def test_open_web_judge_does_not_trigger_hidden_search_calls() -> None:
     class NoSearchLLM:
-        def judge_panel(self, *, judge_name, event, evidence, default_rationale):
+        def judge_panel(self, *, judge_name, event, evidence, default_rationale, evaluation_time=None):
             return {
                 "probability": 0.61,
                 "evidenceStrength": "weak_for",
@@ -173,3 +173,25 @@ def test_open_web_judge_does_not_trigger_hidden_search_calls() -> None:
 
     assert opinion.evidence_ids == ["web-1"]
     assert opinion.warnings == []
+
+
+class _RefusingLLM:
+    def judge_panel(self, **_kwargs):
+        raise AssertionError("judge_panel must not be called without evidence")
+
+    def cross_examine(self, *, raw_opinions):
+        return {"conflicts": []}
+
+    def search_web(self, *, query):
+        raise AssertionError("unexpected search")
+
+
+def test_judges_without_relevant_evidence_are_neutral_and_skip_the_llm() -> None:
+    web_only = [_evidence("web-1", "web", "supports")]
+
+    official = evaluate_official_records(_event(), web_only, llm=_RefusingLLM())
+    community = evaluate_community_signal(_event(), web_only, llm=_RefusingLLM())
+
+    assert (official.evidence_strength, official.probability) == ("neutral", 0.5)
+    assert (community.evidence_strength, community.probability) == ("neutral", 0.5)
+    assert official.evidence_ids == [] and community.evidence_ids == []

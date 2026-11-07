@@ -1,8 +1,9 @@
-from app.models_generated import CalibrationSnapshot, EventInput
+from app.models_generated import CalibrationSnapshot, EventInput, EvidenceItem
 from app.scoring.aggregate import log_odds_to_probability
 from app.scoring.priors import (
     build_prior_log_odds,
     empirical_bayes_base_rate,
+    extract_market_signal,
     liquidity_adjusted_market_probability,
 )
 
@@ -75,3 +76,100 @@ def test_build_prior_log_odds_uses_market_only_when_reference_class_is_unsampled
     assert result.alpha == 0.0
     assert result.reference_class_fallback is True
     assert log_odds_to_probability(result.prior_log_odds) > 0.5
+
+
+def _market_item(metadata: dict, source_family: str = "prediction_market") -> EvidenceItem:
+    return EvidenceItem.model_validate(
+        {
+            "id": f"market-{len(str(metadata))}-{source_family}",
+            "eventId": "event-1",
+            "sourceFamily": source_family,
+            "sourceType": "quote_snapshot",
+            "title": "Market snapshot",
+            "url": "https://polymarket.com/event/example",
+            "publisher": "Polymarket",
+            "publishedAt": "2026-10-10T09:00:00Z",
+            "retrievedAt": "2026-10-11T12:00:00Z",
+            "summary": "Market snapshot",
+            "rawText": None,
+            "entities": [],
+            "claims": [],
+            "stance": "unknown",
+            "qualitySignals": {},
+            "metadata": metadata,
+        }
+    )
+
+
+def test_market_signal_reads_yes_token_and_ignores_no_token() -> None:
+    signal = extract_market_signal(
+        [
+            _market_item({"price": 0.15, "outcome": "No"}),
+            _market_item({"price": 0.85, "outcome": "Yes"}),
+        ]
+    )
+
+    assert signal is not None
+    assert signal["price"] == 0.85
+
+
+def test_market_signal_reads_gamma_outcome_prices_for_the_yes_outcome() -> None:
+    signal = extract_market_signal(
+        [
+            _market_item(
+                {
+                    "outcomePrices": '["0.3", "0.7"]',
+                    "outcomes": '["No", "Yes"]',
+                    "liquidity": "120000",
+                }
+            )
+        ]
+    )
+
+    assert signal is not None
+    assert signal["price"] == 0.7
+    assert signal["depth"] == 120000
+
+
+def test_market_signal_uses_liquidity_when_depth_is_missing() -> None:
+    signal = extract_market_signal([_market_item({"price": 0.85, "liquidity": 250000})])
+
+    assert signal is not None
+    assert signal["depth"] == 250000
+
+
+def test_market_signal_ignores_quotes_that_are_not_probabilities() -> None:
+    signal = extract_market_signal(
+        [
+            _market_item({"price": 187.2}, source_family="market"),
+            _market_item({"price": 1.7}),
+        ]
+    )
+
+    assert signal is None
+
+
+def test_prior_follows_a_liquid_market_price() -> None:
+    result = build_prior_log_odds(
+        _event(None),
+        _snapshot(),
+        market_signals=extract_market_signal([_market_item({"price": 0.85, "liquidity": 250000})]),
+    )
+
+    assert 0.8 < log_odds_to_probability(result.prior_log_odds) <= 0.85
+
+
+def test_unknown_market_liquidity_keeps_a_partial_market_signal() -> None:
+    result = build_prior_log_odds(
+        _event(None),
+        _snapshot(),
+        market_signals=extract_market_signal([_market_item({"price": 0.85})]),
+    )
+
+    assert 0.6 < log_odds_to_probability(result.prior_log_odds) < 0.85
+
+
+def test_missing_market_does_not_dilute_a_sampled_base_rate() -> None:
+    result = build_prior_log_odds(_event("regulatory_approval"), _snapshot(), market_signals=None)
+
+    assert abs(log_odds_to_probability(result.prior_log_odds) - 71 / 102) < 1e-9

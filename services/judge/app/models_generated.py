@@ -341,6 +341,21 @@ class CacheEvent(BaseModel):
 
 
 class Status1(StrEnum):
+    completed = 'completed'
+    skipped = 'skipped'
+    failed = 'failed'
+
+
+class PipelineStage(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    stage: constr(min_length=1)
+    status: Status1
+    details: dict[str, Any]
+
+
+class Status2(StrEnum):
     queued = 'queued'
     running = 'running'
     completed = 'completed'
@@ -359,6 +374,7 @@ class VerdictTrace(BaseModel):
     referenceClassFallback: constr(min_length=1) | None
     priorProbability: confloat(ge=0.0, le=1.0)
     rawPosteriorProbability: confloat(ge=0.0, le=1.0)
+    preCalibrationProbability: confloat(ge=0.0, le=1.0) | None
     finalProbability: confloat(ge=0.0, le=1.0)
     confidenceLow: confloat(ge=0.0, le=1.0)
     confidenceHigh: confloat(ge=0.0, le=1.0)
@@ -375,10 +391,11 @@ class VerdictTrace(BaseModel):
     missingEvidence: list[MissingEvidenceItem] = Field([], validate_default=True)
     citations: list[Citation] = Field(..., min_length=1)
     cacheEvents: list[CacheEvent] = Field([], validate_default=True)
+    pipelineStages: list[PipelineStage] = Field([], validate_default=True)
     modelVersion: constr(min_length=1)
     weightVersion: constr(min_length=1)
     calibrationVersion: constr(min_length=1)
-    status: Status1
+    status: Status2
 
 
 class Level(StrEnum):
@@ -390,6 +407,7 @@ class Level(StrEnum):
 class Stage(StrEnum):
     queue = 'queue'
     run = 'run'
+    planning = 'planning'
     evidence = 'evidence'
     coverage = 'coverage'
     calibration = 'calibration'
@@ -490,7 +508,7 @@ class Citation1(BaseModel):
     publishedAt: constr(min_length=1) | None = None
 
 
-class Status3(StrEnum):
+class Status4(StrEnum):
     hit = 'hit'
     miss = 'miss'
     bypass = 'bypass'
@@ -502,10 +520,25 @@ class CacheEvent1(BaseModel):
     )
     layer: Layer
     target: constr(min_length=1)
-    status: Status3
+    status: Status4
 
 
-class Status4(StrEnum):
+class Status5(StrEnum):
+    completed = 'completed'
+    skipped = 'skipped'
+    failed = 'failed'
+
+
+class PipelineStage1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    stage: constr(min_length=1)
+    status: Status5
+    details: dict[str, Any]
+
+
+class Status6(StrEnum):
     queued = 'queued'
     running = 'running'
     completed = 'completed'
@@ -524,6 +557,7 @@ class VerdictTrace1(BaseModel):
     referenceClassFallback: constr(min_length=1) | None
     priorProbability: confloat(ge=0.0, le=1.0)
     rawPosteriorProbability: confloat(ge=0.0, le=1.0)
+    preCalibrationProbability: confloat(ge=0.0, le=1.0) | None
     finalProbability: confloat(ge=0.0, le=1.0)
     confidenceLow: confloat(ge=0.0, le=1.0)
     confidenceHigh: confloat(ge=0.0, le=1.0)
@@ -540,10 +574,11 @@ class VerdictTrace1(BaseModel):
     missingEvidence: list[MissingEvidenceItem1] = Field([], validate_default=True)
     citations: list[Citation1] = Field(..., min_length=1)
     cacheEvents: list[CacheEvent1] = Field([], validate_default=True)
+    pipelineStages: list[PipelineStage1] = Field([], validate_default=True)
     modelVersion: constr(min_length=1)
     weightVersion: constr(min_length=1)
     calibrationVersion: constr(min_length=1)
-    status: Status4
+    status: Status6
 
 
 class ExecutionLogItem(BaseModel):
@@ -563,7 +598,7 @@ class JudgmentRecordSummary(BaseModel):
     )
     id: constr(min_length=1)
     eventId: constr(min_length=1)
-    status: Status1
+    status: Status2
     verdictTrace: VerdictTrace1 | None
     executionLog: list[ExecutionLogItem] = Field([], validate_default=True)
     createdAt: constr(min_length=1)
@@ -622,7 +657,7 @@ class Citation2(BaseModel):
     publishedAt: constr(min_length=1) | None = None
 
 
-class Status6(StrEnum):
+class Status8(StrEnum):
     hit = 'hit'
     miss = 'miss'
     bypass = 'bypass'
@@ -634,10 +669,25 @@ class CacheEvent2(BaseModel):
     )
     layer: Layer
     target: constr(min_length=1)
-    status: Status6
+    status: Status8
 
 
-class Status7(StrEnum):
+class Status9(StrEnum):
+    completed = 'completed'
+    skipped = 'skipped'
+    failed = 'failed'
+
+
+class PipelineStage2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    stage: constr(min_length=1)
+    status: Status9
+    details: dict[str, Any]
+
+
+class Status10(StrEnum):
     queued = 'queued'
     running = 'running'
     completed = 'completed'
@@ -656,6 +706,7 @@ class VerdictTrace2(BaseModel):
     referenceClassFallback: constr(min_length=1) | None
     priorProbability: confloat(ge=0.0, le=1.0)
     rawPosteriorProbability: confloat(ge=0.0, le=1.0)
+    preCalibrationProbability: confloat(ge=0.0, le=1.0) | None
     finalProbability: confloat(ge=0.0, le=1.0)
     confidenceLow: confloat(ge=0.0, le=1.0)
     confidenceHigh: confloat(ge=0.0, le=1.0)
@@ -672,10 +723,11 @@ class VerdictTrace2(BaseModel):
     missingEvidence: list[MissingEvidenceItem2] = Field([], validate_default=True)
     citations: list[Citation2] = Field(..., min_length=1)
     cacheEvents: list[CacheEvent2] = Field([], validate_default=True)
+    pipelineStages: list[PipelineStage2] = Field([], validate_default=True)
     modelVersion: constr(min_length=1)
     weightVersion: constr(min_length=1)
     calibrationVersion: constr(min_length=1)
-    status: Status7
+    status: Status10
 
 
 class ExecutionLogItem1(BaseModel):
@@ -716,7 +768,7 @@ class JudgmentRecordDetails(BaseModel):
     )
     id: constr(min_length=1)
     eventId: constr(min_length=1)
-    status: Status4
+    status: Status6
     verdictTrace: VerdictTrace2 | None
     executionLog: list[ExecutionLogItem1] = Field([], validate_default=True)
     createdAt: constr(min_length=1)
@@ -777,6 +829,7 @@ class BenchmarkMarket(BaseModel):
     volume: confloat(ge=0.0)
     liquidity: confloat(ge=0.0)
     resolvedAt: constr(min_length=1)
+    endDate: constr(min_length=1) | None
     resolvedValue: bool
     marketUrl: AnyUrl
 
