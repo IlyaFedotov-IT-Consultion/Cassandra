@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import type { AppEnv } from "../../config/env.js";
-import { searchWithZaiCli } from "../evidence/providers/zaiCli.js";
+import { createConfiguredWebSearch } from "../judgments/service.js";
 
 const ResearchInputSchema = z
   .object({
@@ -48,12 +48,13 @@ export async function runResearchQuery(
   env: AppEnv,
   input: ResearchRunInput,
 ): Promise<ResearchRunRecord> {
-  if (!env.ZAI_API_KEY) {
-    throw new Error("ZAI_API_KEY is required for research runs.");
+  const search = createConfiguredWebSearch(env);
+
+  if (!search) {
+    throw new Error("A configured search backend (ZAI_API_KEY or OPENROUTER_API_KEY) is required for research runs.");
   }
 
-  const documents = await searchWithZaiCli({
-    apiKey: env.ZAI_API_KEY,
+  const documents = await search({
     count: input.count ?? 5,
     domains: input.domains,
     providerName: "research",
