@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
+
 import type { EvidenceItem } from "@cassandra/shared";
 import type { Redis } from "ioredis";
 
 import type { AppLogger } from "../../lib/logger.js";
+import type { EventRecord } from "../events/repository.js";
 import { normalizeEvidenceItems } from "./normalize.js";
 import { insertEvidenceItems } from "./repository.js";
 import type { CollectEvidenceArgs, CollectEvidenceResult, ProviderRun } from "./types.js";
@@ -46,6 +49,27 @@ export function buildEvidenceCacheKey(
   return `evidence:${providerName}:${hourBucket}:${canonicalQuestion}`;
 }
 
+/**
+ * Providers query by question *and* by the event's market binding, entities and symbols,
+ * so all of them belong in the cache key; otherwise events that share a question would
+ * reuse each other's provider output.
+ */
+function evidenceQueryScope(event: EventRecord, queries: string[] | undefined): string {
+  const binding = createHash("sha256")
+    .update(
+      JSON.stringify([
+        event.polymarketMarketId ?? null,
+        [...event.entities].sort(),
+        [...event.marketSymbols].sort(),
+        [...(queries ?? [])].sort(),
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 16);
+
+  return `${event.question} ${binding}`;
+}
+
 function summarizeProviderRuns(providerRuns: ProviderRun[]): string {
   return providerRuns
     .map((run) => {
@@ -84,6 +108,7 @@ export async function collectEvidenceForEventWithCache(
           event: args.event,
           evaluationTime: args.evaluationTime,
           mode: args.mode,
+          queries: args.queries,
         });
 
         rawItems.push(...providerItems);
@@ -96,7 +121,11 @@ export async function collectEvidenceForEventWithCache(
         continue;
       }
 
-      const cacheKey = buildEvidenceCacheKey(args.event.question, args.evaluationTime, provider.name);
+      const cacheKey = buildEvidenceCacheKey(
+        evidenceQueryScope(args.event, args.queries),
+        args.evaluationTime,
+        provider.name,
+      );
       const cached = await args.cacheStore.get(cacheKey);
 
       if (cached) {
@@ -118,6 +147,7 @@ export async function collectEvidenceForEventWithCache(
         event: args.event,
         evaluationTime: args.evaluationTime,
         mode: args.mode,
+        queries: args.queries,
       });
 
       await args.cacheStore.set(

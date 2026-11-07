@@ -99,7 +99,11 @@ export async function searchWithZaiCli(args: {
           summary: item.content?.trim() || item.title?.trim() || url,
           metadata: {
             provider: args.providerName,
+            searchBackend: "zai",
             domain: domain ?? null,
+            // Undated results are stamped with the retrieval time; flag them so freshness
+            // does not treat a placeholder date as "just published".
+            publishedAtSource: item.publish_date ? "provider" : "unknown",
           },
           qualitySignals: {
             domainFiltered: Boolean(domain),

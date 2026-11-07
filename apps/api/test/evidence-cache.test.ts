@@ -116,6 +116,113 @@ describe("collectEvidenceForEventWithCache", () => {
     expect(persisted).toHaveLength(1);
   });
 
+  it("does not share cached provider output between events bound to different markets", async () => {
+    const baseInput = {
+      question: "Will no Fed rate cuts happen in 2026?",
+      resolutionCriteria: "No FOMC cut during 2026.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Federal Reserve"],
+      referenceClass: null,
+      marketSymbols: [],
+    };
+    const first = await createEvent(pool, { ...baseInput, polymarketMarketId: "0xaaa" });
+    const second = await createEvent(pool, { ...baseInput, polymarketMarketId: "0xbbb" });
+    const seenMarketIds: Array<string | null> = [];
+    const provider: EvidenceProvider = {
+      name: "marketBoundProvider",
+      async collect(input) {
+        seenMarketIds.push(input.event.polymarketMarketId);
+        return [
+          {
+            id: `22222222-2222-4222-8222-${String(seenMarketIds.length).padStart(12, "0")}`,
+            eventId: input.event.id,
+            sourceFamily: "prediction_market",
+            sourceType: "polymarket_market",
+            title: `Market ${input.event.polymarketMarketId}`,
+            url: `https://polymarket.com/market/${input.event.polymarketMarketId}`,
+            publisher: "Polymarket",
+            publishedAt: "2026-10-10T09:00:00Z",
+            retrievedAt: "2026-10-10T10:00:00Z",
+            summary: "Market snapshot",
+            rawText: null,
+            entities: [],
+            claims: [],
+            stance: "unknown",
+            qualitySignals: {},
+            metadata: {},
+          },
+        ];
+      },
+    };
+    const cacheStore = new InMemoryEvidenceCacheStore();
+
+    for (const event of [first, second]) {
+      await collectEvidenceForEventWithCache({
+        pool,
+        event,
+        evaluationTime: "2026-10-11T12:15:00Z",
+        mode: "live",
+        providers: [provider],
+        cacheStore,
+      });
+    }
+
+    expect(seenMarketIds).toEqual(["0xaaa", "0xbbb"]);
+  });
+
+  it("keys cached provider output by the planned queries", async () => {
+    const event = await createEvent(pool, {
+      question: "Will US CPI exceed 3% in October 2026?",
+      resolutionCriteria: "BLS release.",
+      deadline: "2026-11-30T23:59:59Z",
+      entities: ["BLS"],
+      referenceClass: null,
+      marketSymbols: [],
+    });
+    const seenQueries: Array<string[] | undefined> = [];
+    const provider: EvidenceProvider = {
+      name: "plannedProvider",
+      async collect(input) {
+        seenQueries.push(input.queries);
+        return [
+          {
+            id: `33333333-3333-4333-8333-${String(seenQueries.length).padStart(12, "0")}`,
+            eventId: input.event.id,
+            sourceFamily: "web",
+            sourceType: "web_article",
+            title: `Planned ${seenQueries.length}`,
+            url: `https://example.com/planned/${seenQueries.length}`,
+            publisher: "Example",
+            publishedAt: "2026-10-10T09:00:00Z",
+            retrievedAt: "2026-10-10T10:00:00Z",
+            summary: "Planned evidence",
+            rawText: null,
+            entities: [],
+            claims: [],
+            stance: "unknown",
+            qualitySignals: {},
+            metadata: {},
+          },
+        ];
+      },
+    };
+    const cacheStore = new InMemoryEvidenceCacheStore();
+
+    for (const queries of [["consensus forecast"], ["release schedule"]]) {
+      await collectEvidenceForEventWithCache({
+        pool,
+        event,
+        evaluationTime: "2026-10-11T12:15:00Z",
+        mode: "live",
+        providers: [provider],
+        cacheStore,
+        queries,
+      });
+    }
+
+    expect(seenQueries).toEqual([["consensus forecast"], ["release schedule"]]);
+  });
+
   it("bypasses cache in fixture mode even when a cache store is provided", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",

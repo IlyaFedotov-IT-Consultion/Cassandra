@@ -16,9 +16,17 @@ const EnvSchema = z.object({
   CASSANDRA_JUDGE_LLM: z.string().min(1).optional(),
   PERPLEXITY_API_KEY: z.string().min(1).optional(),
   OPENROUTER_API_KEY: z.string().min(1).optional(),
+  /** Judge ensemble (model@effort, comma-separated); read by the judge service, used here for cache versioning. */
+  OPENROUTER_JUDGE_MODELS: z.string().min(1).optional(),
   OPENROUTER_JUDGE_MODEL: z.string().min(1).optional(),
+  OPENROUTER_JUDGE_REASONING_EFFORT: z.string().min(1).optional(),
+  OPENROUTER_UTILITY_MODEL: z.string().min(1).optional(),
   OPENROUTER_CROSS_EXAMINER_MODEL: z.string().min(1).optional(),
   OPENROUTER_SEARCH_MODEL: z.string().min(1).optional(),
+  /** Live web search backend: auto = Z.AI when its key is set, otherwise OpenRouter. */
+  CASSANDRA_SEARCH_BACKEND: z.enum(["auto", "zai", "openrouter"]).default("auto"),
+  OPENROUTER_WEB_SEARCH_MODEL: z.string().min(1).default("anthropic/claude-haiku-5.5"),
+  OPENROUTER_WEB_SEARCH_ENGINE: z.string().min(1).default("perplexity"),
   ZAI_API_KEY: z.string().min(1).optional(),
   ZAI_BASE_URL: z.string().url().default("https://api.z.ai/api/paas/v4"),
   ZAI_MODEL: z.string().min(1).optional(),

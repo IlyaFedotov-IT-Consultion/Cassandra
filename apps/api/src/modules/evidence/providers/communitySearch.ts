@@ -6,7 +6,7 @@ import {
   loadProviderFixture,
   type ProviderDocument,
 } from "./fixtureLoader.js";
-import { searchWithZaiCli } from "./zaiCli.js";
+import { createZaiWebSearch, searchWithPlannedQueries, type WebSearchFn } from "./webSearch.js";
 
 interface CommunityPayload {
   posts: Array<
@@ -16,7 +16,11 @@ interface CommunityPayload {
   >;
 }
 
-export function createCommunitySearchProvider(config: { zaiApiKey?: string } = {}): EvidenceProvider {
+export function createCommunitySearchProvider(
+  config: { zaiApiKey?: string; search?: WebSearchFn } = {},
+): EvidenceProvider {
+  const search = config.search ?? createZaiWebSearch(config.zaiApiKey);
+
   return {
     name: "communitySearch",
     async collect(input): Promise<EvidenceItem[]> {
@@ -25,14 +29,17 @@ export function createCommunitySearchProvider(config: { zaiApiKey?: string } = {
           ? await loadProviderFixture<CommunityPayload>("communitySearch", input.event.question)
           : {
               posts: (
-                await searchWithZaiCli({
-                  apiKey: config.zaiApiKey,
-                  count: 3,
-                  domains: ["reddit.com", "x.com"],
-                  providerName: "communitySearch",
-                  query: `${input.event.question} ${input.event.entities.join(" ")} discussion reactions rumor`,
-                  recency: "oneMonth",
-                })
+                await searchWithPlannedQueries(
+                  search,
+                  {
+                    count: 6,
+                    domains: ["reddit.com", "x.com"],
+                    providerName: "communitySearch",
+                    query: `${input.event.question} ${input.event.entities.join(" ")} discussion reactions rumor`,
+                    recency: "oneMonth",
+                  },
+                  input.queries,
+                )
               ).map((document) => ({
                 ...document,
                 postType: document.url.includes("x.com") ? "x_post" as const : "reddit_post" as const,
