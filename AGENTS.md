@@ -55,6 +55,7 @@ Run these from the repo root unless a line says otherwise.
 - Copy `.env.example` to `.env`. Never commit `.env` or print key values.
 - `.env.example` defaults to `CASSANDRA_ADAPTER_MODE=live`. For offline work, set `CASSANDRA_ADAPTER_MODE=fixture` and keep `CASSANDRA_JUDGE_LLM=fake`, which gives a deterministic judge.
 - Live mode and `pnpm harness:real` call OpenRouter, Perplexity and Polymarket and cost money. Run them only when asked.
+- In live mode the API's scheduled watchlist discovery (on by default) also costs money. Set `CASSANDRA_DISCOVERY_SCHEDULE=off` when running a live API you do not want spending on its own.
 - Model IDs and reasoning effort belong in the `OPENROUTER_*` env vars, never in code. The current choices are explained in `docs/research/2026-11-07-llm-forecasting-methods.md`.
 
 ## Style and tests

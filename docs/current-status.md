@@ -35,7 +35,7 @@ The API has 27 routes covering:
 
 - health and readiness;
 - events;
-- watchlists, with candidate listing and on-demand discovery (`POST /watchlists/:id/discover`);
+- watchlists, with candidate listing, on-demand discovery (`POST /watchlists/:id/discover`), and scheduled discovery on each watchlist's cadence (hourly, daily or weekly; `GET /watchlists/:id/schedule`);
 - outcomes (recording, and listing newest first);
 - judgments (queueing, detail and listing);
 - runtime activity;
@@ -56,7 +56,7 @@ The judge service exposes `GET /health`, `POST /judge`, `POST /plan` and `POST /
   - how the forecast moved from prior to final;
   - judge cards with their per-model samples;
   - citations ranked by relevance, with diagnostics and the execution log kept collapsed.
-- **Watchlists:** discovery runs from the page, and sources that failed are listed. Candidates can be seeded as events.
+- **Watchlists:** each page shows the watchlist's schedule, its next run and how the last run went. Discovery can also run from the page, and sources that failed are listed. Candidates can be seeded as events.
 - **Evaluation:**
   - a comparison of baselines on the same paired sample;
   - a reliability chart;
@@ -76,7 +76,10 @@ There is no migration framework. Both SQL files are re-applied on every migrate 
 
 ## What is missing or partial
 
-- **No scheduled discovery.** A watchlist stores a `cadence`, but nothing acts on it; discovery runs only when someone triggers it. It also runs inside the request, so in `live` mode it waits for the slowest source.
+- **Discovery limits:**
+  - On-demand discovery runs inside the request, so in `live` mode it waits for the slowest source. Scheduled runs use the queue.
+  - A watchlist's cadence cannot be edited after creation, because no update endpoint exists.
+  - In `live` mode every scheduled run makes paid search calls. `CASSANDRA_DISCOVERY_SCHEDULE=off` switches scheduling off.
 - **No authentication.** In development the API listens on every network interface.
 - **No OpenAPI document.** The contract in [api-reference.md](api-reference.md) is maintained by hand.
 - **No browser end-to-end suite.** UI changes are checked with Testing Library plus manual Playwright MCP sessions.
