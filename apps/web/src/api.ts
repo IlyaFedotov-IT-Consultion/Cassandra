@@ -11,7 +11,10 @@ import {
   EventRecordSchema,
   JudgmentRecordDetailsSchema,
   JudgmentRecordSummarySchema,
+  OutcomeInputSchema,
+  OutcomeRecordSchema,
   RuntimeEventRecordSchema,
+  WatchlistDiscoveryResultSchema,
   WatchlistInputSchema,
   WatchlistRecordSchema,
   type CalibrationSnapshot,
@@ -24,6 +27,7 @@ import {
   type EventRecord,
   type JudgmentRecordDetails,
   type JudgmentRecordSummary,
+  type OutcomeInput,
   type RuntimeEventRecord,
   type WatchlistInput,
   type WatchlistRecord,
@@ -39,6 +43,7 @@ const benchmarkMarketListSchema = BenchmarkMarketSchema.array();
 const evaluationRunSummaryListSchema = EvaluationRunSummarySchema.array();
 const evaluationPredictionListSchema = EvaluationPredictionSchema.array();
 const calibrationSnapshotListSchema = CalibrationSnapshotSummarySchema.array();
+const outcomeListSchema = OutcomeRecordSchema.array();
 
 interface BenchmarkImportResult {
   imported: number;
@@ -146,7 +151,26 @@ async function requestJson<T>(
     throw new Error(extractApiErrorMessage(payload, response.status));
   }
 
-  return schema.parse(payload);
+  try {
+    return schema.parse(payload);
+  } catch (error) {
+    throw new Error(describeValidationFailure(path, error));
+  }
+}
+
+/** Turn a schema failure into one readable sentence instead of a dump of issues. */
+function describeValidationFailure(path: string, error: unknown) {
+  const issues =
+    error && typeof error === "object" && "issues" in error && Array.isArray(error.issues)
+      ? (error.issues as Array<{ path?: Array<string | number>; message?: string }>)
+      : [];
+  const first = issues[0];
+  const detail = first
+    ? `${(first.path ?? []).join(".") || "response"}: ${first.message ?? "invalid value"}`
+    : error instanceof Error
+      ? error.message
+      : "invalid response";
+  return `The API returned an unexpected response from ${path.split("?")[0]} (${detail}).`;
 }
 
 export function splitCommaSeparated(value: string) {
@@ -212,6 +236,18 @@ export async function createEvent(input: EventInput) {
   });
 }
 
+export async function recordOutcome(input: OutcomeInput) {
+  return requestJson("/outcomes", OutcomeRecordSchema, {
+    method: "POST",
+    body: JSON.stringify(OutcomeInputSchema.parse(input)),
+  });
+}
+
+/** Outcomes for one event, newest first; the first entry is the one in force. */
+export function listOutcomes(eventId: string) {
+  return requestJson(`/outcomes?eventId=${encodeURIComponent(eventId)}`, outcomeListSchema);
+}
+
 export function listWatchlists() {
   return requestJson("/watchlists", watchlistListSchema);
 }
@@ -224,6 +260,13 @@ export async function createWatchlist(input: WatchlistInput) {
   return requestJson("/watchlists", WatchlistRecordSchema, {
     method: "POST",
     body: JSON.stringify(WatchlistInputSchema.parse(input)),
+  });
+}
+
+/** Collects and clusters fresh evidence for the watchlist now; providers that failed are reported, not fatal. */
+export function runWatchlistDiscovery(watchlistId: string) {
+  return requestJson(`/watchlists/${encodeURIComponent(watchlistId)}/discover`, WatchlistDiscoveryResultSchema, {
+    method: "POST",
   });
 }
 
