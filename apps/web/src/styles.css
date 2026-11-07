@@ -1954,10 +1954,6 @@ tbody th[scope="row"] {
     font-size: 1.375rem;
   }
 
-  .metric-tile small {
-    display: none;
-  }
-
   .verdict {
     grid-template-columns: 1fr;
     gap: 18px;
