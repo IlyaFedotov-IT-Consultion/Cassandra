@@ -89,6 +89,6 @@ To generate replay training data, use the paid calibration harness described in 
 
 If Events is empty, clear its filter, check the API address in the sidebar, and confirm that the API points to the intended database. Benchmark imports appear under Evaluation, not Events. A separate database has its own events and snapshots; switching databases does not move or delete the original records.
 
-The web server can be running while the API is unreachable. **API ready** describes backend readiness. **Live mode** describes evidence adapters; the judge backend is configured separately with `CASSANDRA_JUDGE_LLM`. For live model calls it must be set to the intended real backend, such as `openrouter`, rather than `fake`.
+The web server can be running while the API is unreachable. **API ready** describes backend readiness. The sidebar refreshes health and readiness every 10 seconds while the tab is active, and when you return to the tab or reconnect. If health cannot be reached, it hides the previously reported mode rather than presenting it as current. **Live mode** describes evidence adapters; the judge backend is configured separately with `CASSANDRA_JUDGE_LLM`. For live model calls it must be set to the intended real backend, such as `openrouter`, rather than `fake`.
 
 Browsing saved data and Help does not launch predictions. Live judgments, model replay baselines and discovery can incur search and model costs. Check logs before retrying failed work. For startup commands, service configuration and access control, use [Quick start](../README.md#quick-start).
