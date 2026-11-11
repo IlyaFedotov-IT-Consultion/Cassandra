@@ -8,8 +8,38 @@ export interface EvidenceRecord extends EvidenceItem {
   updatedAt: string;
 }
 
-function buildEvidenceStorageId(item: Pick<EvidenceItem, "eventId" | "url">): string {
-  const hex = createHash("sha1").update(`${item.eventId}:${item.url}`).digest("hex");
+/**
+ * What an evidence item says, as opposed to when it was fetched. `retrievedAt` is left out,
+ * and so is `publishedAt` when it is only a retrieval-time placeholder for an undated item.
+ */
+function evidenceContentHash(item: EvidenceItem): string {
+  const undated = item.metadata.publishedAtSource === "unknown";
+
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        item.sourceFamily,
+        item.sourceType,
+        item.title,
+        item.publisher,
+        undated ? null : new Date(item.publishedAt).toISOString(),
+        item.summary,
+        item.rawText,
+        item.entities,
+        item.claims,
+        item.stance,
+        item.qualitySignals,
+        item.metadata,
+      ]),
+    )
+    .digest("hex");
+}
+
+/** A row is one version of one URL for one event; identical content maps to the same row. */
+function buildEvidenceStorageId(item: EvidenceItem): string {
+  const hex = createHash("sha1")
+    .update(`${item.eventId}:${item.url}:${evidenceContentHash(item)}`)
+    .digest("hex");
 
   return [
     hex.slice(0, 8),
@@ -53,14 +83,20 @@ function mapEvidenceRow(row: Record<string, unknown>): EvidenceRecord {
   };
 }
 
+/**
+ * Stores evidence without ever changing a stored row. Traces cite evidence by id, so a row
+ * a past judgment read must keep saying what it said then: unchanged content reuses its
+ * row, and changed content (a revised page, a new market quote) becomes a new row.
+ */
 export async function insertEvidenceItems(
   pool: Pool,
   items: EvidenceItem[],
 ): Promise<EvidenceRecord[]> {
-  const inserted: EvidenceRecord[] = [];
+  const stored: EvidenceRecord[] = [];
 
   for (const item of items) {
-    const result = await pool.query(
+    const id = buildEvidenceStorageId(item);
+    const inserted = await pool.query(
       `
         INSERT INTO evidence_items (
           id,
@@ -84,26 +120,11 @@ export async function insertEvidenceItems(
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
           $12::jsonb, $13::jsonb, $14, $15::jsonb, $16::jsonb
         )
-        ON CONFLICT (event_id, url)
-        DO UPDATE SET
-          source_family = EXCLUDED.source_family,
-          source_type = EXCLUDED.source_type,
-          title = EXCLUDED.title,
-          publisher = EXCLUDED.publisher,
-          published_at = EXCLUDED.published_at,
-          retrieved_at = EXCLUDED.retrieved_at,
-          summary = EXCLUDED.summary,
-          raw_text = EXCLUDED.raw_text,
-          entities = EXCLUDED.entities,
-          claims = EXCLUDED.claims,
-          stance = EXCLUDED.stance,
-          quality_signals = EXCLUDED.quality_signals,
-          metadata = EXCLUDED.metadata,
-          updated_at = NOW()
+        ON CONFLICT (id) DO NOTHING
         RETURNING *
       `,
       [
-        buildEvidenceStorageId(item),
+        id,
         item.eventId,
         item.sourceFamily,
         item.sourceType,
@@ -121,11 +142,13 @@ export async function insertEvidenceItems(
         JSON.stringify(item.metadata),
       ],
     );
+    const row =
+      inserted.rows[0] ?? (await pool.query(`SELECT * FROM evidence_items WHERE id = $1`, [id])).rows[0];
 
-    inserted.push(mapEvidenceRow(result.rows[0] as Record<string, unknown>));
+    stored.push(mapEvidenceRow(row as Record<string, unknown>));
   }
 
-  return inserted;
+  return stored;
 }
 
 export async function listEvidenceForEvent(

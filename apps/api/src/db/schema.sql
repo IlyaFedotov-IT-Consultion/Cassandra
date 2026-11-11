@@ -66,7 +66,11 @@ CREATE TABLE IF NOT EXISTS evidence_items (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS evidence_items_event_id_url_key
+-- Evidence is immutable: a page whose content changed is stored as a new row, so one
+-- (event_id, url) can have several versions. The earlier unique index is dropped.
+DROP INDEX IF EXISTS evidence_items_event_id_url_key;
+
+CREATE INDEX IF NOT EXISTS evidence_items_event_id_url_idx
   ON evidence_items (event_id, url);
 
 CREATE TABLE IF NOT EXISTS judgments (
