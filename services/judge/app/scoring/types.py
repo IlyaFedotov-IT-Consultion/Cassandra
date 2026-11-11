@@ -46,6 +46,18 @@ class PriorResult:
 
 
 @dataclass(slots=True)
+class PooledJudge:
+    """How one informative judge entered the pool: contribution = multiplier * log_bayes_factor."""
+
+    judge_name: str
+    # Pool weight, dependency discount, evidence quality and freshness multiplied together.
+    multiplier: float
+    # The snapshot's weight for the judge, which disagreement shrinkage is scaled by.
+    base_weight: float
+    log_bayes_factor: float
+
+
+@dataclass(slots=True)
 class AggregateResult:
     finalized_opinions: list[JudgeOpinion]
     dependency_matrix: list[dict[str, float | str]]
@@ -54,8 +66,8 @@ class AggregateResult:
     raw_probability: float
     posterior_probability: float
     shrinkage: float
-    informative_contributions: list[float] = field(default_factory=list)
-    informative_weighted_log_odds: list[float] = field(default_factory=list)
+    # One entry per judge that read evidence, in panel order.
+    informative_judges: list[PooledJudge] = field(default_factory=list)
 
 
 @dataclass(slots=True)

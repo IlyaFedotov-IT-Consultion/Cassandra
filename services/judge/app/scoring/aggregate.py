@@ -7,7 +7,7 @@ from statistics import mean
 
 from app.models_generated import EvidenceItem, JudgeOpinion
 from app.scoring.strength_map import DEFAULT_STRENGTH_TO_LOG_BF, to_log_bf
-from app.scoring.types import AggregateResult, RawJudgeOpinion
+from app.scoring.types import AggregateResult, PooledJudge, RawJudgeOpinion
 
 
 def probability_to_log_odds(probability: float) -> float:
@@ -168,7 +168,7 @@ def aggregate_posterior(
     weighted_log_odds: list[float] = []
     raw_posterior_log_odds = prior_log_odds
 
-    informative_contributions: list[float] = []
+    informative_judges: list[PooledJudge] = []
     evidence_by_judge = {
         raw.judge_name: [evidence_lookup[evidence_id] for evidence_id in raw.evidence_ids if evidence_id in evidence_lookup]
         for raw in raw_opinions
@@ -206,12 +206,20 @@ def aggregate_posterior(
             else 1.0
         )
         quality = evidence_quality_modifier(evidence_items)
-        effective = pool_weight * dependency_discount * quality * freshness * log_bayes_factor
+        multiplier = pool_weight * dependency_discount * quality * freshness
+        effective = multiplier * log_bayes_factor
         raw_posterior_log_odds += effective
         if evidence_items:
             # Disagreement keeps the snapshot's own weight scale, which `k_disagree` is tuned for.
             weighted_log_odds.append(base_weight * log_bayes_factor)
-            informative_contributions.append(effective)
+            informative_judges.append(
+                PooledJudge(
+                    judge_name=raw.judge_name,
+                    multiplier=multiplier,
+                    base_weight=base_weight,
+                    log_bayes_factor=log_bayes_factor,
+                )
+            )
         finalized_opinions.append(
             finalize_judge_opinion(
                 raw,
@@ -238,6 +246,5 @@ def aggregate_posterior(
         raw_probability=log_odds_to_probability(raw_posterior_log_odds),
         posterior_probability=log_odds_to_probability(posterior_log_odds),
         shrinkage=shrinkage,
-        informative_contributions=informative_contributions,
-        informative_weighted_log_odds=weighted_log_odds,
+        informative_judges=informative_judges,
     )

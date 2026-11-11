@@ -56,7 +56,12 @@ export const CalibrationMethodSchema = z.enum([
   "logistic",
   "beta",
 ]);
-export const UncertaintyMethodSchema = z.enum(["none", "bootstrap"]);
+/**
+ * How the confidence range was made. `model_spread` resamples the ensemble's models;
+ * `none` is a fixed-width band, used when no spread was measured. `bootstrap` is the
+ * earlier resampling of the panel's two or three judges, kept so older traces still parse.
+ */
+export const UncertaintyMethodSchema = z.enum(["none", "bootstrap", "model_spread"]);
 export const BaselineNameSchema = z.enum([
   "base_rate_only",
   "polymarket_only",

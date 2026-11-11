@@ -295,6 +295,7 @@ class CalibrationMethod(StrEnum):
 class UncertaintyMethod(StrEnum):
     none = 'none'
     bootstrap = 'bootstrap'
+    model_spread = 'model_spread'
 
 
 class WeightRegime(StrEnum):

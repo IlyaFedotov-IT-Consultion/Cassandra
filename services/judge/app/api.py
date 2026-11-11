@@ -21,7 +21,8 @@ from app.scoring.judges.official_records import evaluate as evaluate_official_re
 from app.scoring.judges.open_web_research import evaluate as evaluate_open_web_research
 from app.scoring.priors import build_prior_log_odds, extract_market_signal
 from app.scoring.types import CrossExaminerResult, PriorResult, RawJudgeOpinion
-from app.scoring.uncertainty import posterior_bootstrap_interval
+from app.scoring.strength_map import DEFAULT_STRENGTH_TO_LOG_BF
+from app.scoring.uncertainty import JudgeSpread, model_spread_interval
 from app.scoring.weights import default_judge_weights, select_regime
 
 
@@ -198,9 +199,27 @@ def _logit(probability: float) -> float:
 BASE_RATE_BOUNDS = (0.02, 0.98)
 
 
-def _resolve_prior(request: JudgeRequest, evidence: list[EvidenceItem], llm: LLMClient) -> tuple[PriorResult, dict]:
+def _bounded_base_rate(probability: float) -> float:
+    low, high = BASE_RATE_BOUNDS
+    return min(max(probability, low), high)
+
+
+def _used_sample_log_bayes_factors(samples: list[dict]) -> list[float]:
+    """The log Bayes factor of each model sample the ensemble median was taken over."""
+    known = [sample for sample in samples if sample.get("evidenceStrength") in DEFAULT_STRENGTH_TO_LOG_BF]
+    # The ensemble drops incoherent samples unless every sample is incoherent.
+    used = [sample for sample in known if not sample.get("excluded")] or known
+    return [DEFAULT_STRENGTH_TO_LOG_BF[sample["evidenceStrength"]] for sample in used]
+
+
+def _resolve_prior(
+    request: JudgeRequest, evidence: list[EvidenceItem], llm: LLMClient
+) -> tuple[PriorResult, dict, list[float]]:
     """Stage: pick the prior. A bound market or a sampled reference class settles it for
-    free; only when neither exists is the model asked for an outside-view base rate."""
+    free; only when neither exists is the model asked for an outside-view base rate.
+
+    Also returns each ensemble model's base-rate estimate in log-odds (empty unless the
+    prior is an estimate), which the confidence interval resamples."""
     related_markets_ignored = sum(
         1
         for item in evidence
@@ -210,6 +229,7 @@ def _resolve_prior(request: JudgeRequest, evidence: list[EvidenceItem], llm: LLM
     prior = build_prior_log_odds(request.event, request.calibration_snapshot, market_signals=market_signals)
     status = "completed"
     details: dict = {}
+    sample_log_odds: list[float] = []
 
     estimate = getattr(llm, "estimate_base_rate", None)
     if prior.source == "uninformed" and callable(estimate):
@@ -220,13 +240,16 @@ def _resolve_prior(request: JudgeRequest, evidence: list[EvidenceItem], llm: LLM
             status = "failed"
             details = {"error": str(error)[:300], "fallback": "uninformed prior"}
         if estimated is not None:
-            low, high = BASE_RATE_BOUNDS
             prior = build_prior_log_odds(
                 request.event,
                 request.calibration_snapshot,
                 market_signals=market_signals,
-                estimated_base_rate=min(max(float(estimated["probability"]), low), high),
+                estimated_base_rate=_bounded_base_rate(float(estimated["probability"])),
             )
+            sample_log_odds = [
+                _logit(_bounded_base_rate(float(sample["probability"])))
+                for sample in estimated.get("samples") or []
+            ]
             details = {
                 "model": str(getattr(llm, "model_version", "fake-llm")),
                 "rationale": str(estimated.get("rationale", "")),
@@ -243,7 +266,7 @@ def _resolve_prior(request: JudgeRequest, evidence: list[EvidenceItem], llm: LLM
         marketLiquidity=None if market_signals is None else market_signals.get("depth"),
         relatedMarketsIgnored=related_markets_ignored,
         **{key: value for key, value in details.items() if value is not None},
-    )
+    ), sample_log_odds
 
 
 def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
@@ -320,7 +343,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             if judge_name in base_weights and isinstance(weight, int | float)
         }
     )
-    prior, prior_stage = _resolve_prior(request, ordered_evidence, llm)
+    prior, prior_stage, prior_sample_log_odds = _resolve_prior(request, ordered_evidence, llm)
     aggregate = aggregate_posterior(
         prior_log_odds=prior.prior_log_odds,
         raw_opinions=raw_opinions,
@@ -328,17 +351,27 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
         evidence_lookup={item.id: item for item in relevant_evidence},
         evaluation_time=request.evaluation_time,
     )
-    uses_bootstrap = len(aggregate.informative_contributions) >= 2
-    if uses_bootstrap:
-        interval = posterior_bootstrap_interval(
-            prior_log_odds=prior.prior_log_odds,
-            contributions=aggregate.informative_contributions,
-            weighted_log_odds=aggregate.informative_weighted_log_odds,
-            seed=11,
-        )
+    # The range says how much the forecast depends on which models were asked. It needs an
+    # ensemble: with one model there is no spread to measure.
+    interval = model_spread_interval(
+        prior_log_odds=prior.prior_log_odds,
+        judges=[
+            JudgeSpread(
+                multiplier=judge.multiplier,
+                base_weight=judge.base_weight,
+                log_bayes_factor=judge.log_bayes_factor,
+                sample_log_bayes_factors=_used_sample_log_bayes_factors(samples_by_judge.get(judge.judge_name, [])),
+            )
+            for judge in aggregate.informative_judges
+        ],
+        prior_sample_log_odds=prior_sample_log_odds,
+        seed=11,
+    )
+    measured_spread = interval is not None
+    if interval is not None:
         interval_low, interval_high = interval.low, interval.high
     else:
-        # Too few informative judges to resample: report a fixed, explicitly labelled band.
+        # No spread was measured: report a fixed, explicitly labelled band.
         posterior_log_odds = _logit(aggregate.posterior_probability)
         interval_low = _log_odds_to_probability(posterior_log_odds - FALLBACK_HALF_WIDTH_LOG_ODDS)
         interval_high = _log_odds_to_probability(posterior_log_odds + FALLBACK_HALF_WIDTH_LOG_ODDS)
@@ -433,7 +466,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             ],
             "ensembleMethod": "logarithmic_opinion_pool",
             "calibrationMethod": calibration_method,
-            "uncertaintyMethod": "bootstrap" if uses_bootstrap else "none",
+            "uncertaintyMethod": "model_spread" if measured_spread else "none",
             "weightRegime": select_regime(request.calibration_snapshot.resolvedOutcomeCount),
             "replayFidelity": "exact",
             "conflicts": cross_examiner.conflicts,
