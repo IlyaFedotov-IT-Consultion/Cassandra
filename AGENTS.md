@@ -42,6 +42,8 @@ Run these from the repo root unless a line says otherwise.
   - Vitest points them at `cassandra_test`, and they `TRUNCATE` every table before each test. Never point their `DATABASE_URL` at a database whose data matters.
   - The `pretest` step rebuilds `packages/shared` and migrates both databases, so it needs `psql` or Docker.
 - **Schema changes:** there is no migration framework. Both SQL files are re-applied on every migrate, so every change must be idempotent (`CREATE ... IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
+- **Calibration snapshots:** judgments use only an approved snapshot. Until one is approved they run on the identity baseline (`baseline-identity`), so a retrain changes nothing by itself.
+- **Benchmark replay:** cutoffs count back from each market's `endDate`. Re-import the benchmark set after changing how cutoffs are built, because price snapshots are stored per cutoff.
 - **Strict schemas:** most shared schemas are `.strict()`, so a response with an extra field fails parsing in `apps/web/src/api.ts`. Change the schema in `packages/shared` first, then the producer and the consumer.
 - **After editing `packages/shared/src/schemas.ts`:**
   1. Run `pnpm --filter @cassandra/shared build`.
@@ -56,6 +58,7 @@ Run these from the repo root unless a line says otherwise.
 - `.env.example` defaults to `CASSANDRA_ADAPTER_MODE=live`. For offline work, set `CASSANDRA_ADAPTER_MODE=fixture` and keep `CASSANDRA_JUDGE_LLM=fake`, which gives a deterministic judge.
 - Live mode and `pnpm harness:real` call OpenRouter, Perplexity and Polymarket and cost money. Run them only when asked.
 - In live mode the API's scheduled watchlist discovery (on by default) also costs money. Set `CASSANDRA_DISCOVERY_SCHEDULE=off` when running a live API you do not want spending on its own.
+- The API listens on `127.0.0.1` and serves only the browser origins in `CASSANDRA_CORS_ORIGINS`. Opening the web app from another host or port needs that origin added, and `API_HOST=0.0.0.0` with a `CASSANDRA_API_KEY` to reach the API from another machine.
 - Model IDs and reasoning effort belong in the `OPENROUTER_*` env vars, never in code. The current choices are explained in `docs/research/2026-11-07-llm-forecasting-methods.md`.
 
 ## Style and tests

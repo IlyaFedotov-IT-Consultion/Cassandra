@@ -28,7 +28,11 @@ This document describes the current HTTP API exposed by the Cassandra prototype 
 ```
 
 - The FastAPI judge service uses its default validation behavior and returns `422` for malformed payloads.
-- There is currently no auth layer or versioned prefix such as `/v1`.
+- There is no versioned prefix such as `/v1`.
+- Access:
+  - The API listens on `API_HOST` (default `127.0.0.1`).
+  - A request with an `Origin` header is served only when that origin is listed in `CASSANDRA_CORS_ORIGINS`; any other origin gets `403`, preflight included. Requests without an `Origin` (curl, the harness) are served.
+  - When `CASSANDRA_API_KEY` is set, every route except `GET /health` and `GET /ready` requires it as `x-api-key: <key>` or `Authorization: Bearer <key>`, and answers `401` without it. With no key configured the API is open to whoever can reach it.
 - The API accepts an optional `x-request-id` header. If it is not provided, the API generates one internally.
 - The API emits structured JSON logs for request lifecycle, readiness failures, evidence collection, and judgment execution events.
 - The judge service logs JSON lines in the same shape (`level`, `time`, `service`, `scope`, `event`, `message`), with `service: "cassandra-judge"`. Both services read `LOG_LEVEL`.
@@ -335,13 +339,15 @@ Request body:
 
 Notes:
 
-- `evaluationTime` is optional; if omitted, the API uses the current time.
+- `evaluationTime` is optional; if omitted, the API uses the time the judgment was queued. A retried run keeps that time, so its query plan, evidence and judge output come from the caches where they were already paid for.
+- A failed run is retried once, and only when the failure is transient: the judge service was overloaded, unreachable or timed out, or every evidence provider failed. Other failures end the run at once.
 - The API persists a judgment with status `queued`, enqueues a BullMQ job in Redis, and returns immediately.
 - The worker later stores a terminal status of `completed`, `insufficient_evidence`, or `failed`.
 - In both `fixture` and `live` modes, the forecasting trace is produced by the Python judge service at `JUDGE_BASE_URL`.
 - When live citation coverage is too weak, the API still calls the judge service, with `priorOnly: true`, and stores the returned prior-only trace as `insufficient_evidence`.
 - Before retrieval the API asks the judge service to plan up to 3 sub-question search queries (`POST /plan`); each search provider runs its own query plus up to 2 planned queries. Planning failures fall back to the templated queries.
-- `verdictTrace.pipelineStages` records every stage in order: `query_planning`, `retrieval`, `relevance_rating`, `panel_reasoning`, `cross_examination`, `aggregation`, `calibration`, each with `status` (`completed`, `skipped`, `failed`) and `details`. The execution log has a `planning` entry.
+- `verdictTrace.pipelineStages` records every stage in order: `query_planning`, `retrieval`, `relevance_rating`, `prior`, `panel_reasoning`, `cross_examination`, `aggregation`, `calibration`, each with `status` (`completed`, `skipped`, `failed`) and `details`. The execution log has a `planning` entry.
+- The judgment uses the approved calibration snapshot. While none is approved it uses the identity baseline, whose id is `baseline-identity`.
 - In `fixture` mode, evidence providers still use canned fixture payloads and the judge service normally runs with its fake LLM backend.
 
 Success:
@@ -362,9 +368,13 @@ Builds a new calibration snapshot from resolved outcomes and stored verdict trac
 
 Behavior:
 
-- loads the most recent trace per resolved event
-- sends `historicalTraces` and `resolvedOutcomes` to `POST /calibrate` on the judge service
-- persists the returned calibration snapshot in Postgres
+- loads, per resolved event, the latest trace evaluated before the resolution, separately for completed and prior-only judgments
+- loads benchmark market prices recorded before each market resolved, with how the market resolved
+- sends `historicalTraces`, `resolvedOutcomes` and `marketPricePairs` to `POST /calibrate` on the judge service
+- persists the returned calibration snapshot in Postgres, unapproved
+- in `fixture` mode nothing is fitted: the stored snapshot records the sample size and keeps `calibrationParams.method: "identity"`
+
+A new snapshot changes no forecast until it is approved.
 
 Success:
 
@@ -393,6 +403,22 @@ Errors:
 
 - `400` if `id` is missing
 - `404` with `error: "Calibration snapshot not found"`
+
+### `POST /backtests/calibration-snapshots/:id/approve`
+
+Makes a snapshot the one judgments use and un-approves every other snapshot.
+
+Request body (optional): `{ "force": true }`.
+
+A snapshot whose `calibrationParams.method` is not `identity` is approved only when `metrics.heldOut.improves` is `true`, that is, when its calibration map scored a better Brier than uncalibrated forecasts on held-out data. `force` approves it regardless.
+
+Success: `200` with the approved `CalibrationSnapshot`.
+
+Errors:
+
+- `400` with `error: "Invalid approval input"`
+- `404` with `error: "Calibration snapshot not found"`
+- `409` when the held-out check is missing or failed and `force` was not sent; `error` gives the scores
 
 ### `POST /evaluation/benchmarks/import/polymarket`
 
@@ -492,6 +518,8 @@ Fields:
 - `benchmarkMarketIds` is optional and scopes the run to specific imported benchmarks
 - `baselines` is optional and defaults inside the evaluation flow when omitted
 - this endpoint requires `CASSANDRA_ADAPTER_MODE=live`
+- each market is replayed at 30 days, 7 days, 1 day and 6 hours before its scheduled `endDate` (before `resolvedAt` when the end date is unknown). Cutoffs at or after the market's resolution are skipped, and `leakageWarnings` names the skipped horizons
+- price snapshots are stored per cutoff at import, so re-import the benchmark set before running against markets imported under the earlier, resolution-anchored cutoffs
 
 Success:
 
@@ -594,9 +622,15 @@ Request body:
 
 Notes:
 
-- `priorOnly` (optional, default `false`): skip the judge panel and return an `insufficient_evidence` trace built from the base-rate and market prior only. No LLM calls are made.
-- The market prior reads the most liquid `prediction_market` evidence item whose metadata carries a Yes probability (`probability`, `yesPrice`, `price` for a Yes token, or `outcomePrices` with `outcomes`) and its `liquidity`/`depth`. Unknown liquidity gets partial trust; traditional `market` quotes are never treated as probabilities.
-- A panel judge with no evidence for its source families is neutral and does not call the LLM.
+- `priorOnly` (optional, default `false`): skip the judge panel and return an `insufficient_evidence` trace that reports the prior only. The panel and the cross-examiner are not called.
+- The prior comes from the first source available, and sources are never blended:
+  1. **Bound market.** The most liquid `prediction_market` evidence item that carries a Yes probability (`probability`, `yesPrice`, `price` for a Yes token, or `outcomePrices` with `outcomes`). Items with `metadata.matchedBy: "search"` are related markets, not this question, and never set the prior; traditional `market` quotes are never treated as probabilities. The price is mapped through the snapshot's `marketPriorParams` (`trustSlope`, `trustIntercept`), which default to using the price as it is. Liquidity and spread do not discount it.
+  2. **Reference class.** The observed base rate, once the event's `referenceClass` has at least `minimumSample` resolved events in the snapshot.
+  3. **Estimated base rate.** The judge model's outside-view estimate for the question, made without evidence and bounded to 0.02–0.98. With an ensemble it is the median in log-odds.
+  4. **Uninformed.** 0.5, when no estimate is available.
+- The `prior` pipeline stage records the `source` (`market`, `reference_class`, `estimated_base_rate`, `uninformed`), the `probability`, the market price and liquidity, `relatedMarketsIgnored`, and for an estimate its `rationale`, `referenceClass` and per-model `samples`. Its status is `failed` when the estimate failed and the prior fell back to 0.5.
+- A panel judge with no evidence for its source families is neutral and does not call the LLM. The pool is a weighted average over the judges that had evidence: a judge without evidence holds no weight, so it does not scale the others down.
+- The caller's `x-cassandra-timeout-ms` header sets the request's model budget: the judge stops starting model calls at 90% of it. Without the header, `JUDGE_REQUEST_BUDGET_SECONDS` applies (default 330).
 - Relevance stage: before the panel runs, every non-market evidence item is rated 1–6 for the question by the utility model, items below 4 are dropped, and the rest are passed to the judges with question-focused summaries (the original snippet is kept in `metadata.originalSummary`). If rating rejected evidence and fewer than 2 relevant items remain, the trace is prior-only with status `insufficient_evidence`. A rating failure falls back to unfiltered evidence.
 - Ensemble consistency guard: a sample whose moderate/strong label contradicts its own probability (for example `strong_against` with p ≥ 0.75) is marked `excluded` in `samples` and left out of the median, unless every sample is incoherent.
 - Judge prompts include the `evaluationTime` as the as-of date.
@@ -623,17 +657,20 @@ Success: `200` with `{ "subQuestions": [...], "queries": [...], "model": "..." }
 
 Builds a calibration snapshot from historical traces and resolved outcomes.
 
-- One training pair per event: its latest trace evaluated before the outcome's `resolvedAt`.
+- One training pair per event: its latest completed trace evaluated before the outcome's `resolvedAt`. Prior-only (`insufficient_evidence`) traces do not train the calibration map or the judge weights; their events still count toward reference-class base rates.
 - The fit uses each trace's `preCalibrationProbability`. Older calibrated traces without it are skipped.
 - `resolvedOutcomeCount` and the regime count matched training pairs.
 - `warming` fits Platt scaling (penalised toward identity); `steady` fits isotonic regression (pool adjacent violators).
+- `metrics.heldOut` reports a 5-fold cross-validation of the calibration map: `brierIdentity`, `brierCalibrated`, `logLossIdentity`, `logLossCalibrated`, `folds`, `sampleSize` and `improves`. It is absent in `cold_start`, where the map is the identity.
+- `marketPriorParams` is fitted from `marketPricePairs`: a Platt fit of outcomes on market log-odds, stored as `trustSlope`, `trustIntercept`, `fitted` and `sampleSize`. With fewer than 40 pairs, or only one kind of outcome, it stays at slope 1 and intercept 0.
 
 Request body:
 
 ```json
 {
   "historicalTraces": [],
-  "resolvedOutcomes": []
+  "resolvedOutcomes": [],
+  "marketPricePairs": [{ "price": 0.7, "outcome": true }]
 }
 ```
 
@@ -671,7 +708,7 @@ Evaluation run responses include:
 - `leakageWarnings`
 - `createdAt`
 
-Benchmark markets carry `endDate`, the scheduled end, alongside `resolvedAt`, the close time. Replay uses `endDate` as the event deadline.
+Benchmark markets carry `endDate`, the scheduled end, alongside `resolvedAt`, the close time. Replay uses `endDate` as the event deadline and as the anchor for its cutoffs.
 
 ### `BenchmarkSetSummary`
 

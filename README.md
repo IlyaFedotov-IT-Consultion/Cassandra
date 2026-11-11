@@ -78,7 +78,7 @@ A fuller implementation snapshot lives in [docs/current-status.md](docs/current-
 
    ```bash
    cd services/judge
-   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   uv run uvicorn app.main:app --port 8000 --reload
    ```
 
 6. Run the API watcher.
@@ -122,6 +122,9 @@ The shared environment template is in `.env.example`. The most important values 
 - `REDIS_URL`
 - `LOG_LEVEL`
 - `API_PORT`
+- `API_HOST`
+- `CASSANDRA_CORS_ORIGINS`
+- `CASSANDRA_API_KEY` and `VITE_API_KEY`
 - `JUDGE_BASE_URL`
 - `JUDGE_PORT`
 - `JUDGE_REQUEST_TIMEOUT_MS`
@@ -137,6 +140,13 @@ The shared environment template is in `.env.example`. The most important values 
 - `POLYMARKET_CLOB_URL`
 - `CUSTOM_MARKET_API_BASE_URL`
 - `CUSTOM_MARKET_API_KEY`
+
+Access to the API:
+
+- the API listens on `API_HOST`, which defaults to the loopback interface (`127.0.0.1`)
+- only the browser origins in `CASSANDRA_CORS_ORIGINS` may call it; the default is the local web app. A request from any other origin gets `403`
+- set `CASSANDRA_API_KEY` to require the key as `x-api-key` (or a bearer token) on every route except `/health` and `/ready`. Give the web app the same value as `VITE_API_KEY`
+- in live mode a request can start paid search and model calls, so set the key before you bind the API to another interface
 
 Notable logging behavior:
 

@@ -1,6 +1,6 @@
 # Current Project Status
 
-**Reviewed on:** 2026-11-07, on branch `feat/multi-stage-forecasting-pipeline`
+**Reviewed on:** 2026-11-11, on branch `feat/forecast-priors-and-calibration-gating`
 
 This page records what the repository does today, what is still partial, and what was verified at the last review. HTTP contracts are in [api-reference.md](api-reference.md). The architecture review and its remediation status are in [reviews/2026-11-07-architecture-and-algorithms-review.md](reviews/2026-11-07-architecture-and-algorithms-review.md).
 
@@ -20,10 +20,13 @@ Every judgment, in both `fixture` and `live` mode, goes through the judge servic
 1. **Query planning:** generates sub-question search queries (judge `POST /plan`).
 2. **Retrieval:** official, government, community and web search, Perplexity, and Polymarket Gamma/CLOB.
 3. **Relevance rating:** scores sources and keeps only the relevant ones.
-4. **Panel reasoning:** a multi-model judge ensemble, with a consistency guard that excludes samples whose label contradicts their probability.
-5. **Cross-examination:** runs when at least two judges had evidence.
-6. **Aggregation:** log-odds pooling around a prior that blends the base rate and the market price.
-7. **Calibration:** applies the snapshot in use.
+4. **Prior:** the bound market's price; failing that, the reference class's observed base rate; failing that, a base rate the judge model estimates without evidence. Sources are not blended, and a market found only by search never sets the prior.
+5. **Panel reasoning:** a multi-model judge ensemble, with a consistency guard that excludes samples whose label contradicts their probability.
+6. **Cross-examination:** runs when at least two judges had evidence.
+7. **Aggregation:** log-odds pooling around the prior, as a weighted average over the judges that had evidence.
+8. **Calibration:** applies the approved snapshot. Until one is approved, forecasts are uncalibrated.
+
+What is learned takes effect only through an approved calibration snapshot: the calibration map, the judge weights, the reference-class base rates, and how far a market price is trusted (fitted on resolved benchmark prices). A snapshot carries a held-out score for its calibration map, and approving one that does not beat uncalibrated forecasts needs an explicit override.
 
 Models and reasoning effort are set only through the `OPENROUTER_*` variables in `.env.example`. The current choices are explained in [research/2026-11-07-llm-forecasting-methods.md](research/2026-11-07-llm-forecasting-methods.md).
 
@@ -80,18 +83,19 @@ There is no migration framework. Both SQL files are re-applied on every migrate 
   - On-demand discovery runs inside the request, so in `live` mode it waits for the slowest source. Scheduled runs use the queue.
   - A watchlist's cadence cannot be edited after creation, because no update endpoint exists.
   - In `live` mode every scheduled run makes paid search calls. `CASSANDRA_DISCOVERY_SCHEDULE=off` switches scheduling off.
-- **No authentication.** In development the API listens on every network interface.
+- **Access control is opt-in.** The API listens on the loopback interface and serves only allowlisted browser origins, but an API key is required only when `CASSANDRA_API_KEY` is set. The judge service has no access control of its own.
+- **Benchmark re-import needed.** Replay cutoffs now count back from each market's scheduled end date. Price snapshots imported before that change sit at the old, resolution-anchored cutoffs.
 - **No OpenAPI document.** The contract in [api-reference.md](api-reference.md) is maintained by hand.
 - **No browser end-to-end suite.** UI changes are checked with Testing Library plus manual Playwright MCP sessions.
 - **No linter or formatter.** `pnpm lint` does nothing.
 - **Small evaluation sample.** Calibration and evaluation results on the seeded data rest on a few dozen predictions and are not yet meaningful.
 
-## Verification snapshot (2026-11-07)
+## Verification snapshot (2026-11-11)
 
 | Check | Result |
 | --- | --- |
-| `pnpm test` | shared 10, web 46, API 165 tests pass (API against local Postgres and Redis, in `cassandra_test`) |
-| `cd services/judge && uv run pytest` | 85 tests pass |
+| `pnpm test` | shared 10, web 77, API 217 tests pass (API against local Postgres and Redis, in `cassandra_test`) |
+| `cd services/judge && uv run pytest` | 126 tests pass |
 | `pnpm exec vitest run scripts/harness/real-e2e-support.test.ts` | 4 tests pass |
 | `pnpm build` | passes |
 | Browser check (Playwright MCP, fixture mode) | every route at 1440 and 390 px wide: no horizontal overflow, no console errors |
