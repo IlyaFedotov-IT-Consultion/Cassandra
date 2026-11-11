@@ -309,6 +309,7 @@ beforeEach(() => {
       if (method === "GET" && url.pathname === "/events/event-fed") return json(event);
       if (method === "GET" && url.pathname === "/judgments") return json(judgments);
       if (method === "GET" && url.pathname === "/judgments/judgment-fed-2") return json({ ...judgments[0], judgeOpinions: trace().judgeOpinions });
+      if (method === "GET" && url.pathname === "/judgments/judgment-fed-1") return json({ ...judgments[1], judgeOpinions: trace().judgeOpinions });
       if (method === "GET" && url.pathname === "/judgments/judgment-new") {
         return json({ id: "judgment-new", eventId: "event-fed", status: "queued", verdictTrace: null, executionLog: [], judgeOpinions: [], createdAt: "2026-11-07T12:00:00Z", updatedAt: "2026-11-07T12:00:00Z" });
       }
@@ -379,16 +380,41 @@ describe("judgment trace", () => {
     expect(within(pipeline).getByText(/kept 5 of 14/i)).toBeVisible();
   });
 
-  it("shows each model's sample and flags the ones the consistency guard excluded", async () => {
+  it("compares every model's samples across the judges and flags the excluded ones", async () => {
+    const user = userEvent.setup();
     renderAt("/judgments/judgment-fed-2");
 
-    const samples = await screen.findByRole("table", { name: /open web research samples/i });
-    const rows = within(samples).getAllByRole("row").slice(1);
+    const agreement = await screen.findByRole("region", { name: "Model agreement" });
+    expect(within(agreement).getAllByRole("button", { name: / for open web research/i })).toHaveLength(3);
+
+    await user.click(within(agreement).getByText("Show as table"));
+
+    const rows = within(within(agreement).getByRole("table", { name: /model samples/i })).getAllByRole("row").slice(1);
     expect(rows).toHaveLength(3);
     expect(within(rows[0]!).getByText("gpt-6.1-sol")).toBeVisible();
     expect(within(rows[0]!).getByText("96.0%")).toBeVisible();
     expect(within(rows[2]!).getByText(/excluded: label contradicts probability/i)).toBeVisible();
     expect(screen.queryByText(/\[openai\/gpt-6\.1-sol@high\]/)).not.toBeInTheDocument();
+  });
+
+  it("charts how the forecast moved from the prior to the final number", async () => {
+    renderAt("/judgments/judgment-fed-2");
+
+    const path = await screen.findByRole("group", { name: /how the forecast moved/i });
+    const steps = within(path).getAllByRole("listitem").map((item) => item.getAttribute("aria-label") ?? "");
+    expect(steps[0]).toMatch(/^prior/i);
+    expect(steps.some((step) => /^open web research/i.test(step))).toBe(true);
+    expect(steps.at(-1)).toMatch(/^final.*99\.4%/i);
+  });
+
+  it("traces the kept evidence from each provider to the judges that read it", async () => {
+    renderAt("/judgments/judgment-fed-2");
+
+    const flow = await screen.findByRole("region", { name: "Evidence flow" });
+    expect(within(flow).getByRole("button", { name: /^web: 2 kept/i })).toBeVisible();
+    expect(within(flow).getByRole("button", { name: /^polymarket clob: 0 retrieved, 0 kept, failed/i })).toBeVisible();
+    expect(within(flow).getByLabelText("2 items from Web read by Open web research")).toBeInTheDocument();
+    expect(within(flow).getByText("Kept")).toBeVisible();
   });
 
   it("shows how relevant each cited source was rated", async () => {
@@ -427,8 +453,18 @@ describe("event detail", () => {
   it("charts the forecast across runs", async () => {
     renderAt("/events/event-fed");
 
-    const chart = await screen.findByRole("img", { name: /forecast history/i });
+    const chart = await screen.findByRole("group", { name: /forecast history/i });
     expect(within(chart).getAllByLabelText(/forecast \d+\.\d%/i)).toHaveLength(2);
+  });
+
+  it("opens a run from its point on the forecast history", async () => {
+    const user = userEvent.setup();
+    renderAt("/events/event-fed");
+
+    await user.click(await screen.findByRole("button", { name: /forecast 97\.0%/i }));
+
+    expect(await screen.findByRole("button", { name: /run again/i })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: /verdict/i })).getByText("97.0%")).toBeVisible();
   });
 
   it("records the resolved outcome for the event", async () => {
@@ -474,6 +510,7 @@ describe("event detail", () => {
       "https://www.federalreserve.gov/resolution",
     );
     expect(screen.getByRole("button", { name: /update outcome/i })).toBeVisible();
+    expect(within(screen.getByRole("group", { name: /forecast history/i })).getByText("Resolved Yes")).toBeInTheDocument();
   });
 
   it("keeps the event usable when outcomes fail to load", async () => {
@@ -486,7 +523,7 @@ describe("event detail", () => {
 
     renderAt("/events/event-fed");
 
-    expect(await screen.findByRole("img", { name: /forecast history/i })).toBeVisible();
+    expect(await screen.findByRole("group", { name: /forecast history/i })).toBeVisible();
     expect(await screen.findByText(/couldn't load the recorded outcome/i)).toBeVisible();
     expect(screen.getByRole("button", { name: /record outcome/i })).toBeVisible();
   });
@@ -677,10 +714,10 @@ describe("evaluation run", () => {
   it("plots how well each baseline's probabilities were calibrated", async () => {
     renderAt("/evaluation/runs/run-paired");
 
-    const chart = await screen.findByRole("img", { name: /reliability/i });
+    const chart = await screen.findByRole("group", { name: /reliability/i });
     const legend = within(chart.closest("figure")!).getByRole("list", { name: /legend/i });
-    expect(within(legend).getByText("Base rate only")).toBeVisible();
-    expect(within(legend).getByText("Polymarket only")).toBeVisible();
+    expect(within(legend).getByRole("button", { name: "Base rate only" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(legend).getByRole("button", { name: "Polymarket only" })).toHaveAttribute("aria-pressed", "true");
   });
 });
 

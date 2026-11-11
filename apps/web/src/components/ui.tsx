@@ -5,6 +5,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
 } from "react";
@@ -154,11 +155,13 @@ export function SectionCard({
   children: ReactNode;
   kicker?: string;
 }) {
+  const headingId = useId();
+
   return (
-    <section className="section-card">
+    <section className="section-card" aria-labelledby={headingId}>
       <div className="section-card__header">
         <div>
-          <h3>{title}</h3>
+          <h3 id={headingId}>{title}</h3>
         </div>
       </div>
       {children}

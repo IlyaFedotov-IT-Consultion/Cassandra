@@ -338,6 +338,8 @@ export function EventDetailPage() {
       id: judgment.id,
       time: judgment.verdictTrace!.evaluationTime,
       probability: judgment.verdictTrace!.finalProbability,
+      low: judgment.verdictTrace!.confidenceLow,
+      high: judgment.verdictTrace!.confidenceHigh,
     }));
 
   return (
@@ -383,7 +385,14 @@ export function EventDetailPage() {
       )}
       {history.length > 1 ? (
         <SectionCard title="Forecast history">
-          <ForecastHistoryChart points={history} />
+          <p className="helper-text">
+            Each point is a completed run, with its uncertainty range shaded. Select a point to open that run.
+          </p>
+          <ForecastHistoryChart
+            points={history}
+            outcome={currentOutcome}
+            onSelect={(judgmentId) => navigate(`/judgments/${judgmentId}`)}
+          />
         </SectionCard>
       ) : history.length === 1 ? (
         <p className="helper-text">The forecast history chart appears after the second completed run.</p>

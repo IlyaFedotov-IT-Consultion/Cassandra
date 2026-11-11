@@ -17,6 +17,12 @@ import {
   runJudgment,
 } from "../api";
 import {
+  buildEnsembleSpread,
+  buildEvidenceFlow,
+  buildForecastPath,
+  EnsembleSpreadChart,
+  EvidenceFlowDiagram,
+  ForecastPathChart,
   ForecastRange,
 } from "../components/charts";
 import {
@@ -224,9 +230,7 @@ export function JudgmentDetailPage() {
   const statusDetail = describeJudgmentState(judgment.status);
   const inProgress = judgment.status === "queued" || judgment.status === "running";
   const failure = judgment.status === "failed" ? findFailureReason(judgment) : null;
-  const contributions = [...judgment.judgeOpinions].sort(
-    (left, right) => Math.abs(right.effectiveLogOddsContribution) - Math.abs(left.effectiveLogOddsContribution),
-  );
+  const spread = trace ? buildEnsembleSpread(trace, judgment.judgeOpinions) : null;
   const conflictsAndGaps = trace ? trace.conflicts.length + trace.missingEvidence.length : 0;
 
   return (
@@ -279,31 +283,18 @@ export function JudgmentDetailPage() {
               </ul>
             </div>
           </section>
-          <SectionCard title="Pipeline">
-            <PipelineStages stages={trace.pipelineStages ?? []} />
-          </SectionCard>
           <SectionCard title="How the forecast moved">
-            <ol className="flow">
-              <li className="flow__row">
-                <span>Started from the prior</span>
-                <strong>{formatProbability(trace.priorProbability)}</strong>
-              </li>
-              {contributions.map((opinion) => (
-                <li key={opinion.id ?? opinion.judgeName} className="flow__row">
-                  <span>{humanizeToken(opinion.judgeName)}</span>
-                  <strong>{formatSignedDecimal(opinion.effectiveLogOddsContribution)} log-odds</strong>
-                </li>
-              ))}
-              <li className="flow__row">
-                <span>Disagreement shrinkage</span>
-                <strong>{formatDecimal(trace.disagreementShrinkage)}</strong>
-              </li>
-              <li className="flow__row flow__row--total">
-                <span>Final forecast</span>
-                <strong>{formatProbability(trace.finalProbability)}</strong>
-              </li>
-            </ol>
+            <ForecastPathChart steps={buildForecastPath(trace, judgment.judgeOpinions)} />
           </SectionCard>
+          {spread && spread.rows.length > 0 ? (
+            <SectionCard title="Model agreement">
+              <p className="helper-text">
+                Each dot is one model's answer for one judge. The tick is the judge's pooled forecast; hollow dots were
+                excluded for contradicting their own label. Select a model to follow it across judges.
+              </p>
+              <EnsembleSpreadChart models={spread.models} rows={spread.rows} finalProbability={trace.finalProbability} />
+            </SectionCard>
+          ) : null}
           <section className="judge-grid" aria-label="Judges">
             {judgment.judgeOpinions.map((opinion) => (
               <JudgeCard
@@ -313,12 +304,18 @@ export function JudgmentDetailPage() {
               />
             ))}
           </section>
+          <SectionCard title="Evidence flow">
+            <EvidenceFlowDiagram flow={buildEvidenceFlow(trace, judgment.judgeOpinions)} />
+          </SectionCard>
           <SectionCard title="Supporting citations">
             <CitationList
               citations={trace.citations}
               relevanceScores={readRelevanceScores(trace)}
               compare={compareCitationsForDisplay}
             />
+          </SectionCard>
+          <SectionCard title="Pipeline">
+            <PipelineStages stages={trace.pipelineStages ?? []} />
           </SectionCard>
           {conflictsAndGaps > 0 ? (
             <SectionCard title="Conflicts and gaps">

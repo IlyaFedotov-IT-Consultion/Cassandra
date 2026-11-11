@@ -190,6 +190,12 @@ export function PipelineStages({ stages }: { stages: Stage[] }) {
   );
 }
 
+function describeSamples(samples: EnsembleSample[]) {
+  const excluded = samples.filter((sample) => sample.excluded).length;
+  const count = `${samples.length} model sample${samples.length === 1 ? "" : "s"}`;
+  return excluded > 0 ? `${count}, ${excluded} excluded` : count;
+}
+
 export function JudgeCard({ opinion, samples }: { opinion: Opinion; samples: EnsembleSample[] }) {
   const { model, text } = splitRationale(opinion.rationale);
   const name = humanizeToken(opinion.judgeName);
@@ -218,27 +224,9 @@ export function JudgeCard({ opinion, samples }: { opinion: Opinion; samples: Ens
       <p className="judge-card__rationale">{text}</p>
       {model ? <p className="judge-card__source">Rationale from {shortModelName(model)}</p> : null}
       {samples.length > 0 ? (
-        <table className="sample-table" aria-label={`${name} samples`}>
-          <thead>
-            <tr>
-              <th scope="col">Model</th>
-              <th scope="col">Probability</th>
-              <th scope="col">Evidence strength</th>
-            </tr>
-          </thead>
-          <tbody>
-            {samples.map((sample) => (
-              <tr key={sample.model} className={sample.excluded ? "sample-table__row--excluded" : undefined}>
-                <td>{shortModelName(sample.model)}</td>
-                <td>{formatProbability(sample.probability)}</td>
-                <td>
-                  {humanizeToken(sample.evidenceStrength)}
-                  {sample.excluded ? <span className="sample-table__note">Excluded: {sample.excluded}</span> : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <p className="judge-card__source">
+          {describeSamples(samples)}; each is plotted under Model agreement.
+        </p>
       ) : null}
     </article>
   );
