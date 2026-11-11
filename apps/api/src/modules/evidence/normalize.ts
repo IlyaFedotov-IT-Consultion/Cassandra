@@ -136,7 +136,9 @@ export function normalizeEvidenceItems(items: EvidenceItem[]): EvidenceItem[] {
   const urlKeysByTitle = new Map<string, string>();
 
   for (const item of items.map(normalizeEvidenceItem)) {
-    const titleKey = fuzzyTitleKey(item.title);
+    // Same title in the same source family is the same story republished. Across families
+    // it is not: a community post about an article is different evidence from the article.
+    const titleKey = `${item.sourceFamily}|${fuzzyTitleKey(item.title)}`;
     const urlKey = item.url;
     const existingUrlKey = mergedByUrl.has(urlKey) ? urlKey : urlKeysByTitle.get(titleKey);
 

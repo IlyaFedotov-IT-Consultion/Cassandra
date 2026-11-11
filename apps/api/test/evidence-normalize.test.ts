@@ -63,4 +63,29 @@ describe("normalizeEvidenceItems", () => {
       "Launch may happen this year",
     ]);
   });
+
+  it("keeps a community post and an article with the same title as separate evidence", () => {
+    const normalized = normalizeEvidenceItems([
+      buildEvidence({
+        sourceFamily: "community",
+        sourceType: "reddit_post",
+        url: "https://www.reddit.com/r/gadgets/comments/abc/example_corp_teases_product_x_launch",
+      }),
+      buildEvidence({ id: "22222222-2222-4222-8222-222222222222" }),
+    ]);
+
+    expect(normalized.map((item) => item.sourceFamily)).toEqual(["community", "web"]);
+  });
+
+  it("still merges the same story republished within one source family", () => {
+    const normalized = normalizeEvidenceItems([
+      buildEvidence(),
+      buildEvidence({
+        id: "22222222-2222-4222-8222-222222222222",
+        url: "https://syndication.example.org/example-corp-product-x",
+      }),
+    ]);
+
+    expect(normalized).toHaveLength(1);
+  });
 });

@@ -160,11 +160,47 @@ describe("judge input selection", () => {
     const counts = countBy(calls[0]?.evidence ?? []);
     expect(counts.official).toBeGreaterThan(0);
     expect(counts.government).toBeGreaterThan(0);
-    expect((counts.official ?? 0) + (counts.government ?? 0)).toBeLessThanOrEqual(6);
     expect(counts.community).toBe(5);
+    // 18 panel slots in all: the slot the community judge could not fill went to another judge.
+    expect((calls[0]?.evidence ?? []).filter((item) => item.sourceFamily !== "prediction_market")).toHaveLength(18);
     expect(counts.web).toBeGreaterThan(0);
     expect(counts.llm_research).toBeGreaterThan(0);
     expect(counts.prediction_market).toBe(1);
+  });
+
+  it("gives a judge with more candidates the slots that judges with little evidence leave unused", async () => {
+    const collected = [
+      evidenceItem("official", 0),
+      ...Array.from({ length: 14 }, (_, index) => evidenceItem("web", index)),
+    ];
+    const { calls, client } = capturingJudgeClient(judgeTrace());
+
+    await evaluateEventForecast({
+      env: fixtureEnv,
+      event,
+      evaluationTime: "2026-06-10T00:00:00Z",
+      evidence: collected,
+      calibrationSnapshot: snapshot,
+      judgeClient: client,
+    });
+
+    expect(countBy(calls[0]?.evidence ?? [])).toEqual({ official: 1, web: 14 });
+  });
+
+  it("never sends the panel more than its total budget of slots", async () => {
+    const collected = Array.from({ length: 40 }, (_, index) => evidenceItem("web", index));
+    const { calls, client } = capturingJudgeClient(judgeTrace());
+
+    await evaluateEventForecast({
+      env: fixtureEnv,
+      event,
+      evaluationTime: "2026-06-10T00:00:00Z",
+      evidence: collected,
+      calibrationSnapshot: snapshot,
+      judgeClient: client,
+    });
+
+    expect(calls[0]?.evidence).toHaveLength(18);
   });
 
   it("delegates insufficient-evidence traces to the judge service in prior-only mode", async () => {

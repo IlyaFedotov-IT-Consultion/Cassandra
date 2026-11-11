@@ -480,9 +480,11 @@ function readLiquidity(item: JudgmentEvidenceItem): number {
 }
 
 /**
- * Per-judge quotas: each panel judge gets up to MAX_EVIDENCE_ITEMS_PER_JUDGE items,
- * round-robin across its source families so no family starves another. Prediction-market
- * items feed the prior (not a judge), so they are selected separately, most liquid first.
+ * The panel reads at most MAX_EVIDENCE_ITEMS_PER_JUDGE items per judge in total. Each judge
+ * first gets up to that many of its own, taken round-robin across its source families so
+ * no family starves another; slots a judge cannot fill then go, one at a time, to judges
+ * that still have candidates. Prediction-market items feed the prior (not a judge), so
+ * they are selected separately, most liquid first.
  */
 function selectEvidenceForJudgeInput(
   event: EventRecord,
@@ -491,31 +493,44 @@ function selectEvidenceForJudgeInput(
   const relevantEvidence = evidence.filter((item) => isEventRelevantEvidence(event, item));
   const candidateEvidence = relevantEvidence.length > 0 ? relevantEvidence : evidence;
   const sortedEvidence = [...candidateEvidence].sort(compareEvidenceForJudging);
-  const selectedEvidence: JudgmentEvidenceItem[] = [];
-
-  for (const panelJudge of PANEL_JUDGES) {
+  const candidatesByJudge = PANEL_JUDGES.map((panelJudge) => {
     const familyQueues = panelJudge.sourceFamilies.map((family) =>
       sortedEvidence.filter((item) => item.sourceFamily === family),
     );
-    let taken = 0;
+    const rounds = Math.max(0, ...familyQueues.map((queue) => queue.length));
 
-    for (let round = 0; taken < MAX_EVIDENCE_ITEMS_PER_JUDGE; round += 1) {
-      const roundItems = familyQueues.flatMap((queue) => {
-        const item = queue[round];
-        return item ? [item] : [];
-      });
+    return Array.from({ length: rounds }, (_, round) =>
+      familyQueues.flatMap((queue) => (queue[round] ? [queue[round]] : [])),
+    ).flat();
+  });
+  const taken = candidatesByJudge.map((candidates) =>
+    Math.min(candidates.length, MAX_EVIDENCE_ITEMS_PER_JUDGE),
+  );
+  let spareSlots =
+    PANEL_JUDGES.length * MAX_EVIDENCE_ITEMS_PER_JUDGE - taken.reduce((sum, count) => sum + count, 0);
 
-      if (roundItems.length === 0) {
+  while (spareSlots > 0) {
+    const judgesWithMore = candidatesByJudge
+      .map((candidates, index) => ({ index, more: candidates.length - (taken[index] ?? 0) }))
+      .filter((judge) => judge.more > 0);
+
+    if (judgesWithMore.length === 0) {
+      break;
+    }
+
+    for (const judge of judgesWithMore) {
+      if (spareSlots === 0) {
         break;
       }
 
-      for (const item of roundItems.slice(0, MAX_EVIDENCE_ITEMS_PER_JUDGE - taken)) {
-        selectedEvidence.push(item);
-        taken += 1;
-      }
+      taken[judge.index] = (taken[judge.index] ?? 0) + 1;
+      spareSlots -= 1;
     }
   }
 
+  const selectedEvidence = candidatesByJudge.flatMap((candidates, index) =>
+    candidates.slice(0, taken[index]),
+  );
   const marketPriorEvidence = sortedEvidence
     .filter((item) => item.sourceFamily === "prediction_market")
     .sort((left, right) => readLiquidity(right) - readLiquidity(left))
