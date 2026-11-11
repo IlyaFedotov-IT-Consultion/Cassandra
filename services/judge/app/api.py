@@ -6,7 +6,7 @@ from math import exp, log
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.llm import LLMClient, get_llm_client
 from app.llm.client import LLMError
@@ -28,8 +28,23 @@ from app.scoring.weights import default_judge_weights, select_regime
 router = APIRouter()
 
 
-def _llm_dependency() -> Iterator[LLMClient]:
-    llm = get_llm_client()
+# Share of the caller's timeout spent on model calls; the rest covers pooling and the reply.
+REQUEST_BUDGET_SHARE = 0.9
+
+
+def request_budget_seconds(timeout_header: str | None) -> float | None:
+    """How long this request may keep calling models, from the caller's `x-cassandra-timeout-ms`."""
+    try:
+        timeout_ms = float(timeout_header) if timeout_header is not None else None
+    except ValueError:
+        return None
+    if timeout_ms is None or timeout_ms <= 0:
+        return None
+    return timeout_ms / 1000 * REQUEST_BUDGET_SHARE
+
+
+def _llm_dependency(request: Request) -> Iterator[LLMClient]:
+    llm = get_llm_client(request_budget_seconds(request.headers.get("x-cassandra-timeout-ms")))
     try:
         yield llm
     finally:

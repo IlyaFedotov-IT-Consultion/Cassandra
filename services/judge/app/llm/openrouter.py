@@ -199,6 +199,7 @@ class OpenRouterLLMClient(LLMClient):
         utility_reasoning_effort: str | None = DEFAULT_UTILITY_REASONING_EFFORT,
         utility_max_tokens: int = DEFAULT_UTILITY_MAX_TOKENS,
         retries: int = DEFAULT_RETRIES,
+        request_budget_seconds: float | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         if not api_key:
@@ -218,6 +219,9 @@ class OpenRouterLLMClient(LLMClient):
         self._utility_reasoning_effort = utility_reasoning_effort
         self._utility_max_tokens = utility_max_tokens
         self._retries = retries
+        # A client serves one judge request, so the budget clock starts here. Once the
+        # caller has given up on the request, no further model call is worth paying for.
+        self._deadline = None if request_budget_seconds is None else time.monotonic() + request_budget_seconds
         self._http = http_client or httpx.Client(timeout=timeout)
         self._owns_client = http_client is None
 
@@ -541,8 +545,16 @@ class OpenRouterLLMClient(LLMClient):
 
         last_error: Exception | None = None
         for attempt in range(self._retries + 1):
+            request_options: dict[str, Any] = {}
+            if self._deadline is not None:
+                remaining = self._deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LLMTransportError(
+                        f"judge request budget exhausted before calling {model}; last error: {last_error}"
+                    )
+                request_options["timeout"] = min(self._timeout, remaining)
             try:
-                response = self._http.post(url, headers=headers, json=body)
+                response = self._http.post(url, headers=headers, json=body, **request_options)
             except httpx.TimeoutException as exc:
                 last_error = exc
                 logger.warning(

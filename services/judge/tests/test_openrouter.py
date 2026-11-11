@@ -248,3 +248,61 @@ def test_base_rate_estimate_uses_the_judge_model_and_sees_no_evidence() -> None:
         "rationale": "Launches often slip.",
     }
 
+
+def test_no_further_model_calls_are_made_once_the_request_budget_is_spent() -> None:
+    import pytest
+
+    from app.llm.client import LLMTransportError
+
+    http_client = _RecordingHttpClient([])
+    client = OpenRouterLLMClient(api_key="test-key", http_client=http_client, retries=2, request_budget_seconds=0.0)
+
+    with pytest.raises(LLMTransportError, match="budget"):
+        client.plan_queries(event=_event(), evaluation_time="2026-10-11T12:00:00Z")
+
+    assert http_client.calls == []
+
+
+def test_a_call_is_capped_at_the_time_left_in_the_request_budget() -> None:
+    class _TimeoutRecordingClient(_RecordingHttpClient):
+        def post(self, url: str, *, headers: dict, json: dict, timeout: float | None = None):
+            self.timeouts = [*getattr(self, "timeouts", []), timeout]
+            return super().post(url, headers=headers, json=json)
+
+    http_client = _TimeoutRecordingClient(
+        [_content_response('{"subQuestions": ["Has a date been announced?"], "queries": ["Product X launch date"]}')]
+    )
+    client = OpenRouterLLMClient(
+        api_key="test-key", http_client=http_client, retries=0, timeout=180.0, request_budget_seconds=20.0
+    )
+
+    client.plan_queries(event=_event(), evaluation_time="2026-10-11T12:00:00Z")
+
+    assert 0 < http_client.timeouts[0] <= 20.0
+
+
+def test_judge_budget_leaves_a_margin_inside_the_callers_timeout() -> None:
+    from app.api import request_budget_seconds
+
+    assert request_budget_seconds("360000") == 324.0
+    assert request_budget_seconds(None) is None
+    assert request_budget_seconds("soon") is None
+    assert request_budget_seconds("-5") is None
+
+
+def test_configured_client_stops_calling_models_when_the_callers_budget_is_spent(monkeypatch) -> None:
+    import pytest
+
+    from app.llm.client import LLMTransportError
+    from app.llm.factory import get_llm_client
+
+    monkeypatch.setenv("CASSANDRA_JUDGE_LLM", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_JUDGE_MODELS", raising=False)
+
+    client = get_llm_client(request_budget_seconds=0.0)
+    try:
+        with pytest.raises(LLMTransportError, match="budget"):
+            client.plan_queries(event=_event(), evaluation_time="2026-10-11T12:00:00Z")
+    finally:
+        client.close()
