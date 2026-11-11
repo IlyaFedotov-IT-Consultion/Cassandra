@@ -46,6 +46,47 @@ async function resetDatabase() {
   `);
 }
 
+/**
+ * JSON.parse silently keeps the last of two equal keys, so scan the raw line for
+ * top-level keys that appear more than once.
+ */
+function repeatedTopLevelKeys(line: string): string[] {
+  const seen = new Set<string>();
+  const repeated: string[] = [];
+  let depth = 0;
+  let index = 0;
+
+  while (index < line.length) {
+    const char = line[index];
+
+    if (char === "\"") {
+      let end = index + 1;
+      while (end < line.length && line[end] !== "\"") {
+        end += line[end] === "\\" ? 2 : 1;
+      }
+      const isKey = depth === 1 && line.slice(end + 1).trimStart().startsWith(":");
+      if (isKey) {
+        const key = line.slice(index + 1, end);
+        if (seen.has(key)) {
+          repeated.push(key);
+        }
+        seen.add(key);
+      }
+      index = end + 1;
+      continue;
+    }
+
+    if (char === "{" || char === "[") {
+      depth += 1;
+    } else if (char === "}" || char === "]") {
+      depth -= 1;
+    }
+    index += 1;
+  }
+
+  return repeated;
+}
+
 function createFixtureEnv(overrides: Partial<NodeJS.ProcessEnv> = {}) {
   return getEnv({
     DATABASE_URL,
@@ -498,6 +539,12 @@ describe("judgment routes and service", () => {
       expect(evidenceLine?.match(/"component":/g) ?? []).toHaveLength(1);
       expect(evidenceLine?.match(/"eventId":/g) ?? []).toHaveLength(1);
       expect(evidenceLine?.match(/"evaluationTime":/g) ?? []).toHaveLength(1);
+
+      expect(lines.some((line) => line.includes("\"event\":\"judgment_execution_log\""))).toBe(true);
+      const linesWithRepeatedKeys = lines
+        .map((line) => ({ line, repeated: repeatedTopLevelKeys(line) }))
+        .filter((entry) => entry.repeated.length > 0);
+      expect(linesWithRepeatedKeys).toEqual([]);
     } finally {
       await app.close();
     }

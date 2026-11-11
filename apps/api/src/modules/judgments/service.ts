@@ -222,11 +222,11 @@ async function recordJudgmentExecutionLog(args: {
 }): Promise<void> {
   await appendJudgmentExecutionLog(args.pool, args.judgmentId, args.entry);
 
+  // The entry's level picks the logger method and its timestamp matches the line's own
+  // `time`, so neither is repeated in the payload (that would write those keys twice).
   const payload = {
     event: "judgment_execution_log",
     stage: args.entry.stage,
-    level: args.entry.level,
-    timestamp: args.entry.timestamp,
     details: args.entry.details,
   };
 
@@ -600,19 +600,46 @@ function appendJudgeCacheEvent(
   });
 }
 
+/** Ids the judge service logs on every line of a call, so its logs join the API's. */
+export interface JudgeRequestContext {
+  judgmentId?: string;
+  eventId?: string;
+}
+
+export function createJudgeClient(env: AppEnv, context: JudgeRequestContext = {}): JudgeClient {
+  return new DefaultJudgeClient(env, context);
+}
+
 class DefaultJudgeClient implements JudgeClient {
-  constructor(private readonly env: AppEnv) {}
+  constructor(
+    private readonly env: AppEnv,
+    private readonly context: JudgeRequestContext = {},
+  ) {}
+
+  private requestHeaders(event: EventRecord): { requestId: string; headers: Record<string, string> } {
+    const requestId = randomUUID();
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "x-request-id": requestId,
+      "x-cassandra-event-id": this.context.eventId ?? event.id,
+    };
+
+    if (this.context.judgmentId) {
+      headers["x-cassandra-judgment-id"] = this.context.judgmentId;
+    }
+
+    return { requestId, headers };
+  }
 
   async judge(input: Parameters<JudgeClient["judge"]>[0]): Promise<VerdictTrace> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.env.JUDGE_REQUEST_TIMEOUT_MS);
+    const { requestId, headers } = this.requestHeaders(input.event);
 
     try {
       const response = await fetch(`${this.env.JUDGE_BASE_URL}/judge`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
+        headers,
         signal: controller.signal,
         body: JSON.stringify({
           eventId: input.event.id,
@@ -633,7 +660,9 @@ class DefaultJudgeClient implements JudgeClient {
       });
 
       if (!response.ok) {
-        throw new Error(`Judge service returned ${response.status} ${response.statusText}`);
+        throw new Error(
+          `Judge service returned ${response.status} ${response.statusText} (request ${requestId})`,
+        );
       }
 
       // The timeout also covers reading the body, not only receiving headers.
@@ -646,11 +675,12 @@ class DefaultJudgeClient implements JudgeClient {
   async plan(input: { event: EventRecord; evaluationTime: string; maxQueries: number }): Promise<QueryPlanResult> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.env.JUDGE_REQUEST_TIMEOUT_MS);
+    const { requestId, headers } = this.requestHeaders(input.event);
 
     try {
       const response = await fetch(`${this.env.JUDGE_BASE_URL}/plan`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         signal: controller.signal,
         body: JSON.stringify({
           event: {
@@ -668,7 +698,9 @@ class DefaultJudgeClient implements JudgeClient {
       });
 
       if (!response.ok) {
-        throw new Error(`Judge service planning returned ${response.status} ${response.statusText}`);
+        throw new Error(
+          `Judge service planning returned ${response.status} ${response.statusText} (request ${requestId})`,
+        );
       }
 
       const payload = (await response.json()) as Partial<QueryPlanResult>;
@@ -1042,7 +1074,8 @@ export async function runJudgment(args: JudgmentServiceDeps & {
   const evidenceCacheStore =
     args.evidenceCacheStore ?? new InMemoryEvidenceCacheStore();
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
-  const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
+  const judgeClient =
+    args.judgeClient ?? createJudgeClient(args.env, { judgmentId: judgment.id, eventId: event.id });
   const logger = args.logger?.child({
     operation: "judgment_run",
     evaluationTime,

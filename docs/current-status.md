@@ -42,7 +42,7 @@ The API has 27 routes covering:
 - calibration retraining and snapshots;
 - the evaluation workflow: Polymarket benchmark import, benchmark sets and markets, replay runs, and predictions.
 
-It writes structured JSON logs with request ids.
+It writes structured JSON logs with request ids. The judge service writes the same JSON shape and tags each line with the calling judgment's id, so one `judgmentId` finds a run in both services' logs.
 
 ### Judge service
 

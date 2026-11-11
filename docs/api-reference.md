@@ -31,6 +31,8 @@ This document describes the current HTTP API exposed by the Cassandra prototype 
 - There is currently no auth layer or versioned prefix such as `/v1`.
 - The API accepts an optional `x-request-id` header. If it is not provided, the API generates one internally.
 - The API emits structured JSON logs for request lifecycle, readiness failures, evidence collection, and judgment execution events.
+- The judge service logs JSON lines in the same shape (`level`, `time`, `service`, `scope`, `event`, `message`), with `service: "cassandra-judge"`. Both services read `LOG_LEVEL`.
+- On every judge call the API sends `x-request-id` (new for each call), `x-cassandra-event-id` and, for a judgment run, `x-cassandra-judgment-id`. The judge writes them as `requestId`, `eventId` and `judgmentId` on every log line of that call, and echoes `x-request-id` in the response. A failed judge call's error names that request id.
 
 ## Common Shared Shapes
 
