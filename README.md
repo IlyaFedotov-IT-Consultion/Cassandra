@@ -8,6 +8,7 @@ It combines a React web app, a TypeScript orchestration API and a Python judge s
 - [Live mode](#live-mode-and-costs)
 - [Solution architecture](#solution-architecture)
 - [How predictions work](#how-predictions-work)
+- [Inside the judge](#inside-the-judge)
 - [Evaluation and learning](#evaluation-and-learning)
 - [User guide](docs/user-guide.md) · [Current state and verification](docs/current-status.md) · [HTTP API](docs/api-reference.md)
 
@@ -109,28 +110,9 @@ Live judgments, discovery and model replay baselines incur provider charges. Sch
 
 ## Solution architecture
 
-```mermaid
-flowchart LR
-  User[Researcher] --> Web[React workspace]
-  Web -->|HTTP and polling| API[Fastify API]
-  subgraph NodeProcess[API process]
-    API
-    Workers[Judgment, evaluation and discovery workers]
-  end
-  API -->|Store requests and outcomes| PG[(Postgres)]
-  API -->|Enqueue work| Redis[(Redis and BullMQ)]
-  Redis --> Workers
-  Workers -->|Evidence and result caches| Redis
-  Workers -->|Search and market data| Sources[Evidence providers and Polymarket]
-  Workers -->|Plan and judge| Judge[Python FastAPI judge]
-  API -->|Retrain from stored data| Judge
-  Judge -->|Configured model ensemble| Router[OpenRouter]
-  Workers -->|Save traces and forecasts| PG
-  PG -->|Events, scores and snapshots| API
-  Shared[Shared Zod contracts] -.-> API
-  Shared -.-> Web
-  Shared -.->|Generated models| Judge
-```
+![Cassandra architecture: React workspace, Fastify API and workers, Postgres, Redis, evidence providers, Python judge and OpenRouter.](docs/images/solution-architecture.svg)
+
+[Open the architecture diagram at full size](docs/images/solution-architecture.svg).
 
 | Component | Responsibility | Source |
 | --- | --- | --- |
@@ -173,26 +155,25 @@ Failures and partial coverage are recorded in the trace/log rather than hidden. 
 
 ## How predictions work
 
-```mermaid
-flowchart TD
-  Event[Question, deadline and resolution rules] --> Plan[Plan sub-question searches]
-  Plan --> Retrieve[Retrieve and normalize evidence]
-  Retrieve --> Filter[Rate relevance and keep useful evidence]
-  Event --> Prior[Choose a starting probability]
-  Prior --> Panel[Official, web and community judges]
-  Filter --> Panel
-  Panel --> Cross[Cross-examine when at least two judges have evidence]
-  Cross --> Pool[Pool evidence updates around the prior]
-  Pool --> Shrink[Reduce movement when judges disagree]
-  Shrink --> Calibrate[Apply approved calibration map]
-  Calibrate --> Trace[Probability, model spread, citations and gaps]
-```
+![Cassandra decision process: define the event, gather evidence, assess it with a judge panel, combine updates with a prior, apply approved calibration and save an explained forecast.](docs/images/forecast-decision-process.svg)
+
+[Open the decision-process diagram at full size](docs/images/forecast-decision-process.svg).
 
 1. **Starting probability:** use the explicitly bound market price when available, otherwise the observed base rate for similar events, otherwise a model estimate without evidence. A related market returned by search cannot set the prior.
 2. **Evidence:** official, government, web, community and market adapters gather sources. Relevance filtering removes weak matches. Source family follows the publisher, not the search provider's label.
 3. **Judge panel:** official records, open web research and community signal are roles, each potentially backed by several models. A role with no evidence is neutral; failed model calls can abstain. Inconsistent samples can be excluded.
 4. **Combination:** evidence-strength readings become log-odds updates around the prior, adjusted for learned weights, source overlap and freshness. Disagreement pulls the result back toward the prior. This is not a simple average of model percentages.
 5. **Calibration and explanation:** the active approved snapshot may adjust the probability. With an identity map, the probability is unchanged. Every saved trace exposes sources, intermediate readings, gaps and pipeline stages. The range reflects model spread, not a statistically validated confidence interval.
+
+### Inside the judge
+
+![Inside the judge: relevance checks feed three parallel evidence roles, model ensembles produce role opinions, and aggregation and cross-examination feed a calibrated verdict trace.](docs/images/judge-service.svg)
+
+[Open the judge diagram at full size](docs/images/judge-service.svg).
+
+The three judge roles read different source families. Each role can call several configured models and combine their samples before the probability aggregator combines the role-level evidence updates with a separately selected prior. The cross-examiner records conflicts when at least two roles have evidence; those annotations do not directly change the probability.
+
+A role with no evidence stays neutral without calling a model. Failed roles can abstain, but if all evidence-backed panel judges fail, the request fails for retry. If model spread cannot be measured, the trace labels its range as a fallback band. See the [judge pipeline](services/judge/app/api.py), [model ensemble](services/judge/app/llm/ensemble.py) and [probability aggregator](services/judge/app/scoring/aggregate.py) for the implementation.
 
 ## Evaluation and learning
 

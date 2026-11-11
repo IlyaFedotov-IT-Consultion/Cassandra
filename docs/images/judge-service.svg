@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1430" viewBox="0 0 1200 1430" role="img" aria-labelledby="title desc">
+<title id="title">Inside the Cassandra judge service</title><desc id="desc">The judge accepts an event, evidence, evaluation time and an approved calibration snapshot. After relevance checks, official-records, open-web and community roles run concurrently. Each role can aggregate several configured models. Role opinions feed a probability aggregator and, when at least two roles have evidence, a cross-examiner. The aggregator combines evidence updates with an independently chosen prior, computes model spread and applies calibration. Cross-examination adds conflict annotations to the returned trace.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8Z" fill="#526579"/></marker></defs>
+<rect width="1200" height="1430" rx="24" fill="#f6f8fb"/>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#172c40}.label{font-size:15px;font-weight:700;letter-spacing:1.6px;fill:#087f79}.heading{font-size:25px;font-weight:700}.body{font-size:19px;fill:#526579}.small{font-size:16px;fill:#526579}.edge{fill:none;stroke:#526579;stroke-width:2;marker-end:url(#arrow)}</style>
+<text x="40" y="46" class="label" >CASSANDRA / INSIDE THE JUDGE</text>
+<text x="40" y="88" class="heading" >Three evidence roles, one inspectable verdict</text>
+<text x="40" y="118" class="body" >Python FastAPI service · roles run concurrently; configured ensembles run within each role.</text>
+<rect x="40" y="155" width="1120" height="112" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="175" width="4" height="72" rx="2" fill="#2863b7"/>
+<text x="64" y="185" class="label" >INPUT / POST /judge</text>
+<text x="64" y="219" class="heading" >Receive a judgment request</text>
+<text x="64" y="250" class="body" >Event + evidence + evaluation time + active approved snapshot (or identity baseline)</text>
+<path d="M600 267 V310" class="edge"/>
+<rect x="40" y="310" width="1120" height="112" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="330" width="4" height="72" rx="2" fill="#2863b7"/>
+<text x="64" y="340" class="label" >RELEVANCE + COVERAGE</text>
+<text x="64" y="374" class="heading" >Select evidence for each role</text>
+<text x="64" y="405" class="body" >Too little relevant evidence → skip panel model calls and return a flagged prior-only result.</text>
+<path d="M600 422 V490" class="edge"/>
+<path d="M210 490 V460 H990 V490" fill="none" stroke="#526579" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<rect x="40" y="490" width="340" height="138" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="510" width="4" height="98" rx="2" fill="#2863b7"/>
+<text x="64" y="520" class="label" >ROLE 01</text>
+<text x="64" y="554" class="heading" >Official records</text>
+<text x="64" y="585" class="body" >Official + government sources</text>
+<text x="64" y="611" class="body" >No evidence → neutral opinion</text>
+<rect x="430" y="490" width="340" height="138" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="430" y="510" width="4" height="98" rx="2" fill="#2863b7"/>
+<text x="454" y="520" class="label" >ROLE 02</text>
+<text x="454" y="554" class="heading" >Open web research</text>
+<text x="454" y="585" class="body" >Web + LLM research sources</text>
+<text x="454" y="611" class="body" >No evidence → neutral opinion</text>
+<rect x="820" y="490" width="340" height="138" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="820" y="510" width="4" height="98" rx="2" fill="#2863b7"/>
+<text x="844" y="520" class="label" >ROLE 03</text>
+<text x="844" y="554" class="heading" >Community signal</text>
+<text x="844" y="585" class="body" >Community discussion sources</text>
+<text x="844" y="611" class="body" >No evidence → neutral opinion</text>
+<path d="M210 628 V700" class="edge"/>
+<path d="M600 628 V700" class="edge"/>
+<path d="M990 628 V700" class="edge"/>
+<rect x="40" y="700" width="1120" height="138" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="720" width="4" height="98" rx="2" fill="#2863b7"/>
+<text x="64" y="730" class="label" >WITHIN EACH ROLE / CONFIGURED MODELS</text>
+<text x="64" y="764" class="heading" >Combine model samples into a role opinion</text>
+<text x="64" y="795" class="body" >Use median log-odds and median evidence updates; retain samples, rationales and warnings.</text>
+<text x="64" y="821" class="body" >Exclude inconsistent samples when coherent ones remain; otherwise retain all with a warning.</text>
+<path d="M600 838 V870 H390 V920 M600 870 H980 V920" fill="none" stroke="#526579" stroke-width="2"/>
+<path d="M390 900 V920" class="edge"/>
+<path d="M980 900 V920" class="edge"/>
+<rect x="40" y="920" width="700" height="164" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="940" width="4" height="124" rx="2" fill="#2863b7"/>
+<text x="64" y="950" class="label" >PROBABILITY CALCULATION</text>
+<text x="64" y="984" class="heading" >Combine opinions with an independent prior</text>
+<text x="64" y="1015" class="body" >Weight evidence updates by overlap, quality and freshness.</text>
+<text x="64" y="1041" class="body" >Shrink disagreement toward the prior; estimate model spread.</text>
+<text x="64" y="1067" class="body" >A role with no cited evidence contributes no update.</text>
+<rect x="800" y="920" width="360" height="164" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="800" y="940" width="4" height="124" rx="2" fill="#087f79"/>
+<text x="824" y="950" class="label" >CONFLICT ANNOTATIONS</text>
+<text x="824" y="984" class="heading" >Cross-examine opinions</text>
+<text x="824" y="1015" class="body" >Only with 2+ evidence-backed roles.</text>
+<text x="824" y="1041" class="body" >Record conflicts in the trace.</text>
+<text x="824" y="1067" class="body" >No direct probability adjustment.</text>
+<path d="M390 1084 V1150" class="edge"/>
+<path d="M980 1084 V1230 H740" class="edge"/>
+<text x="870" y="1213" class="small" >Conflicts</text>
+<rect x="40" y="1150" width="700" height="164" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="1170" width="4" height="124" rx="2" fill="#087f79"/>
+<text x="64" y="1180" class="label" >OUTPUT / RETURNED TO THE API</text>
+<text x="64" y="1214" class="heading" >Calibrate and return the verdict trace</text>
+<text x="64" y="1245" class="body" >Apply the approved map to the probability and range.</text>
+<text x="64" y="1271" class="body" >Return opinions, sources, conflicts, gaps and stage details.</text>
+<text x="64" y="1297" class="body" >No measured model spread → explicitly labeled fallback band.</text>
+<rect x="40" y="1350" width="1120" height="45" rx="12" fill="#e7f2f1"/>
+<text x="64" y="1380" class="body" >Model failures may abstain. If all evidence-backed panel judges fail, the request fails for retry.</text>
+</svg>
