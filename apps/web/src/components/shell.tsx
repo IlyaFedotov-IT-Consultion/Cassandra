@@ -28,6 +28,7 @@ export const navItems = [
   { to: "/runtime", label: "Runtime" },
   { to: "/evaluation", label: "Evaluation" },
   { to: "/calibration", label: "Calibration" },
+  { to: "/help", label: "Help" },
 ] as const;
 
 export function WorkspaceShell({ children }: { children: ReactNode }) {

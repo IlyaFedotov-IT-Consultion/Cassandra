@@ -114,6 +114,7 @@ export function JudgmentsPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="predictions"
         title="Judgments"
         description="Scan the run queue, jump into trace detail, and spot stalled or inconclusive forecasts quickly."
       />
@@ -247,6 +248,7 @@ export function JudgmentDetailPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="predictions"
         title={eventQuery.data?.question ?? "Judgment"}
         returnLink={{
           to: "/judgments",

@@ -1,3 +1,5 @@
+import { ContextHelp } from "./help";
+import { type HelpTopic } from "../help";
 import {
   Component,
   type ErrorInfo,
@@ -121,8 +123,10 @@ export function PageIntro({
   description,
   actions,
   returnLink,
+  helpTopic,
 }: {
   title: string;
+  helpTopic?: HelpTopic;
   description?: string;
   actions?: ReactNode;
   returnLink?: {
@@ -131,18 +135,21 @@ export function PageIntro({
   };
 }) {
   return (
-    <header className="page-intro">
-      <div>
-        {returnLink ? (
-          <Link className="page-intro__return-link" to={returnLink.to}>
-            {returnLink.label}
-          </Link>
-        ) : null}
-        <h2>{title}</h2>
-        {description ? <p>{description}</p> : null}
-      </div>
-      {actions ? <div className="page-intro__actions">{actions}</div> : null}
-    </header>
+    <>
+      <header className="page-intro">
+        <div>
+          {returnLink ? (
+            <Link className="page-intro__return-link" to={returnLink.to}>
+              {returnLink.label}
+            </Link>
+          ) : null}
+          <h2>{title}</h2>
+          {description ? <p>{description}</p> : null}
+        </div>
+        {actions ? <div className="page-intro__actions">{actions}</div> : null}
+      </header>
+      {helpTopic ? <ContextHelp topic={helpTopic} /> : null}
+    </>
   );
 }
 

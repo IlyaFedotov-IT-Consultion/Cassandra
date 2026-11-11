@@ -201,6 +201,7 @@ export function CalibrationPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="calibration"
         title="Calibration"
         description="Each snapshot maps raw ensemble probabilities onto observed outcome frequencies. Judgments use the approved snapshot; until one is approved they run uncalibrated."
         actions={
