@@ -116,6 +116,74 @@ describe("collectEvidenceForEventWithCache", () => {
     expect(persisted).toHaveLength(1);
   });
 
+  it("asks every provider at once and keeps their results in provider order", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Official launch announcement.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp"],
+      referenceClass: null,
+      marketSymbols: [],
+    });
+    const item = (eventId: string, name: string): EvidenceItem => ({
+      id: `22222222-2222-4222-8222-${name === "first" ? "000000000001" : "000000000002"}`,
+      eventId,
+      sourceFamily: "web",
+      sourceType: "web_article",
+      title: `${name} item`,
+      url: `https://example.com/${name}`,
+      publisher: "Example News",
+      publishedAt: "2026-10-10T09:00:00Z",
+      retrievedAt: "2026-10-10T10:00:00Z",
+      summary: `${name} summary`,
+      rawText: null,
+      entities: [],
+      claims: [],
+      stance: "unknown",
+      qualitySignals: {},
+      metadata: {},
+    });
+    let announceSecondStarted: () => void = () => undefined;
+    const secondStarted = new Promise<void>((resolve) => {
+      announceSecondStarted = resolve;
+    });
+    const first: EvidenceProvider = {
+      name: "first",
+      async collect(input) {
+        // Finishes only once the second provider is running.
+        await Promise.race([
+          secondStarted,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("the second provider was not started while the first was running")), 500),
+          ),
+        ]);
+        return [item(input.event.id, "first")];
+      },
+    };
+    const second: EvidenceProvider = {
+      name: "second",
+      async collect(input) {
+        announceSecondStarted();
+        return [item(input.event.id, "second")];
+      },
+    };
+
+    const result = await collectEvidenceForEventWithCache({
+      pool,
+      event,
+      evaluationTime: "2026-10-11T12:15:00Z",
+      mode: "live",
+      providers: [first, second],
+      cacheStore: new InMemoryEvidenceCacheStore(),
+    });
+
+    expect(result.providerRuns.map((run) => [run.providerName, run.error ?? null])).toEqual([
+      ["first", null],
+      ["second", null],
+    ]);
+    expect(result.items.map((evidence) => evidence.title)).toEqual(["first item", "second item"]);
+  });
+
   it("does not share cached provider output between events bound to different markets", async () => {
     const baseInput = {
       question: "Will no Fed rate cuts happen in 2026?",

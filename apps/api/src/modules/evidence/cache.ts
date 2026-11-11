@@ -98,27 +98,29 @@ export async function collectEvidenceForEventWithCache(
   const logger = args.logger?.child({
     component: "evidence",
   });
-  const providerRuns: ProviderRun[] = [];
-  const rawItems: EvidenceItem[] = [];
+  const collectFromProvider = async (
+    provider: CollectEvidenceArgs["providers"][number],
+  ): Promise<{ items: EvidenceItem[]; run: ProviderRun }> => {
+    const completed = (items: EvidenceItem[], cacheStatus: ProviderRun["cacheStatus"]) => ({
+      items,
+      run: {
+        providerName: provider.name,
+        rawCount: items.length,
+        normalizedCount: normalizeEvidenceItems(items).length,
+        cacheStatus,
+      },
+    });
+    const collect = () =>
+      provider.collect({
+        event: args.event,
+        evaluationTime: args.evaluationTime,
+        mode: args.mode,
+        queries: args.queries,
+      });
 
-  for (const provider of args.providers) {
     try {
       if (args.mode === "fixture") {
-        const providerItems = await provider.collect({
-          event: args.event,
-          evaluationTime: args.evaluationTime,
-          mode: args.mode,
-          queries: args.queries,
-        });
-
-        rawItems.push(...providerItems);
-        providerRuns.push({
-          providerName: provider.name,
-          rawCount: providerItems.length,
-          normalizedCount: normalizeEvidenceItems(providerItems).length,
-          cacheStatus: "bypass",
-        });
-        continue;
+        return completed(await collect(), "bypass");
       }
 
       const cacheKey = buildEvidenceCacheKey(
@@ -129,26 +131,13 @@ export async function collectEvidenceForEventWithCache(
       const cached = await args.cacheStore.get(cacheKey);
 
       if (cached) {
-        const providerItems = (JSON.parse(cached) as EvidenceItem[]).map((item) => ({
-          ...item,
-          eventId: args.event.id,
-        }));
-        rawItems.push(...providerItems);
-        providerRuns.push({
-          providerName: provider.name,
-          rawCount: providerItems.length,
-          normalizedCount: normalizeEvidenceItems(providerItems).length,
-          cacheStatus: "hit",
-        });
-        continue;
+        return completed(
+          (JSON.parse(cached) as EvidenceItem[]).map((item) => ({ ...item, eventId: args.event.id })),
+          "hit",
+        );
       }
 
-      const providerItems = await provider.collect({
-        event: args.event,
-        evaluationTime: args.evaluationTime,
-        mode: args.mode,
-        queries: args.queries,
-      });
+      const providerItems = await collect();
 
       await args.cacheStore.set(
         cacheKey,
@@ -156,13 +145,7 @@ export async function collectEvidenceForEventWithCache(
         args.ttlSeconds ?? DEFAULT_TTL_SECONDS,
       );
 
-      rawItems.push(...providerItems);
-      providerRuns.push({
-        providerName: provider.name,
-        rawCount: providerItems.length,
-        normalizedCount: normalizeEvidenceItems(providerItems).length,
-        cacheStatus: "miss",
-      });
+      return completed(providerItems, "miss");
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger?.error(
@@ -173,15 +156,25 @@ export async function collectEvidenceForEventWithCache(
         },
         `evidence provider "${provider.name}" failed: ${errorMessage}`,
       );
-      providerRuns.push({
-        providerName: provider.name,
-        rawCount: 0,
-        normalizedCount: 0,
-        cacheStatus: "bypass",
-        error: errorMessage,
-      });
+      return {
+        items: [],
+        run: {
+          providerName: provider.name,
+          rawCount: 0,
+          normalizedCount: 0,
+          cacheStatus: "bypass",
+          error: errorMessage,
+        },
+      };
     }
-  }
+  };
+
+  // Providers are independent network calls, so they run at once: the run takes as long as
+  // the slowest source, not the sum of them. Results keep provider order, which decides
+  // whose copy of a duplicate survives normalisation.
+  const collected = await Promise.all(args.providers.map(collectFromProvider));
+  const providerRuns = collected.map((outcome) => outcome.run);
+  const rawItems = collected.flatMap((outcome) => outcome.items);
 
   const failedRuns = providerRuns.filter((run) => run.error);
   if (
