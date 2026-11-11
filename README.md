@@ -186,6 +186,19 @@ pnpm harness:real
 
 The live harness submits judgments through `POST /judgments` and polls `GET /judgments/:id` until the queued run reaches a terminal state.
 
+To produce calibration data in bulk:
+
+```bash
+pnpm harness:calibration                         # prints the plan; runs nothing
+CALIBRATION_CONFIRM=yes pnpm harness:calibration # imports, replays, retrains and reports
+```
+
+The calibration cycle imports a larger set of resolved Polymarket markets, replays them through the live pipeline as one queued evaluation run, retrains calibration on the stored forecasts and reports whether the new snapshot is worth approving. It never approves one. It costs money: every model forecast calls the whole judge ensemble. Its settings are listed at the top of `scripts/harness/calibration-cycle.mts`.
+
+To continue a failed calibration replay, set `CALIBRATION_RUN_ID=<run-id>` together with
+`CALIBRATION_CONFIRM=yes`. The harness resumes that run and skips import; stored forecasts
+are reused. Without confirmation, it only describes the operation.
+
 ## Documentation
 
 - [Current project status](docs/current-status.md)

@@ -26,6 +26,8 @@ Every judgment, in both `fixture` and `live` mode, goes through the judge servic
 7. **Aggregation:** log-odds pooling around the prior, as a weighted average over the judges that had evidence. The forecast's range is the spread across the ensemble's models.
 8. **Calibration:** applies the approved snapshot. Until one is approved, forecasts are uncalibrated.
 
+Calibration learns from two sources: live judgments whose events resolved, and replayed benchmark forecasts stored by evaluation runs. `pnpm harness:calibration` produces the second in bulk: it imports a larger benchmark set, replays it as one queued run, retrains and reports whether the new snapshot is worth approving. It costs money and runs nothing until `CALIBRATION_CONFIRM=yes` is set. `CALIBRATION_RUN_ID` resumes a failed run or waits for an existing one without re-importing. Refreshing a benchmark set retires old selection members but preserves their historical forecasts and prices. Market trust counts distinct markets and gives each market total fitting weight one across its horizons.
+
 What is learned takes effect only through an approved calibration snapshot: the calibration map, the judge weights, the reference-class base rates, and how far a market price is trusted (fitted on resolved benchmark prices). A snapshot carries a held-out score for its calibration map, and approving one that does not beat uncalibrated forecasts needs an explicit override.
 
 Models and reasoning effort are set only through the `OPENROUTER_*` variables in `.env.example`. The current choices are explained in [research/2026-11-07-llm-forecasting-methods.md](research/2026-11-07-llm-forecasting-methods.md).
@@ -61,11 +63,12 @@ The judge service exposes `GET /health`, `POST /judge`, `POST /plan` and `POST /
   - citations ranked by relevance, with diagnostics and the execution log kept collapsed.
 - **Watchlists:** each page shows the watchlist's schedule, its next run and how the last run went. Discovery can also run from the page, and sources that failed are listed. Live search results are grouped into candidates by headline. Candidates can be seeded as events.
 - **Evaluation:**
-  - a comparison of baselines on the same paired sample;
+  - a run's status and progress while it is queued or running, why it failed if it did, and a Resume action that retains stored forecasts;
+  - a comparison of baselines on the same paired sample, with each baseline's Brier difference from Polymarket and an interval over markets;
   - a reliability chart;
   - scores by slice;
   - leakage warnings grouped by reason.
-- **Calibration:** snapshot history, with the snapshot in use marked.
+- **Calibration:** snapshot history, with the snapshot in use marked, what each snapshot was trained on, its held-out check and how far market prices are trusted.
 - **Runtime:** a filterable activity log across runs.
 
 The visual identity is an "instrument" look: graph-paper ground, ink-blue text, and one magenta reserved for forecast probabilities. Fonts are self-hosted.
@@ -88,14 +91,17 @@ There is no migration framework. Both SQL files are re-applied on every migrate 
 - **No OpenAPI document.** The contract in [api-reference.md](api-reference.md) is maintained by hand.
 - **No browser end-to-end suite.** UI changes are checked with Testing Library plus manual Playwright MCP sessions.
 - **No linter or formatter.** `pnpm lint` does nothing.
-- **Small evaluation sample.** Calibration and evaluation results on the seeded data rest on a few dozen predictions and are not yet meaningful.
+- **Replay retrieval is present-day search.** A replay searches today's web and keeps results dated before the cutoff, so its forecasts are somewhat better informed than a live forecast was. Calibration trained on replays inherits that; `includeReplay: false` trains on live judgments only.
+- **No calibration data yet.** A calibration map needs 20 resolved markets or events. None has been produced in this checkout: `pnpm harness:calibration` has not been run, because it costs money.
 
 ## Verification snapshot (2026-11-11)
 
 | Check | Result |
 | --- | --- |
-| `pnpm test` | shared 10, web 81, API 248 tests pass (API against local Postgres and Redis, in `cassandra_test`) |
-| `cd services/judge && uv run pytest` | 134 tests pass |
-| `pnpm exec vitest run scripts/harness/real-e2e-support.test.ts` | 4 tests pass |
+| `pnpm test` | shared 10, web 87, API 274 tests pass (API against local Postgres and Redis, in `cassandra_test`) |
+| `cd services/judge && uv run pytest` | 149 tests pass |
+| `pnpm exec vitest run scripts/harness/real-e2e-support.test.ts scripts/harness/calibration-cycle.test.ts` | 12 tests pass |
 | `pnpm build` | passes |
-| Browser check (Playwright MCP, fixture mode) | every route at 1440 and 390 px wide: no horizontal overflow, no console errors |
+| Browser check (Playwright MCP, intercepted fixture responses) | evaluation run queued, running, failed and completed at 1440 and 390 px; polling transitions and keyboard Resume action pass; no horizontal page overflow, console errors or failed requests |
+| Redis queue smoke | synthetic failure stays failed without automatic retry; explicit requeue completes; active jobs drain before shared connections close; shutdown exits cleanly |
+| Generated judge schemas | regeneration matches `models_generated.py` |

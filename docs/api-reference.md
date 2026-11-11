@@ -319,6 +319,9 @@ Lists stored judgment runs in reverse chronological order.
 Query parameters:
 
 - `eventId` optional; when supplied, only judgments for that event are returned
+- `limit` optional (1–1000); only the newest that many are returned. `400` with `error: "Invalid judgment query"` for anything else
+
+`GET /runtime` reads the execution logs of the 200 newest judgments.
 
 Response shape:
 
@@ -376,7 +379,10 @@ Behavior:
 
 - loads, per resolved event, the latest trace evaluated before the resolution, separately for completed and prior-only judgments
 - loads benchmark market prices recorded before each market resolved, with how the market resolved
-- sends `historicalTraces`, `resolvedOutcomes` and `marketPricePairs` to `POST /calibrate` on the judge service
+- loads replayed model forecasts from evaluation runs: the newest prediction per market, cutoff and model baseline whose trace completed, with its pre-calibration probability
+- sends `historicalTraces`, `resolvedOutcomes`, `marketPricePairs` and `forecastPairs` to `POST /calibrate` on the judge service
+
+Request body (optional): `{ "includeReplay": false }` leaves the replayed forecasts out. Replays search today's web, so their forecasts are somewhat better informed than a live forecast was; this trains on resolved judgments only.
 - persists the returned calibration snapshot in Postgres, unapproved
 - in `fixture` mode nothing is fitted: the stored snapshot records the sample size and keeps `calibrationParams.method: "identity"`
 
@@ -434,14 +440,25 @@ Request body:
 
 ```json
 {
-  "benchmarkSetId": "custom-benchmark-set"
+  "benchmarkSetId": "custom-benchmark-set",
+  "limit": 30,
+  "windowDays": 120,
+  "themeLimit": 10,
+  "pages": 20
 }
 ```
 
-Fields:
+Fields, all optional:
 
-- `benchmarkSetId` is optional
-- when omitted, imports use the default benchmark set `polymarket_recent_resolved`
+- `benchmarkSetId`: defaults to `polymarket_recent_resolved`
+- `limit`: how many markets to keep (1–500, default 50)
+- `windowDays`: how far back a market may have resolved (1–365, default 56)
+- `themeLimit`: the most markets kept from one theme (1–500, default 12)
+- `pages`: how many pages of 100 recently closed markets to scan (1–50, default 9)
+
+Refreshing a set marks omitted markets inactive for new evaluations; historical markets, price snapshots and forecasts are retained. Queued runs store their selected market IDs so a later import cannot change their membership.
+
+A larger set gives calibration more to learn from: the calibration regime counts resolved markets, and a calibration map is fitted from 20.
 
 Success response:
 
@@ -526,11 +543,20 @@ Fields:
 - this endpoint requires `CASSANDRA_ADAPTER_MODE=live`
 - each market is replayed at 30 days, 7 days, 1 day and 6 hours before its scheduled `endDate` (before `resolvedAt` when the end date is unknown). Cutoffs at or after the market's resolution are skipped, and `leakageWarnings` names the skipped horizons
 - price snapshots are stored per cutoff at import, so re-import the benchmark set before running against markets imported under the earlier, resolution-anchored cutoffs
+- the run is queued and worked through in the background, one market at a time. Each market's predictions are stored as soon as that market is done, and the run's `progress` is updated
+- a run that fails keeps the predictions of its finished markets. Resume it explicitly with `POST /evaluation/runs/:id/resume`; it continues from stored predictions. Failed jobs are not automatically retried on server restart
+- a model baseline's prediction carries `metadata.calibration`: the probability before any calibration map, the prior, the trace status and each judge's log Bayes factor. Calibration trains on these (see `POST /backtests/retrain`)
+- `base_rate_only` is the share of the benchmark set's markets that had resolved Yes by the cutoff, in the market's own theme when at least five of its markets had resolved, with one pseudo-count each way
+- `overallMetrics.paired.vsPolymarket` gives, per baseline, its Brier score minus Polymarket's on the paired sample as `{ mean, low, high, groups }`: a 95% interval from resampling whole markets, or `null` with fewer than two markets
+- a baseline that produced no predictions is reported as `{ "sampleSize": 0 }`, without scores
 
 Success:
 
-- status `201`
-- response body is an `EvaluationRun`
+- status `202`
+- response body is the queued `EvaluationRun`, with `status: "queued"` and `progress`
+- poll `GET /evaluation/runs/:id` until `status` is `completed` or `failed`
+
+When the API is built without an evaluation queue (as in tests), the run executes inside the request and the response is `201` with the finished run.
 
 Errors:
 
@@ -539,14 +565,28 @@ Errors:
 - `404` with `error: "No benchmark markets available for evaluation"`
 - `404` with `error: "Benchmark markets not found: ..."`
 
+### `POST /evaluation/runs/:id/resume`
+
+Resumes an existing failed run using its stored request and forecasts. Requires live mode, a running evaluation queue, and an authoritative search provider for model baselines. This can incur costs for missing forecasts.
+
+- `202`: the same run, queued again; completed forecasts are retained
+- `400`: malformed run UUID
+- `404`: run not found
+- `409`: run is not failed, its stored request is unavailable, or live/provider requirements are not met
+- `503`: no evaluation queue configured
+- Concurrent resume requests claim the failed run atomically; at most one queues it. A queue submission error leaves it failed and resumable.
+- The calibration harness accepts `CALIBRATION_RUN_ID=<id>` to resume a failed run or wait for an existing one. It skips import and still requires `CALIBRATION_CONFIRM=yes` before making requests.
+
 ### `GET /evaluation/runs/:id`
 
-Fetches a previously stored evaluation run.
+Fetches a stored evaluation run, finished or not.
 
 Success:
 
 - status `200`
 - response body is an `EvaluationRun`
+- `status` is `queued`, `running`, `completed` or `failed`; `progress` is `{ completedMarkets, totalMarkets }`; `error` says why a failed run stopped
+- `overallMetrics` and `sliceResults` are empty until the run completes
 
 Errors:
 
@@ -670,7 +710,10 @@ Builds a calibration snapshot from historical traces and resolved outcomes.
 - `resolvedOutcomeCount` and the regime count matched training pairs.
 - `warming` fits Platt scaling (penalised toward identity); `steady` fits isotonic regression (pool adjacent violators).
 - `metrics.heldOut` reports a 5-fold cross-validation of the calibration map: `brierIdentity`, `brierCalibrated`, `logLossIdentity`, `logLossCalibrated`, `folds`, `sampleSize` and `improves`. It is absent in `cold_start`, where the map is the identity.
-- `marketPriorParams` is fitted from `marketPricePairs`: a Platt fit of outcomes on market log-odds, stored as `trustSlope`, `trustIntercept`, `fitted` and `sampleSize`. With fewer than 40 pairs, or only one kind of outcome, it stays at slope 1 and intercept 0.
+- `marketPriorParams` is fitted from `marketPricePairs`: a Platt fit of outcomes on market log-odds, stored as `trustSlope`, `trustIntercept`, `fitted` and `sampleSize`. Pairs may carry `groupId` (the API sends the benchmark market ID). The fit gives each market total weight one across its horizons, and `sampleSize` counts distinct markets. With fewer than 40 markets, or only one kind of outcome, it stays at slope 1 and intercept 0. Legacy callers without `groupId` count each pair separately.
+- `forecastPairs` are replayed benchmark forecasts: `{ groupId, probability, outcome, priorProbability, judgeOpinions }`. They train the map and the weights alongside resolved judgments. `groupId` names the market: its forecasts at several horizons are not independent, so the regime and `resolvedOutcomeCount` count markets and events, and held-out folds keep each market's forecasts together.
+- Judge weights are a Hedge update over every resolved forecast: for each forecast where a judge had evidence, its regret is the Brier score of the prior moved by that judge's log Bayes factor alone, minus the Brier score of the prior left alone. Weights are scaled by `exp(-step × cumulative regret)`, then clipped to 0.05–0.8.
+- `metrics.trainingSources` is `{ judgments, replayForecasts, groups }`. With nothing to score, `metrics` carries no `brierScore`, `logLoss` or `expectedCalibrationError`.
 
 Request body:
 
@@ -678,7 +721,16 @@ Request body:
 {
   "historicalTraces": [],
   "resolvedOutcomes": [],
-  "marketPricePairs": [{ "price": 0.7, "outcome": true }]
+  "marketPricePairs": [{ "groupId": "market-1", "price": 0.7, "outcome": true }],
+  "forecastPairs": [
+    {
+      "groupId": "market-1",
+      "probability": 0.64,
+      "outcome": true,
+      "priorProbability": 0.5,
+      "judgeOpinions": [{ "judgeName": "open_web_research", "logBayesFactor": 0.5, "hadEvidence": true }]
+    }
+  ]
 }
 ```
 

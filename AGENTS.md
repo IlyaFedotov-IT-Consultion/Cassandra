@@ -14,7 +14,7 @@ Research prototype for multi-source event forecasting. A Fastify API collects ev
   - Tests: `test/`.
 - `services/judge`: FastAPI judge service (Python 3.12, uv). Tests: `tests/`.
 - `packages/shared`: Zod schemas in `src/schemas.ts`, shared by the API and web. Its build exports `dist/schemas.json` for the judge. Tests sit next to the source as `src/*.test.ts`.
-- `scripts/harness`: live end-to-end harness.
+- `scripts/harness`: live end-to-end harness (`real-e2e.mts`) and the calibration cycle (`calibration-cycle.mts`).
 - `docs/{designs,plans,research,reviews}`: dated notes named `YYYY-MM-DD-topic.md`.
 
 ## Commands
@@ -31,7 +31,7 @@ Run these from the repo root unless a line says otherwise.
   - One package: `pnpm --filter @cassandra/<api|web|shared> test`.
   - One file: `pnpm --filter @cassandra/web exec vitest run test/api.test.ts`.
   - Judge: `cd services/judge && uv run pytest`.
-  - Harness unit tests, which are in no package suite: `pnpm exec vitest run scripts/harness/real-e2e-support.test.ts`.
+  - Harness unit tests, which are in no package suite: `pnpm exec vitest run scripts/harness/real-e2e-support.test.ts scripts/harness/calibration-cycle.test.ts`.
 - Type-check and build everything: `pnpm build`.
 - `pnpm lint` does nothing: no linter or formatter is configured.
 
@@ -56,7 +56,8 @@ Run these from the repo root unless a line says otherwise.
 
 - Copy `.env.example` to `.env`. Never commit `.env` or print key values.
 - `.env.example` defaults to `CASSANDRA_ADAPTER_MODE=live`. For offline work, set `CASSANDRA_ADAPTER_MODE=fixture` and keep `CASSANDRA_JUDGE_LLM=fake`, which gives a deterministic judge.
-- Live mode and `pnpm harness:real` call OpenRouter, Perplexity and Polymarket and cost money. Run them only when asked.
+- Live mode, `pnpm harness:real` and `pnpm harness:calibration` call OpenRouter, Perplexity and Polymarket and cost money. Run them only when asked.
+- `pnpm harness:calibration` replays a benchmark set to produce calibration data. Without `CALIBRATION_CONFIRM=yes` it only prints what it would do, which is free.
 - In live mode the API's scheduled watchlist discovery (on by default) also costs money. Set `CASSANDRA_DISCOVERY_SCHEDULE=off` when running a live API you do not want spending on its own.
 - The API listens on `127.0.0.1` and serves only the browser origins in `CASSANDRA_CORS_ORIGINS`. Opening the web app from another host or port needs that origin added, and `API_HOST=0.0.0.0` with a `CASSANDRA_API_KEY` to reach the API from another machine.
 - Model IDs and reasoning effort belong in the `OPENROUTER_*` env vars, never in code. The current choices are explained in `docs/research/2026-11-07-llm-forecasting-methods.md`.
