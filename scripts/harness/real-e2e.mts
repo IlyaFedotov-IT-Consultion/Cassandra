@@ -635,9 +635,12 @@ async function scenarioLearningLoop(): Promise<ScenarioResult> {
       const approvedSnapshot = await timed(
         "POST /backtests/calibration-snapshots/:id/approve",
         () =>
+          // This scenario checks that an approved snapshot is the one judgments use, not whether the
+          // snapshot deserves approval, so it overrides the held-out check.
           apiRequest<CalibrationSnapshot>(
             "POST",
             `/backtests/calibration-snapshots/${shared.calibrationSnapshotId}/approve`,
+            { force: true },
           ),
         steps,
       );

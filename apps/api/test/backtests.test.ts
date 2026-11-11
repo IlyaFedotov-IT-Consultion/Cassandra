@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { getEnv } from "../src/config/env.js";
-import { getLatestCalibrationSnapshot } from "../src/modules/backtests/repository.js";
 
 const verdictTrace = {
   id: "trace-1",
@@ -101,6 +100,13 @@ describe("backtest retrain route", () => {
           };
         }
 
+        if (text.includes("FROM benchmark_price_snapshots")) {
+          return {
+            rowCount: 1,
+            rows: [{ probability: 0.7, resolved_value: true }],
+          };
+        }
+
         if (text.includes("INSERT INTO calibration_snapshots")) {
           return {
             rowCount: 1,
@@ -193,6 +199,7 @@ describe("backtest retrain route", () => {
 
       const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
       expect(requestBody).toMatchObject({
+        marketPricePairs: [{ price: 0.7, outcome: true }],
         historicalTraces: [expect.objectContaining({ id: "trace-1", eventId: "event-1" })],
         resolvedOutcomes: [
           expect.objectContaining({
@@ -244,6 +251,10 @@ describe("backtest retrain route", () => {
               },
             ],
           };
+        }
+
+        if (text.includes("FROM benchmark_price_snapshots")) {
+          return { rowCount: 0, rows: [] };
         }
 
         if (text.includes("INSERT INTO calibration_snapshots")) {
@@ -450,26 +461,26 @@ describe("backtest retrain route", () => {
         };
       }
 
+      const snapshotRow = {
+        id: "snapshot-1",
+        created_at: new Date("2026-01-02T00:00:00Z"),
+        training_window: "all_time",
+        judge_weights: { official_records: 0.5 },
+        base_rate_params: {},
+        market_prior_params: {},
+        calibration_params: { method: "logistic" },
+        online_learning_params: { enabled: true },
+        metrics: { heldOut: { improves: true, brierIdentity: 0.3, brierCalibrated: 0.25 } },
+        weight_regime: "warming",
+        resolved_outcome_count: 25,
+      };
+
+      if (text.includes("FROM calibration_snapshots") && text.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [{ ...snapshotRow, approved: false }] };
+      }
+
       if (text.includes("UPDATE calibration_snapshots") && text.includes("SET approved = TRUE")) {
-        return {
-          rowCount: 1,
-          rows: [
-            {
-              id: "snapshot-1",
-              created_at: new Date("2026-01-02T00:00:00Z"),
-              training_window: "all_time",
-              judge_weights: { official_records: 0.5 },
-              base_rate_params: {},
-              market_prior_params: {},
-              calibration_params: { method: "logistic" },
-              online_learning_params: { enabled: true },
-              metrics: { ece: 0.08 },
-              weight_regime: "warming",
-              resolved_outcome_count: 25,
-              approved: true,
-            },
-          ],
-        };
+        return { rowCount: 1, rows: [{ ...snapshotRow, approved: true }] };
       }
 
       if (text.includes("UPDATE calibration_snapshots") && text.includes("SET approved = FALSE")) {
@@ -522,42 +533,5 @@ describe("backtest retrain route", () => {
     } finally {
       await app.close();
     }
-  });
-
-  it("prefers the latest approved calibration snapshot when selecting the active snapshot", async () => {
-    const pool = {
-      async query(text: string) {
-        if (text.includes("FROM calibration_snapshots") && text.includes("ORDER BY approved DESC")) {
-          return {
-            rowCount: 1,
-            rows: [
-              {
-                id: "snapshot-2",
-                created_at: new Date("2026-01-03T00:00:00Z"),
-                training_window: "rolling_90d",
-                judge_weights: { official_records: 0.6 },
-                base_rate_params: {},
-                market_prior_params: {},
-                calibration_params: { method: "isotonic" },
-                online_learning_params: { enabled: true },
-                metrics: { ece: 0.04 },
-                weight_regime: "steady",
-                resolved_outcome_count: 120,
-                approved: true,
-              },
-            ],
-          };
-        }
-
-        throw new Error(`Unexpected query: ${text}`);
-      },
-    } as never;
-
-    const snapshot = await getLatestCalibrationSnapshot(pool);
-
-    expect(snapshot).toMatchObject({
-      id: "snapshot-2",
-      approved: true,
-    });
   });
 });

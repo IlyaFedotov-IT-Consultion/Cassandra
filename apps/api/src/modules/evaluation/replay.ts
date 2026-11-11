@@ -8,7 +8,7 @@ import type {
 import type { Pool } from "pg";
 
 import type { AppEnv } from "../../config/env.js";
-import { getLatestCalibrationSnapshot } from "../backtests/repository.js";
+import { getActiveCalibrationSnapshot } from "../backtests/repository.js";
 import {
   InMemoryEvidenceCacheStore,
   buildEvidenceCacheKey,
@@ -511,7 +511,7 @@ export async function runHistoricalEvaluation(
   const baselines = args.input.baselines ?? [...DEFAULT_BASELINES];
   const listBenchmarks = args.listBenchmarkMarkets ?? loadBenchmarkMarkets;
   const listSnapshots = args.listPriceSnapshotsForBenchmark ?? loadPriceSnapshotsForBenchmark;
-  const getCalibrationSnapshot = args.getCalibrationSnapshot ?? getLatestCalibrationSnapshot;
+  const getCalibrationSnapshot = args.getCalibrationSnapshot ?? getActiveCalibrationSnapshot;
   const evaluateModelBaseline = args.evaluateModelBaseline ?? defaultEvaluateModelBaseline;
   const persistEvaluationResult =
     args.persistEvaluationRunResult ?? persistEvaluationRunWithPredictions;

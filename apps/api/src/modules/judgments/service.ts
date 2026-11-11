@@ -36,11 +36,7 @@ import {
 } from "../evidence/providers/webSearch.js";
 import type { AdapterMode, EvidenceProvider } from "../evidence/types.js";
 import { getEventById, type EventRecord } from "../events/repository.js";
-import { countOutcomes } from "../outcomes/repository.js";
-import {
-  getLatestCalibrationSnapshot,
-  retrainCalibrationSnapshot,
-} from "../backtests/repository.js";
+import { getActiveCalibrationSnapshot } from "../backtests/repository.js";
 import {
   InMemoryJudgeCacheStore,
   createRedisJudgeCacheStore,
@@ -891,16 +887,6 @@ export function createDefaultEvidenceProviders(env: AppEnv): EvidenceProvider[] 
   return providers;
 }
 
-async function getOrCreateCalibrationSnapshot(pool: Pool): Promise<CalibrationSnapshot> {
-  const existing = await getLatestCalibrationSnapshot(pool);
-
-  if (existing) {
-    return existing;
-  }
-
-  return retrainCalibrationSnapshot(pool, await countOutcomes(pool));
-}
-
 async function loadJudgmentDetails(
   pool: Pool,
   judgmentId: string,
@@ -1209,7 +1195,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
         `${failedProviders.length} of ${collected.providerRuns.length} evidence provider(s) failed`,
       );
     }
-    const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
+    const calibrationSnapshot = await getActiveCalibrationSnapshot(args.pool);
     await recordJudgmentExecutionLog({
       pool: args.pool,
       judgmentId: judgment.id,

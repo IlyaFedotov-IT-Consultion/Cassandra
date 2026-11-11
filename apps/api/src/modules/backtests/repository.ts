@@ -113,18 +113,44 @@ export async function createCalibrationSnapshot(
   return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
 }
 
-export async function getLatestCalibrationSnapshot(
-  pool: Pool,
-): Promise<CalibrationSnapshot | null> {
+export const BASELINE_CALIBRATION_SNAPSHOT_ID = "baseline-identity";
+
+/**
+ * What judgments run on until an operator approves a snapshot: no calibration map, uniform
+ * judge weights, no learned base rates and market prices trusted as priced.
+ */
+export function baselineCalibrationSnapshot(): CalibrationSnapshot {
+  return {
+    id: BASELINE_CALIBRATION_SNAPSHOT_ID,
+    createdAt: new Date(0).toISOString(),
+    trainingWindow: "none",
+    judgeWeights: {},
+    baseRateParams: {},
+    marketPriorParams: {},
+    calibrationParams: { method: "identity" },
+    onlineLearningParams: { enabled: false },
+    metrics: {},
+    weightRegime: "cold_start",
+    resolvedOutcomeCount: 0,
+    approved: false,
+  };
+}
+
+/**
+ * The snapshot judgments use: the newest approved one. Nothing learned takes effect until
+ * someone has approved it, so without an approved snapshot this is the identity baseline.
+ */
+export async function getActiveCalibrationSnapshot(pool: Pool): Promise<CalibrationSnapshot> {
   const result = await pool.query(`
     SELECT *
     FROM calibration_snapshots
-    ORDER BY approved DESC, created_at DESC
+    WHERE approved = TRUE
+    ORDER BY created_at DESC
     LIMIT 1
   `);
 
   if (result.rowCount === 0) {
-    return null;
+    return baselineCalibrationSnapshot();
   }
 
   return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
@@ -169,11 +195,17 @@ export async function listCalibrationSnapshots(pool: Pool): Promise<CalibrationS
   });
 }
 
+export interface MarketPricePair {
+  price: number;
+  outcome: boolean;
+}
+
 export async function loadCalibrationTrainingData(
   pool: Pool,
 ): Promise<{
   historicalTraces: VerdictTrace[];
   resolvedOutcomes: OutcomeInput[];
+  marketPricePairs: MarketPricePair[];
 }> {
   // One outcome per event: the most recently recorded one wins (corrections supersede).
   const outcomesResult = await pool.query(`
@@ -186,8 +218,10 @@ export async function loadCalibrationTrainingData(
     ORDER BY event_id, created_at DESC
   `);
 
-  // One trace per resolved event: the latest judgment evaluated strictly before the
-  // event resolved. Judgments run after resolution would leak the answer into calibration.
+  // Per resolved event, the latest judgment evaluated strictly before the event resolved,
+  // kept separately for completed and prior-only judgments: only completed ones train the
+  // calibration map, so a later prior-only run must not hide an earlier completed one.
+  // Judgments run after resolution would leak the answer into calibration.
   const tracesResult = await pool.query(`
     WITH latest_outcomes AS (
       SELECT DISTINCT ON (event_id)
@@ -198,7 +232,7 @@ export async function loadCalibrationTrainingData(
       FROM outcomes
       ORDER BY event_id, created_at DESC
     )
-    SELECT DISTINCT ON (o.event_id)
+    SELECT DISTINCT ON (o.event_id, (j.verdict_trace->>'status' = 'completed'))
       o.event_id,
       o.resolved_value,
       o.resolved_at,
@@ -209,7 +243,23 @@ export async function loadCalibrationTrainingData(
       ON j.event_id = o.event_id
     WHERE j.verdict_trace IS NOT NULL
       AND (j.verdict_trace->>'evaluationTime')::timestamptz < o.resolved_at
-    ORDER BY o.event_id, (j.verdict_trace->>'evaluationTime')::timestamptz DESC, j.created_at DESC
+    ORDER BY
+      o.event_id,
+      (j.verdict_trace->>'status' = 'completed'),
+      (j.verdict_trace->>'evaluationTime')::timestamptz DESC,
+      j.created_at DESC
+  `);
+
+  // Benchmark market prices from before each market resolved, with how it resolved: the
+  // judge service fits how far a market price can be trusted from these.
+  const marketPricesResult = await pool.query(`
+    SELECT s.probability, m.resolved_value
+    FROM benchmark_price_snapshots s
+    JOIN benchmark_markets m
+      ON m.id = s.benchmark_market_id
+    WHERE s.source = 'polymarket'
+      AND s.cutoff_at < m.resolved_at
+    ORDER BY s.benchmark_market_id, s.cutoff_at
   `);
 
   const historicalTraces: VerdictTrace[] = [];
@@ -235,6 +285,10 @@ export async function loadCalibrationTrainingData(
   return {
     historicalTraces,
     resolvedOutcomes,
+    marketPricePairs: (marketPricesResult.rows as Record<string, unknown>[]).map((row) => ({
+      price: Number(row.probability),
+      outcome: Boolean(row.resolved_value),
+    })),
   };
 }
 
@@ -242,6 +296,7 @@ export async function requestCalibrationSnapshot(args: {
   judgeBaseUrl: string;
   historicalTraces: VerdictTrace[];
   resolvedOutcomes: OutcomeInput[];
+  marketPricePairs?: MarketPricePair[];
   fetchImpl?: typeof fetch;
 }): Promise<CalibrationSnapshot> {
   const fetchImpl = args.fetchImpl ?? fetch;
@@ -253,6 +308,7 @@ export async function requestCalibrationSnapshot(args: {
     body: JSON.stringify({
       historicalTraces: args.historicalTraces,
       resolvedOutcomes: args.resolvedOutcomes,
+      marketPricePairs: args.marketPricePairs ?? [],
     }),
   });
 
@@ -281,17 +337,15 @@ export async function persistCalibrationSnapshotFromService(
   });
 }
 
+/**
+ * Fixture mode has no judge service to fit anything, so this records the sample size and
+ * regime only. The map stays identity: a snapshot must not claim a fit it does not carry.
+ */
 export async function retrainCalibrationSnapshot(
   pool: Pool,
   resolvedOutcomeCount: number,
 ): Promise<CalibrationSnapshot> {
   const weightRegime = selectWeightRegime(resolvedOutcomeCount);
-  const calibrationMethod =
-    weightRegime === "steady"
-      ? "isotonic"
-      : weightRegime === "warming"
-        ? "logistic"
-        : "identity";
 
   return createCalibrationSnapshot(pool, {
     trainingWindow: "all_time",
@@ -299,11 +353,11 @@ export async function retrainCalibrationSnapshot(
     baseRateParams: {},
     marketPriorParams: {},
     calibrationParams: {
-      method: calibrationMethod,
+      method: "identity",
     },
     onlineLearningParams: {
-      enabled: weightRegime !== "cold_start",
-      stepSizeScale: weightRegime === "warming" ? 0.5 : weightRegime === "steady" ? 1 : 0,
+      enabled: false,
+      stepSizeScale: 0,
     },
     metrics: {},
     weightRegime,
@@ -312,14 +366,61 @@ export async function retrainCalibrationSnapshot(
   });
 }
 
+/** Approval was refused because the snapshot's map is not shown to help on held-out forecasts. */
+export class CalibrationApprovalBlockedError extends Error {}
+
+function describeApprovalBlock(snapshot: CalibrationSnapshot): string | null {
+  if (snapshot.calibrationParams.method === undefined || snapshot.calibrationParams.method === "identity") {
+    return null;
+  }
+
+  const heldOut = snapshot.metrics.heldOut;
+
+  if (!heldOut || typeof heldOut !== "object") {
+    return "This snapshot changes forecasts but has no held-out scores, so there is no evidence that it helps.";
+  }
+
+  const { improves, brierCalibrated, brierIdentity } = heldOut as Record<string, unknown>;
+
+  if (improves === true) {
+    return null;
+  }
+
+  return `On held-out forecasts this snapshot's calibration map scores a Brier of ${Number(brierCalibrated).toFixed(4)}, no better than ${Number(brierIdentity).toFixed(4)} for leaving forecasts uncalibrated.`;
+}
+
+/**
+ * Makes a snapshot the one judgments use. A snapshot whose calibration map is not shown to
+ * beat uncalibrated forecasts on held-out data is refused unless `force` is set.
+ */
 export async function approveCalibrationSnapshot(
   pool: Pool,
   snapshotId: string,
+  options: { force?: boolean } = {},
 ): Promise<CalibrationSnapshot | null> {
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
+
+    const existing = await client.query(
+      `SELECT * FROM calibration_snapshots WHERE id = $1 FOR UPDATE`,
+      [snapshotId],
+    );
+
+    if (existing.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+
+    const blockReason = options.force
+      ? null
+      : describeApprovalBlock(mapCalibrationSnapshotRow(existing.rows[0] as Record<string, unknown>));
+
+    if (blockReason) {
+      await client.query("ROLLBACK");
+      throw new CalibrationApprovalBlockedError(blockReason);
+    }
 
     const result = await client.query(
       `
@@ -330,11 +431,6 @@ export async function approveCalibrationSnapshot(
       `,
       [snapshotId],
     );
-
-    if (result.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return null;
-    }
 
     await client.query(
       `
@@ -349,7 +445,9 @@ export async function approveCalibrationSnapshot(
 
     return mapCalibrationSnapshotRow(result.rows[0] as Record<string, unknown>);
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (!(error instanceof CalibrationApprovalBlockedError)) {
+      await client.query("ROLLBACK");
+    }
     throw error;
   } finally {
     client.release();
