@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "apps/web/src/styles.css"
+        ],
+        "createdAt": "2026-11-11T15:36:13.553Z",
+        "reason": "Agent review: all six findings predate the help change in HEAD. Borders encode status-banner severity, status-card health, warning and error log severity, toast outcome, and the active navigation destination. Preserve the incumbent operational cues; this exception covers only side-tab in this stylesheet."
+      }
+    ]
+  }
+}
