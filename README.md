@@ -1,4 +1,4 @@
-# Cassandra
+# Cassandra 1.1
 
 Cassandra is a research prototype for multi-source event forecasting. The repo combines a TypeScript orchestration API, a shared schema package, and a Python judge service that produces probabilistic verdict traces and calibration snapshots.
 
