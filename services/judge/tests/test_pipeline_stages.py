@@ -271,3 +271,53 @@ def test_a_prior_only_judgment_without_a_market_still_reports_the_estimated_base
     assert trace["status"] == "insufficient_evidence"
     assert llm.panel_evidence == {}
     assert abs(trace["finalProbability"] - 0.1) < 1e-9
+
+
+class _OfficialJudgeDown(_RecordingLLM):
+    def judge_panel(self, *, judge_name, event, evidence, default_rationale, evaluation_time=None):
+        if judge_name == "official_records":
+            raise LLMResponseError("upstream returned garbage")
+        return super().judge_panel(
+            judge_name=judge_name,
+            event=event,
+            evidence=evidence,
+            default_rationale=default_rationale,
+            evaluation_time=evaluation_time,
+        )
+
+
+def test_a_judge_whose_model_call_fails_abstains_and_the_others_still_decide() -> None:
+    llm = _OfficialJudgeDown({**RATINGS, "open_web_research": {"probability": 0.8, "evidenceStrength": "moderate_for", "rationale": "On track."}})
+
+    trace = _judge([_item("o1", "official"), _item("w1"), _item("w3")], llm)
+
+    assert trace["status"] == "completed"
+    by_name = {opinion["judgeName"]: opinion for opinion in trace["judgeOpinions"]}
+    assert by_name["official_records"]["evidenceStrength"] == "neutral"
+    assert by_name["official_records"]["effectiveLogOddsContribution"] == 0.0
+    assert any("upstream returned garbage" in warning for warning in by_name["official_records"]["warnings"])
+    assert by_name["open_web_research"]["effectiveLogOddsContribution"] > 0
+    assert trace["finalProbability"] > 0.5
+    assert "upstream returned garbage" in _stage(trace, "panel_reasoning")["details"]["failedJudges"]["official_records"]
+    # The evidence was there; the judge failed. That is not missing evidence.
+    assert all(record["sourceFamily"] != "official" for record in trace["missingEvidence"])
+
+
+def test_the_judgment_fails_when_every_judge_that_had_evidence_failed() -> None:
+    app.dependency_overrides[_llm_dependency] = lambda: _OfficialJudgeDown(RATINGS)
+    try:
+        response = client.post(
+            "/judge",
+            json={
+                "eventId": "event-stages",
+                "event": EVENT,
+                "evaluationTime": "2026-10-11T12:00:00Z",
+                "evidence": [_item("o1", "official"), _item("o2", "official")],
+                "calibrationSnapshot": _snapshot(),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    assert "official_records" in response.json()["detail"]

@@ -20,7 +20,7 @@ from app.scoring.judges.cross_examiner import evaluate as evaluate_cross_examine
 from app.scoring.judges.official_records import evaluate as evaluate_official_records
 from app.scoring.judges.open_web_research import evaluate as evaluate_open_web_research
 from app.scoring.priors import build_prior_log_odds, extract_market_signal
-from app.scoring.types import CrossExaminerResult, PriorResult
+from app.scoring.types import CrossExaminerResult, PriorResult, RawJudgeOpinion
 from app.scoring.uncertainty import posterior_bootstrap_interval
 from app.scoring.weights import default_judge_weights, select_regime
 
@@ -273,16 +273,36 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     panel_evidence = [] if prior_only else relevant_evidence
     # The three judges are independent (and may each fan out to an ensemble), so run them
     # concurrently; result order stays fixed.
-    panel = (evaluate_official_records, evaluate_community_signal, evaluate_open_web_research)
-    with ContextThreadPoolExecutor(max_workers=len(panel)) as pool:
-        raw_opinions = list(
-            pool.map(
-                lambda evaluate: evaluate(
-                    request.event, panel_evidence, llm=llm, evaluation_time=request.evaluation_time
-                ),
-                panel,
+    panel = (
+        ("official_records", evaluate_official_records),
+        ("community_signal", evaluate_community_signal),
+        ("open_web_research", evaluate_open_web_research),
+    )
+    failed_judges: dict[str, str] = {}
+
+    def run_judge(member):
+        judge_name, evaluate = member
+        try:
+            return evaluate(request.event, panel_evidence, llm=llm, evaluation_time=request.evaluation_time)
+        except LLMError as error:
+            # A judge whose model call failed abstains, exactly like one with nothing to
+            # read; the judges that did answer still decide.
+            failed_judges[judge_name] = str(error)[:300]
+            return RawJudgeOpinion(
+                judge_name=judge_name,
+                probability=0.5,
+                evidence_strength="neutral",
+                rationale=f"{judge_name} could not be evaluated, so it abstains.",
+                warnings=[f"{judge_name} failed: {str(error)[:300]}"],
             )
-        )
+
+    with ContextThreadPoolExecutor(max_workers=len(panel)) as pool:
+        raw_opinions = list(pool.map(run_judge, panel))
+    if failed_judges and not any(opinion.evidence_ids for opinion in raw_opinions):
+        # Nothing but failures: report it, so the caller can retry instead of storing a
+        # verdict that only restates the prior.
+        failures = "; ".join(f"{name}: {message}" for name, message in failed_judges.items())
+        raise HTTPException(status_code=502, detail=f"every panel judge that had evidence failed ({failures})")
     samples_by_judge = {opinion.judge_name: opinion.samples for opinion in raw_opinions}
     informative_opinions = [opinion for opinion in raw_opinions if opinion.evidence_ids]
     cross_examiner = (
@@ -355,6 +375,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
                 }
                 for opinion in raw_opinions
             },
+            **({"failedJudges": failed_judges} if failed_judges else {}),
         ),
         _stage(
             "cross_examination",
