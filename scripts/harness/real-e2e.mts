@@ -116,6 +116,16 @@ class ApiError extends Error {
   }
 }
 
+/** Sends the API key when the API under test is configured with one. */
+function apiHeaders(body: unknown): Record<string, string> {
+  const apiKey = (process.env.CASSANDRA_API_KEY ?? "").trim();
+
+  return {
+    ...(body ? { "content-type": "application/json" } : {}),
+    ...(apiKey ? { "x-api-key": apiKey } : {}),
+  };
+}
+
 async function apiRequest<T>(
   method: string,
   path: string,
@@ -124,7 +134,7 @@ async function apiRequest<T>(
   const url = `${API_BASE}${path}`;
   const response = await fetch(url, {
     method,
-    headers: body ? { "content-type": "application/json" } : undefined,
+    headers: apiHeaders(body),
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();
@@ -145,7 +155,7 @@ async function apiRequestStatus(
   const url = `${API_BASE}${path}`;
   const response = await fetch(url, {
     method,
-    headers: body ? { "content-type": "application/json" } : undefined,
+    headers: apiHeaders(body),
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();

@@ -84,4 +84,13 @@ describe("structured logging", () => {
 
     expect(app.log.level).toBe("silent");
   });
+
+  it("leaves the API key out of logged request headers", () => {
+    const { logger, records } = createCapturedLogger();
+
+    logger.info({ req: { headers: { "x-api-key": "s3cret-key", accept: "*/*" } } }, "request received");
+
+    expect(JSON.stringify(records)).not.toContain("s3cret-key");
+    expect(records[0]).toMatchObject({ req: { headers: { accept: "*/*" } } });
+  });
 });

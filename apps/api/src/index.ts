@@ -111,14 +111,14 @@ app.addHook("onClose", async () => {
 
 try {
   await app.listen({
-    host: "0.0.0.0",
+    host: env.API_HOST,
     port: env.API_PORT,
   });
   app.log.info(
     {
       event: "server_started",
       adapterMode: env.CASSANDRA_ADAPTER_MODE,
-      host: "0.0.0.0",
+      host: env.API_HOST,
       port: env.API_PORT,
     },
     "server started",

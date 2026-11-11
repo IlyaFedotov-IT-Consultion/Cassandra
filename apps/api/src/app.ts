@@ -9,6 +9,7 @@ import type { Redis } from "ioredis";
 
 import type { AppEnv } from "./config/env.js";
 import { getEnv } from "./config/env.js";
+import { createOriginAllowlist, hasValidApiKey } from "./lib/access.js";
 import {
   buildRequestId,
   createLogger,
@@ -46,6 +47,9 @@ export interface ReadinessChecks {
   checkRedis?: () => Promise<void>;
 }
 
+/** Reachable without the API key, so health checks and probes keep working. */
+const PUBLIC_PATHS = new Set(["/health", "/ready"]);
+
 export function buildApp(checks: ReadinessChecks = {}) {
   const isTestMode = process.env.NODE_ENV === "test";
   const env =
@@ -78,6 +82,8 @@ export function buildApp(checks: ReadinessChecks = {}) {
     requestIdHeader: "x-request-id",
   });
 
+  const isAllowedOrigin = createOriginAllowlist(env.CASSANDRA_CORS_ORIGINS);
+
   app.addHook("onRequest", async (request, reply) => {
     const requestLogger = request.log.child({
       component: "http",
@@ -94,14 +100,32 @@ export function buildApp(checks: ReadinessChecks = {}) {
     const origin = request.headers.origin;
 
     if (origin) {
+      // Any page the operator has open can send requests here, and in live mode a request
+      // can start paid work, so only listed origins are served at all.
+      if (!isAllowedOrigin(origin)) {
+        return reply.code(403).send({
+          error: `Origin ${origin} is not allowed to call this API. Add it to CASSANDRA_CORS_ORIGINS.`,
+        });
+      }
+
       reply.header("access-control-allow-origin", origin);
       reply.header("access-control-allow-methods", "GET,POST,OPTIONS");
-      reply.header("access-control-allow-headers", "content-type");
+      reply.header("access-control-allow-headers", "content-type,x-api-key,authorization");
       reply.header("vary", "origin");
     }
 
     if (request.method === "OPTIONS") {
-      reply.code(204).send();
+      return reply.code(204).send();
+    }
+
+    if (
+      env.CASSANDRA_API_KEY &&
+      !PUBLIC_PATHS.has(request.url.split("?")[0] ?? "") &&
+      !hasValidApiKey(request.headers, env.CASSANDRA_API_KEY)
+    ) {
+      return reply.code(401).send({
+        error: "Missing or invalid API key. Send it as x-api-key or as a bearer token.",
+      });
     }
   });
 

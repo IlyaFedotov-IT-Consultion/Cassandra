@@ -1,7 +1,24 @@
 import { z } from "zod";
 
+/** An env var left blank (`NAME=`) counts as unset. */
+const optionalSecret = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+
 const EnvSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(3000),
+  /** Loopback by default: the API can start paid work, so other machines reach it only when asked to. */
+  API_HOST: z.string().min(1).default("127.0.0.1"),
+  /**
+   * Browser origins allowed to call the API, comma-separated. Requests from any other origin get 403.
+   * The default covers the local web workspace under `vite dev` (5173) and `vite preview` (4173).
+   */
+  CASSANDRA_CORS_ORIGINS: z
+    .string()
+    .default("http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"),
+  /** When set, every route except /health and /ready needs it as `x-api-key` or a bearer token. */
+  CASSANDRA_API_KEY: optionalSecret,
   DATABASE_URL: z
     .string()
     .min(1)
