@@ -130,13 +130,29 @@ export interface RunHistoricalEvaluationArgs {
   persistEvaluationRunResult?: typeof persistEvaluationRunWithPredictions;
 }
 
-export function buildReplayCutoffs(resolvedAt: string): ReplayCutoff[] {
-  const resolvedMillis = new Date(resolvedAt).getTime();
+/** Cutoffs at each replay horizon before `anchorAt`. */
+export function buildReplayCutoffs(anchorAt: string): ReplayCutoff[] {
+  const anchorMillis = new Date(anchorAt).getTime();
 
   return REPLAY_HORIZONS.map(({ horizon, hours }) => ({
     horizon,
-    cutoffAt: new Date(resolvedMillis - hours * 60 * 60 * 1000).toISOString(),
+    cutoffAt: new Date(anchorMillis - hours * 60 * 60 * 1000).toISOString(),
   }));
+}
+
+/**
+ * A market's replay cutoffs. Horizons count back from the scheduled end date, which a
+ * forecaster knew in advance; the time the market actually closed depends on the outcome.
+ * Cutoffs at or after the resolution are dropped, because by then the answer was public.
+ */
+export function buildMarketReplayCutoffs(
+  market: Pick<BenchmarkMarket, "resolvedAt" | "endDate">,
+): ReplayCutoff[] {
+  const resolvedMillis = new Date(market.resolvedAt).getTime();
+
+  return buildReplayCutoffs(market.endDate ?? market.resolvedAt).filter(
+    (cutoff) => new Date(cutoff.cutoffAt).getTime() < resolvedMillis,
+  );
 }
 
 function inferReplayEntities(question: string): string[] {
@@ -539,7 +555,17 @@ export async function runHistoricalEvaluation(
 
   for (const market of selectedMarkets) {
     const snapshots = await listSnapshots(args.pool, market.id);
-    const cutoffs = buildReplayCutoffs(market.resolvedAt);
+    const cutoffs = buildMarketReplayCutoffs(market);
+    const evaluatedHorizons = new Set(cutoffs.map((cutoff) => cutoff.horizon));
+    const skippedHorizons = REPLAY_HORIZONS.map(({ horizon }) => horizon).filter(
+      (horizon) => !evaluatedHorizons.has(horizon),
+    );
+
+    if (skippedHorizons.length > 0) {
+      leakageWarnings.add(
+        `Skipped horizons ${skippedHorizons.join(", ")} for ${market.id}: the market resolved before those cutoffs`,
+      );
+    }
     const event = baselines.some((baseline) => isModelBaseline(baseline))
       ? buildReplayEventRecord(market)
       : null;

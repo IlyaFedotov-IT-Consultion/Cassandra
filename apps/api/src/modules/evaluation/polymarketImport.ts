@@ -2,7 +2,7 @@ import { BenchmarkMarketSchema, type BenchmarkMarket } from "@cassandra/shared";
 import type { Pool } from "pg";
 
 import { assertLiveEvaluationMode } from "./liveMode.js";
-import { buildReplayCutoffs } from "./replay.js";
+import { buildMarketReplayCutoffs } from "./replay.js";
 import {
   syncBenchmarkMarkets,
   upsertBenchmarkMarkets,
@@ -620,7 +620,7 @@ async function buildBenchmarkPriceSnapshots(args: {
       continue;
     }
 
-    for (const cutoff of buildReplayCutoffs(entry.market.resolvedAt)) {
+    for (const cutoff of buildMarketReplayCutoffs(entry.market)) {
       const probability = await fetchSnapshotAtCutoff({
         clobBaseUrl: args.clobBaseUrl,
         fetchImpl: args.fetchImpl,

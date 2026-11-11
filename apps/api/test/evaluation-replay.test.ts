@@ -6,6 +6,7 @@ import type { BenchmarkPriceSnapshotRecord } from "../src/modules/evaluation/rep
 import {
   buildHistoricalPolymarketEvidenceItem,
   buildReplayEvidenceCacheKey,
+  buildMarketReplayCutoffs,
   buildReplayCutoffs,
   buildReplayEventRecord,
   buildReplayEventInput,
@@ -975,5 +976,82 @@ describe("paired evaluation metrics", () => {
     expect(metrics.paired.byBaseline.polymarket_only?.sampleSize).toBe(3);
     expect(metrics.paired.byBaseline.polymarket_only?.brierScore).toBeCloseTo(0.16, 6);
     expect(metrics.paired.byBaseline.model_without_polymarket?.brierScore).toBeCloseTo(0.09, 6);
+  });
+});
+
+describe("replay cutoffs", () => {
+  it("counts horizons back from the scheduled end date, not from when the market closed", () => {
+    const market = { ...benchmarkMarket, endDate: "2026-12-30T00:00:00Z" };
+
+    expect(buildMarketReplayCutoffs(market)).toEqual([
+      { horizon: "30d", cutoffAt: "2026-11-30T00:00:00.000Z" },
+      { horizon: "7d", cutoffAt: "2026-12-23T00:00:00.000Z" },
+      { horizon: "1d", cutoffAt: "2026-12-29T00:00:00.000Z" },
+      { horizon: "6h", cutoffAt: "2026-12-29T18:00:00.000Z" },
+    ]);
+  });
+
+  it("drops cutoffs at or after the resolution, when the answer was already known", () => {
+    const resolvedEarly = {
+      ...benchmarkMarket,
+      resolvedAt: "2026-12-28T00:00:00Z",
+      endDate: "2026-12-31T00:00:00Z",
+    };
+
+    expect(buildMarketReplayCutoffs(resolvedEarly).map((cutoff) => cutoff.horizon)).toEqual(["30d", "7d"]);
+  });
+
+  it("falls back to the resolution time when the end date is unknown", () => {
+    expect(buildMarketReplayCutoffs({ ...benchmarkMarket, endDate: null })).toEqual(
+      buildReplayCutoffs(benchmarkMarket.resolvedAt),
+    );
+  });
+
+  it("evaluates a market only at cutoffs before it resolved, and says which horizons were skipped", async () => {
+    const resolvedEarly = {
+      ...benchmarkMarket,
+      resolvedAt: "2026-12-28T00:00:00Z",
+      endDate: "2026-12-31T00:00:00Z",
+    };
+    const run = await runHistoricalEvaluation({
+      pool: {
+        async query(text: string) {
+          throw new Error(`Unexpected query: ${text}`);
+        },
+      } as never,
+      env: getEnv({
+        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cassandra_test",
+        REDIS_URL: "redis://localhost:6379",
+        CASSANDRA_ADAPTER_MODE: "live",
+      }),
+      input: { benchmarkSetId: "benchmark-set-1", baselines: ["polymarket_only"] },
+      listBenchmarkMarkets: async () => [resolvedEarly],
+      listPriceSnapshotsForBenchmark: async () => [
+        {
+          id: "snapshot-early",
+          benchmarkMarketId: benchmarkMarket.id,
+          cutoffAt: "2026-11-01T00:00:00Z",
+          probability: 0.6,
+          volume: 1000,
+          liquidity: 500,
+          source: "polymarket",
+          createdAt: "2026-11-01T00:01:00Z",
+        },
+      ],
+      getCalibrationSnapshot: async () => null,
+      persistEvaluationRunResult: async (_pool, input) => ({
+        id: "run-cutoffs",
+        ...input.run,
+        createdAt: "2026-01-02T00:00:00Z",
+        predictions: input.predictions,
+      }) as never,
+    });
+
+    const predictions = (run as unknown as { predictions: Array<{ horizon: string; cutoffAt: string }> }).predictions;
+    expect(predictions.map((prediction) => prediction.horizon)).toEqual(["30d", "7d"]);
+    expect(predictions[0]?.cutoffAt).toBe("2026-12-01T00:00:00.000Z");
+    expect(run.leakageWarnings).toContain(
+      "Skipped horizons 1d, 6h for market-1: the market resolved before those cutoffs",
+    );
   });
 });
