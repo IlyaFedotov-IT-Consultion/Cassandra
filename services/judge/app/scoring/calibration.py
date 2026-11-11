@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.models_generated import CalibrationSnapshot
-from app.scoring.priors import build_base_rate_params, build_market_prior_params
+from app.scoring.priors import build_base_rate_params
 from app.scoring.weights import default_judge_weights, select_regime, update_expert_weights
 
 
@@ -214,14 +214,23 @@ def _training_probability(trace: dict[str, Any]) -> float | None:
 def _join_traces_and_outcomes(
     historical_traces: list[dict[str, Any]],
     resolved_outcomes: list[dict[str, Any]],
+    *,
+    completed_only: bool = False,
 ) -> list[dict[str, Any]]:
-    """One training pair per resolved event: its latest judgment made before resolution."""
+    """One training pair per resolved event: its latest judgment made before resolution.
+
+    With `completed_only`, prior-only (`insufficient_evidence`) traces are left out: they
+    never went through the panel, so they say nothing about how the panel's output
+    should be recalibrated.
+    """
     outcomes_by_event_id = {str(item["eventId"]): item for item in resolved_outcomes}
     selected: dict[str, tuple[datetime | None, dict[str, Any], float]] = {}
     for trace in historical_traces:
         event_id = str(trace["eventId"])
         outcome = outcomes_by_event_id.get(event_id)
         if outcome is None:
+            continue
+        if completed_only and trace.get("status", "completed") != "completed":
             continue
         probability = _training_probability(trace)
         if probability is None:
@@ -348,12 +357,102 @@ def _judge_regrets(joined_pairs: list[dict[str, Any]], judge_names: list[str]) -
     }
 
 
+def _fit_calibration_params(pairs: list[dict[str, Any]], regime: str) -> dict[str, Any]:
+    if regime == "cold_start" or not pairs:
+        return {"method": "identity"}
+    if regime == "warming":
+        return fit_platt_scaling(pairs)
+    unique_predictions = len({pair["predicted"] for pair in pairs})
+    unique_outcomes = len({pair["outcome"] for pair in pairs})
+    if unique_predictions >= 3 and unique_outcomes >= 2:
+        return _fit_isotonic_outputs(pairs)
+    return fit_platt_scaling(pairs)
+
+
+HELD_OUT_FOLDS = 5
+
+
+def held_out_calibration_scores(
+    pairs: list[dict[str, Any]],
+    regime: str,
+    *,
+    folds: int = HELD_OUT_FOLDS,
+) -> dict[str, Any] | None:
+    """Cross-validated scores of the calibration map against leaving forecasts alone.
+
+    Each fold is scored by a map fitted on the other folds, so the comparison shows what
+    the map does to forecasts it has not seen. Folds are assigned by event id order,
+    which keeps the result reproducible.
+    """
+    if regime == "cold_start" or len(pairs) < folds:
+        return None
+
+    ordered = sorted(pairs, key=lambda pair: str(pair.get("eventId", "")))
+    identity: list[dict[str, float | int]] = []
+    calibrated: list[dict[str, float | int]] = []
+    for fold in range(folds):
+        training = [pair for index, pair in enumerate(ordered) if index % folds != fold]
+        params = _fit_calibration_params(training, regime)
+        for index, pair in enumerate(ordered):
+            if index % folds != fold:
+                continue
+            identity.append({"predicted": pair["predicted"], "outcome": pair["outcome"]})
+            calibrated.append(
+                {
+                    "predicted": apply_probability_calibration(pair["predicted"], params),
+                    "outcome": pair["outcome"],
+                }
+            )
+
+    brier_identity = brier_score(identity)
+    brier_calibrated = brier_score(calibrated)
+    return {
+        "folds": folds,
+        "sampleSize": len(ordered),
+        "brierIdentity": brier_identity,
+        "brierCalibrated": brier_calibrated,
+        "logLossIdentity": log_loss(identity),
+        "logLossCalibrated": log_loss(calibrated),
+        "improves": brier_calibrated < brier_identity,
+    }
+
+
+MIN_MARKET_TRUST_PAIRS = 40
+
+
+def fit_market_trust(market_price_pairs: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """How far to trust a prediction-market price, fitted on resolved benchmark markets.
+
+    A Platt fit of outcomes on the market's log-odds: a slope below 1 means prices were
+    overconfident, above 1 underconfident. With too few resolved markets, or only one
+    kind of outcome, the price is trusted as is.
+    """
+    pairs: list[dict[str, Any]] = []
+    for pair in market_price_pairs or []:
+        price = pair.get("price")
+        if isinstance(price, bool) or not isinstance(price, int | float) or not 0.0 <= price <= 1.0:
+            continue
+        pairs.append({"predicted": float(price), "outcome": int(bool(pair.get("outcome")))})
+
+    if len(pairs) < MIN_MARKET_TRUST_PAIRS or len({pair["outcome"] for pair in pairs}) < 2:
+        return {"trustSlope": 1.0, "trustIntercept": 0.0, "fitted": False, "sampleSize": len(pairs)}
+
+    fit = fit_platt_scaling(pairs)
+    return {
+        "trustSlope": fit["slope"],
+        "trustIntercept": fit["intercept"],
+        "fitted": True,
+        "sampleSize": len(pairs),
+    }
+
+
 def fit_calibration_snapshot(
     *,
     historical_traces: list[dict[str, Any]],
     resolved_outcomes: list[dict[str, Any]],
+    market_price_pairs: list[dict[str, Any]] | None = None,
 ) -> CalibrationSnapshot:
-    joined_pairs = _join_traces_and_outcomes(historical_traces, resolved_outcomes)
+    joined_pairs = _join_traces_and_outcomes(historical_traces, resolved_outcomes, completed_only=True)
     resolved_outcome_count = len(joined_pairs)
     regime = select_regime(resolved_outcome_count)
     judge_names = sorted(
@@ -366,10 +465,10 @@ def fit_calibration_snapshot(
         or set(DEFAULT_PANEL)
     )
     uniform_weights = default_judge_weights(judge_names)
+    calibration_params = _fit_calibration_params(joined_pairs, regime)
 
     if regime == "cold_start" or not joined_pairs:
         judge_weights = uniform_weights
-        calibration_params: dict[str, Any] = {"method": "identity"}
         online_learning_params = {"enabled": False, "stepSizeScale": 0.0}
     else:
         regrets = _judge_regrets(joined_pairs, judge_names)
@@ -378,26 +477,17 @@ def fit_calibration_snapshot(
             regrets,
             resolved_outcome_count=resolved_outcome_count,
         )
-        if regime == "warming":
-            calibration_params = fit_platt_scaling(joined_pairs)
-            online_learning_params = {"enabled": True, "stepSizeScale": 0.5}
-        else:
-            unique_predictions = len({pair["predicted"] for pair in joined_pairs})
-            unique_outcomes = len({pair["outcome"] for pair in joined_pairs})
-            if unique_predictions >= 3 and unique_outcomes >= 2:
-                calibration_params = _fit_isotonic_outputs(joined_pairs)
-            else:
-                calibration_params = fit_platt_scaling(joined_pairs)
-            online_learning_params = {"enabled": True, "stepSizeScale": 1.0}
+        online_learning_params = {"enabled": True, "stepSizeScale": 0.5 if regime == "warming" else 1.0}
 
-    base_rate_params = build_base_rate_params(joined_pairs)
-    market_prior_params = build_market_prior_params(base_rate_params)
+    # Base rates count every resolved event, including ones whose judgment was prior-only.
+    base_rate_params = build_base_rate_params(_join_traces_and_outcomes(historical_traces, resolved_outcomes))
+    market_prior_params = fit_market_trust(market_price_pairs)
 
     metrics_pairs = [
         {"predicted": pair["predicted"], "outcome": pair["outcome"]}
         for pair in joined_pairs
     ]
-    metrics = {
+    metrics: dict[str, Any] = {
         "brierScore": brier_score(metrics_pairs),
         "logLoss": log_loss(metrics_pairs),
         "expectedCalibrationError": expected_calibration_error(metrics_pairs),
@@ -405,6 +495,9 @@ def fit_calibration_snapshot(
         "traceCount": len(joined_pairs),
         "outcomeCount": resolved_outcome_count,
     }
+    held_out = held_out_calibration_scores(joined_pairs, regime)
+    if held_out is not None:
+        metrics["heldOut"] = held_out
 
     return CalibrationSnapshot.model_validate(
         {

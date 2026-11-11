@@ -29,9 +29,17 @@ class PlanRequest(BaseModel):
     max_queries: int = Field(default=4, alias="maxQueries", ge=1, le=8)
 
 
+class MarketPricePair(BaseModel):
+    """A resolved benchmark market's price at one cutoff, with how the market resolved."""
+
+    price: float
+    outcome: bool
+
+
 class CalibrationRequest(BaseModel):
     historical_traces: list[VerdictTrace] = Field(default_factory=list, alias="historicalTraces")
     resolved_outcomes: list[OutcomeInput] = Field(default_factory=list, alias="resolvedOutcomes")
+    market_price_pairs: list[MarketPricePair] = Field(default_factory=list, alias="marketPricePairs")
 
 
 def model_to_dict(model: BaseModel) -> dict[str, Any]:
