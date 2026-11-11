@@ -67,15 +67,23 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 
 /** One compact line: API reachability, readiness, and adapter mode. */
 export function ServiceStatus() {
+  // The shell stays mounted across routes. Refresh both readings so startup
+  // failures and adapter-mode changes do not remain cached until a page reload.
+  const statusRefresh = {
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: "always" as const,
+    refetchOnReconnect: "always" as const,
+    retry: false,
+  };
   const healthQuery = useQuery({
+    ...statusRefresh,
     queryKey: ["health"],
     queryFn: fetchHealth,
-    retry: false,
   });
   const readyQuery = useQuery({
+    ...statusRefresh,
     queryKey: ["ready"],
     queryFn: fetchReady,
-    retry: false,
   });
 
   const apiState = healthQuery.isError
@@ -85,7 +93,7 @@ export function ServiceStatus() {
       : readyQuery.data?.status === "ready"
         ? { tone: "good" as const, label: "API ready" }
         : { tone: "neutral" as const, label: "Checking API" };
-  const mode = healthQuery.data?.adapterMode;
+  const mode = healthQuery.isError ? null : healthQuery.data?.adapterMode;
   const errorMessage =
     healthQuery.error instanceof Error
       ? healthQuery.error.message

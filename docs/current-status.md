@@ -94,7 +94,7 @@ There is no migration framework. Both SQL files are re-applied on every migrate 
 - **No browser end-to-end suite.** UI changes are checked with Testing Library plus manual Playwright MCP sessions.
 - **No linter or formatter.** `pnpm lint` does nothing.
 - **Development queue durability.** The Compose Redis service disables persistence. The API process hosts the workers; the supplied stack is not a durable, independently scaled production queue deployment.
-- **Full Compose browser wiring.** The optional app profile sets the web API URL to `http://api:3000`, which a host browser normally cannot resolve. Use the native quick start in the README; the full container profile needs browser-reachable API configuration before acceptance.
+- **Full Compose acceptance remains unverified.** The web client rewrites internal `api` and `host.docker.internal` hostnames to the browser hostname. The optional full app profile was not rerun for the documentation release; the README documents native startup with containerized Postgres and Redis.
 - **No committed CI workflow.** Verification below comes from local commands and browser sessions, not hosted CI.
 - **Replay retrieval is present-day search.** A replay searches today's web and keeps results dated before the cutoff, so its forecasts are somewhat better informed than a live forecast was. Calibration trained on replays inherits that; `includeReplay: false` trains on live judgments only.
 - **Calibration sample is still small.** The paid live cycle on 2026-11-11 produced 47 eligible replay training forecasts across 13 resolved market groups, below the 20-group threshold for a non-identity calibration map. These are local database contents, not data bundled with the repository.
@@ -173,3 +173,22 @@ full-stack or paid acceptance run.
   anchors and clarified that the approval override applies to non-identity maps.
 - A clean-machine dependency install and the full Compose app profile were not
   executed for this release. No new paid provider runs were started.
+
+## Service-status refresh fix (2026-11-11)
+
+The sidebar previously fetched health/readiness without periodic refresh while
+remaining mounted across navigation. A startup response of `not_ready` and
+`fixture` could stay visible after the API recovered and changed to live mode.
+Health and readiness now refresh every 10 seconds in an active tab and always on
+window focus or network reconnection. A failed health check hides the cached mode.
+
+Two regression tests failed before the fix and passed afterward. The web suite
+now has **92 passing tests**, and `pnpm --filter @cassandra/web build` passes.
+Playwright reproduced the stuck state before the fix and verified automatic
+recovery at 1440×1000 and 390×844 afterward. The actual local API answered ready
+and live; the checked browser reported the same. Test failures were simulated
+through intercepted responses; no paid runs or backend outages were initiated.
+
+This investigation also corrected the earlier Compose hostname note: the web
+client already rewrites container hostnames for browser access. That mapping was
+not the cause of the reproduced stale status.
