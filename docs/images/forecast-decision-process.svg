@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1340" viewBox="0 0 1200 1340" role="img" aria-labelledby="title desc">
+<title id="title">Cassandra forecasting decision logic</title><desc id="desc">A Yes/No event drives evidence collection and relevance filtering. Evidence-backed judges assess official, web and community sources. Their weighted updates are combined with a separately chosen prior, reduced for disagreement, and calibrated only using the approved snapshot. The output includes probability, sources, model spread and evidence gaps. Weak evidence produces a flagged prior-only result.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8Z" fill="#526579"/></marker></defs>
+<rect width="1200" height="1340" rx="24" fill="#f6f8fb"/>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#172c40}.label{font-size:15px;font-weight:700;letter-spacing:1.6px;fill:#087f79}.heading{font-size:25px;font-weight:700}.body{font-size:19px;fill:#526579}.small{font-size:16px;fill:#526579}.edge{fill:none;stroke:#526579;stroke-width:2;marker-end:url(#arrow)}</style>
+<text x="40" y="46" class="label" >CASSANDRA / FORECAST LOGIC</text>
+<text x="40" y="88" class="heading" >From a question to an explained probability</text>
+<text x="40" y="118" class="body" >Conceptual flow · the prior and evidence assessments are separate inputs to combination.</text>
+<rect x="40" y="155" width="700" height="112" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="175" width="4" height="72" rx="2" fill="#2863b7"/>
+<text x="64" y="185" class="label" >01 / DEFINE</text>
+<text x="64" y="219" class="heading" >Ask a resolvable Yes/No question</text>
+<text x="64" y="250" class="body" >Question + deadline + entities + explicit resolution rules</text>
+<path d="M390 267 V310" class="edge"/>
+<rect x="40" y="310" width="700" height="138" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="330" width="4" height="98" rx="2" fill="#2863b7"/>
+<text x="64" y="340" class="label" >02 / RESEARCH</text>
+<text x="64" y="374" class="heading" >Collect evidence, then check relevance</text>
+<text x="64" y="405" class="body" >Plan sub-question searches; retrieve and normalize sources.</text>
+<text x="64" y="431" class="body" >Keep useful evidence and record gaps or provider failures.</text>
+<path d="M390 448 V490" class="edge"/>
+<rect x="40" y="490" width="700" height="164" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="510" width="4" height="124" rx="2" fill="#2863b7"/>
+<text x="64" y="520" class="label" >03 / ASSESS</text>
+<text x="64" y="554" class="heading" >Ask the judge panel</text>
+<text x="64" y="585" class="body" >Official records · open web research · community signal</text>
+<text x="64" y="611" class="body" >Each role can use several models; empty roles stay neutral.</text>
+<text x="64" y="637" class="body" >Cross-examine when at least two roles have evidence.</text>
+<path d="M390 654 V710" class="edge"/>
+<rect x="40" y="710" width="700" height="164" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="730" width="4" height="124" rx="2" fill="#2863b7"/>
+<text x="64" y="740" class="label" >04 / COMBINE</text>
+<text x="64" y="774" class="heading" >Update the starting probability</text>
+<text x="64" y="805" class="body" >Pool evidence-strength updates in log-odds space.</text>
+<text x="64" y="831" class="body" >Adjust for weights, source overlap, quality and freshness.</text>
+<text x="64" y="857" class="body" >When judges disagree, move back toward the prior.</text>
+<path d="M390 874 V920" class="edge"/>
+<rect x="40" y="920" width="700" height="112" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="940" width="4" height="72" rx="2" fill="#2863b7"/>
+<text x="64" y="950" class="label" >05 / CALIBRATE</text>
+<text x="64" y="984" class="heading" >Apply the active approved snapshot</text>
+<text x="64" y="1015" class="body" >An identity calibration map leaves the probability unchanged.</text>
+<path d="M390 1032 V1075" class="edge"/>
+<rect x="40" y="1075" width="700" height="138" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="40" y="1095" width="4" height="98" rx="2" fill="#087f79"/>
+<text x="64" y="1105" class="label" >06 / EXPLAIN</text>
+<text x="64" y="1139" class="heading" >Save the probability and its trace</text>
+<text x="64" y="1170" class="body" >Show the prior, model readings, citations and missing evidence.</text>
+<text x="64" y="1196" class="body" >The displayed range measures model spread.</text>
+<rect x="790" y="155" width="370" height="267" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="790" y="175" width="4" height="227" rx="2" fill="#087f79"/>
+<text x="814" y="185" class="label" >STARTING PROBABILITY</text>
+<text x="814" y="219" class="heading" >Choose the first available</text>
+<text x="814" y="250" class="body" >1. Bound market probability</text>
+<text x="814" y="276" class="body" >2. Sufficient observed base rate</text>
+<text x="814" y="302" class="body" >3. Model estimate without evidence</text>
+<text x="814" y="328" class="body" >4. Uninformed 50% fallback</text>
+<text x="814" y="388" class="small" >Search-only related markets do not count.</text>
+<path d="M975 422 V455 H1180 V790 H740" class="edge"/>
+<text x="940" y="774" class="small" >Prior</text>
+<rect x="790" y="490" width="370" height="164" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="790" y="510" width="4" height="124" rx="2" fill="#b57922"/>
+<text x="814" y="520" class="label" >WEAK EVIDENCE</text>
+<text x="814" y="554" class="heading" >Use a flagged fallback</text>
+<text x="814" y="585" class="body" >Insufficient coverage or relevance:</text>
+<text x="814" y="611" class="body" >skip evidence-backed panel calls</text>
+<text x="814" y="637" class="body" >and produce a prior-only trace.</text>
+<rect x="790" y="920" width="370" height="190" rx="16" fill="white" stroke="#d5dfe9" stroke-width="1.5"/><rect x="790" y="940" width="4" height="150" rx="2" fill="#087f79"/>
+<text x="814" y="950" class="label" >LEARNING / LATER</text>
+<text x="814" y="984" class="heading" >Approval is required</text>
+<text x="814" y="1015" class="body" >Resolved outcomes → retraining</text>
+<text x="814" y="1041" class="body" >→ candidate snapshot → approval</text>
+<text x="814" y="1067" class="body" >Only an approved snapshot</text>
+<text x="814" y="1093" class="body" >affects future judgments.</text>
+<rect x="40" y="1250" width="1120" height="54" rx="12" fill="#e7f2f1"/>
+<text x="64" y="1284" class="body" >Research output: model spread is not a validated confidence interval or a guarantee of accuracy.</text>
+</svg>
