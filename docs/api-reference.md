@@ -7,17 +7,17 @@ This document describes the current HTTP API exposed by the Cassandra prototype 
 ### Orchestration API
 
 - Default base URL: `http://localhost:3000`
-- Implementation: [apps/api/src/app.ts](/Users/ilya/Documents/Cassandra/apps/api/src/app.ts)
+- Implementation: [apps/api/src/app.ts](../apps/api/src/app.ts)
 
 ### Judge service
 
 - Default base URL: `http://localhost:8000`
-- Implementation: [services/judge/app/api.py](/Users/ilya/Documents/Cassandra/services/judge/app/api.py)
+- Implementation: [services/judge/app/api.py](../services/judge/app/api.py)
 
 ## Conventions
 
 - Request and response bodies are JSON.
-- Shared payload definitions originate in [packages/shared/src/schemas.ts](/Users/ilya/Documents/Cassandra/packages/shared/src/schemas.ts).
+- Shared payload definitions originate in [packages/shared/src/schemas.ts](../packages/shared/src/schemas.ts).
 - The Fastify API usually returns validation errors as:
 
 ```json
@@ -329,6 +329,22 @@ Response shape:
 - each record includes `id`, `eventId`, `status`, `verdictTrace`, `createdAt`, and `updatedAt`
 - `verdictTrace` is `null` for queued or failed runs that do not have a stored trace yet
 
+### `GET /runtime`
+
+Returns a newest-first activity feed from the bounded window of recent judgment
+execution logs, not a complete audit history. Optional query parameters:
+
+- `search`: case-insensitive text matched against judgment/event IDs, messages and details;
+- `judgmentStatus`: a judgment status from the shared schema;
+- `stage`: an execution stage from the shared schema;
+- `level`: `info`, `warn` or `error`;
+- `limit`: integer from 1 to 500.
+
+Each item contains `judgmentId`, `eventId`, `judgmentStatus`, nullable
+`finalProbability` and an `entry` with timestamp, stage, level, message and details.
+Invalid query parameters return `400` with `Invalid runtime query`. Inspect a
+judgment's own record when investigating an older run.
+
 ### `POST /judgments`
 
 Creates and enqueues a judgment run.
@@ -613,6 +629,40 @@ Errors:
 
 - `400` if `id` is missing
 - `404` with `error: "Evaluation run not found"`
+
+### `POST /research/runs`
+
+Runs an auxiliary search synchronously through the configured web search backend.
+This is separate from event judgments and can incur provider charges even when
+other workflows use fixture evidence.
+
+```json
+{
+  "query": "central bank policy announcement",
+  "domains": ["example.org"],
+  "recency": "oneMonth",
+  "count": 5
+}
+```
+
+- `query` is required and nonempty; unknown fields are rejected.
+- `domains` is optional, with at most 5 nonempty domain strings.
+- `recency` is optional: `oneDay`, `oneWeek`, `oneMonth`, `oneYear`, or `noLimit` (default).
+- `count` is an integer from 1 to 10; default 5.
+- Success returns `201` with `id`, `status: "completed"`, the input/default fields,
+  `summary`, `results` and `createdAt`. Each result contains `title`, `url`,
+  `publisher`, `publishedAt` and `summary`.
+- Invalid input returns `400`. A missing configured search backend returns `503`;
+  other provider failures propagate through API error handling.
+
+Only the most recent 200 research records are retained in process memory. They
+are not persisted in Postgres and disappear on API restart.
+
+### `GET /research/runs/:id`
+
+Returns a retained research record, or `404` with `Research run not found` after
+an unknown ID, eviction or restart. There is no research-run listing endpoint or
+separate research screen in the current workspace.
 
 ## Judge Service Endpoints
 
