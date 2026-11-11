@@ -4,6 +4,7 @@ import type { CalibrationSnapshot, EvidenceItem, VerdictTrace } from "@cassandra
 import { describe, expect, it } from "vitest";
 
 import { getEnv } from "../src/config/env.js";
+import { InMemoryJudgeCacheStore } from "../src/modules/judgments/judgeCache.js";
 import type { EventRecord } from "../src/modules/events/repository.js";
 import {
   evaluateEventForecast,
@@ -192,5 +193,33 @@ describe("judge input selection", () => {
     expect(calls[0]?.evidence.map((item) => item.id)).toEqual([market.id]);
     expect(trace.status).toBe("insufficient_evidence");
     expect(trace.priorProbability).toBe(0.72);
+  });
+
+  it("does not reuse a cached verdict after the market price moved", async () => {
+    const liveEnv = getEnv({ ...process.env, CASSANDRA_ADAPTER_MODE: "live", LOG_LEVEL: "silent" });
+    const judgeCacheStore = new InMemoryJudgeCacheStore();
+    const { calls, client } = capturingJudgeClient(judgeTrace());
+    const evidenceAt = (probability: number) => [
+      evidenceItem("web", 0),
+      evidenceItem("official", 1),
+      evidenceItem("prediction_market", 2, { probability, matchedBy: "id" }),
+    ];
+    const run = (probability: number) =>
+      evaluateEventForecast({
+        env: liveEnv,
+        event,
+        evaluationTime: "2026-06-10T00:00:00Z",
+        evidence: evidenceAt(probability),
+        calibrationSnapshot: snapshot,
+        judgeCacheStore,
+        judgeClient: client,
+      });
+
+    await run(0.4);
+    await run(0.4);
+    expect(calls).toHaveLength(1);
+
+    await run(0.7);
+    expect(calls).toHaveLength(2);
   });
 });

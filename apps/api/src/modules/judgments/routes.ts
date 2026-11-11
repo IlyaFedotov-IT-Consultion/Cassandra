@@ -123,6 +123,9 @@ export function registerJudgmentRoutes(
 
       await args.judgmentQueue.enqueue({
         ...parsed.data,
+        // Fixed here, not in the worker: a retried job then asks the same as-of question,
+        // so the query plan, evidence and judge caches can answer it.
+        evaluationTime: parsed.data.evaluationTime ?? new Date().toISOString(),
         judgmentId: judgment.id,
       });
 

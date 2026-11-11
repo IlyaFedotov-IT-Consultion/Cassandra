@@ -17,8 +17,10 @@ import type { AppEnv } from "../../config/env.js";
 import type { AppLogger } from "../../lib/logger.js";
 import {
   InMemoryEvidenceCacheStore,
+  buildEvidenceCacheKey,
   collectEvidenceForEventWithCache,
   createRedisEvidenceCacheStore,
+  evidenceQueryScope,
   type EvidenceCacheStore,
 } from "../evidence/cache.js";
 import { createCommunitySearchProvider } from "../evidence/providers/communitySearch.js";
@@ -36,6 +38,7 @@ import {
 } from "../evidence/providers/webSearch.js";
 import type { AdapterMode, EvidenceProvider } from "../evidence/types.js";
 import { getEventById, type EventRecord } from "../events/repository.js";
+import { JudgeServiceError } from "./errors.js";
 import { getActiveCalibrationSnapshot } from "../backtests/repository.js";
 import {
   InMemoryJudgeCacheStore,
@@ -154,6 +157,10 @@ export interface QueryPlanResult {
 }
 
 const MAX_PLANNED_QUERIES = 3;
+// Plans are keyed by the hour of the evaluation time, like evidence, so they need not outlive it by much.
+const QUERY_PLAN_CACHE_TTL_SECONDS = 60 * 60 * 2;
+
+export { JudgeServiceError };
 
 interface JudgmentEvidenceItem {
   id: string;
@@ -287,6 +294,16 @@ function buildJudgeModelVersion(env: AppEnv): string {
   ].join("|");
 }
 
+/** The quoted price is what a market item says; two quotes of one market are different evidence. */
+function marketQuoteFingerprint(item: JudgmentEvidenceItem): string {
+  if (item.sourceFamily !== "prediction_market" && item.sourceFamily !== "market") {
+    return "";
+  }
+
+  const { probability, yesPrice, price, lastTradePrice, outcomePrices } = item.metadata;
+  return JSON.stringify([probability, yesPrice, price, lastTradePrice, outcomePrices]);
+}
+
 function buildEvidenceFingerprint(evidence: JudgmentEvidenceItem[]): string {
   return evidence
     .map((item) =>
@@ -296,6 +313,7 @@ function buildEvidenceFingerprint(evidence: JudgmentEvidenceItem[]): string {
         item.sourceFamily,
         item.sourceType,
         item.publishedAt,
+        marketQuoteFingerprint(item),
       ].join("|"),
     )
     .sort()
@@ -618,6 +636,8 @@ class DefaultJudgeClient implements JudgeClient {
       "content-type": "application/json",
       "x-request-id": requestId,
       "x-cassandra-event-id": this.context.eventId ?? event.id,
+      // The judge budgets its model calls inside this, so it stops spending once we stop waiting.
+      "x-cassandra-timeout-ms": String(this.env.JUDGE_REQUEST_TIMEOUT_MS),
     };
 
     if (this.context.judgmentId) {
@@ -656,8 +676,9 @@ class DefaultJudgeClient implements JudgeClient {
       });
 
       if (!response.ok) {
-        throw new Error(
+        throw new JudgeServiceError(
           `Judge service returned ${response.status} ${response.statusText} (request ${requestId})`,
+          response.status,
         );
       }
 
@@ -694,8 +715,9 @@ class DefaultJudgeClient implements JudgeClient {
       });
 
       if (!response.ok) {
-        throw new Error(
+        throw new JudgeServiceError(
           `Judge service planning returned ${response.status} ${response.statusText} (request ${requestId})`,
+          response.status,
         );
       }
 
@@ -722,12 +744,16 @@ function pipelineStage(
 /**
  * Pipeline stage 1. Planning is best effort: when the client cannot plan or planning
  * fails, retrieval falls back to each provider's templated query.
+ *
+ * With a cache store, a live plan is kept for its evaluation hour. A retried judgment then
+ * reuses the same queries, which is also what lets the evidence cache answer the retry.
  */
 export async function planEventQueries(args: {
   env: AppEnv;
   event: EventRecord;
   evaluationTime: string;
   judgeClient?: JudgeClient;
+  cacheStore?: EvidenceCacheStore;
 }): Promise<{ queries: string[]; stage: PipelineStage }> {
   const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
 
@@ -738,12 +764,13 @@ export async function planEventQueries(args: {
     };
   }
 
-  try {
-    const plan = await judgeClient.plan({
-      event: args.event,
-      evaluationTime: args.evaluationTime,
-      maxQueries: MAX_PLANNED_QUERIES,
-    });
+  const cacheStore = args.env.CASSANDRA_ADAPTER_MODE === "live" ? args.cacheStore : undefined;
+  const cacheKey = buildEvidenceCacheKey(
+    evidenceQueryScope(args.event, undefined),
+    args.evaluationTime,
+    "query-plan",
+  );
+  const toResult = (plan: QueryPlanResult, cacheStatus: "hit" | "miss" | "bypass") => {
     const queries = plan.queries.map((query) => query.trim()).filter(Boolean).slice(0, MAX_PLANNED_QUERIES);
 
     return {
@@ -752,8 +779,27 @@ export async function planEventQueries(args: {
         subQuestions: plan.subQuestions,
         queries,
         model: plan.model ?? null,
+        cacheStatus,
       }),
     };
+  };
+
+  try {
+    const cached = await cacheStore?.get(cacheKey);
+
+    if (cached) {
+      return toResult(JSON.parse(cached) as QueryPlanResult, "hit");
+    }
+
+    const plan = await judgeClient.plan({
+      event: args.event,
+      evaluationTime: args.evaluationTime,
+      maxQueries: MAX_PLANNED_QUERIES,
+    });
+
+    await cacheStore?.set(cacheKey, JSON.stringify(plan), QUERY_PLAN_CACHE_TTL_SECONDS);
+
+    return toResult(plan, cacheStore ? "miss" : "bypass");
   } catch (error) {
     return {
       queries: [],
@@ -1093,6 +1139,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       event,
       evaluationTime,
       judgeClient,
+      cacheStore: evidenceCacheStore,
     });
     await recordJudgmentExecutionLog({
       pool: args.pool,

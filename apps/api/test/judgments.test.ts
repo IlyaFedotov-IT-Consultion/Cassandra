@@ -442,6 +442,35 @@ describe("judgment routes and service", () => {
     }
   });
 
+  it("fixes the evaluation time when the judgment is queued, so a retry reuses it", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Official launch announcement.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const enqueue = vi.fn(async (_input: { evaluationTime?: string }) => undefined);
+    const app = buildApp({
+      dbPool: pool,
+      env: createFixtureEnv(),
+      judgmentQueue: { enqueue, close: async () => undefined } as JudgmentJobQueue,
+    });
+    const before = Date.now();
+
+    try {
+      const response = await app.inject({ method: "POST", url: "/judgments", payload: { eventId: event.id } });
+
+      expect(response.statusCode).toBe(202);
+      const queuedAt = Date.parse(enqueue.mock.calls[0]?.[0]?.evaluationTime ?? "");
+      expect(queuedAt).toBeGreaterThanOrEqual(before);
+      expect(queuedAt).toBeLessThanOrEqual(Date.now());
+    } finally {
+      await app.close();
+    }
+  });
+
   it("rejects live judgments before queueing when no authoritative search providers are configured", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",

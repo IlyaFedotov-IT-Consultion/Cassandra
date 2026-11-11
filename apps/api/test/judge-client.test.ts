@@ -98,6 +98,16 @@ describe("judge client correlation headers", () => {
     expect(captured[0]?.headers["x-request-id"]).not.toBe(captured[1]?.headers["x-request-id"]);
   });
 
+  it("tells the judge service how long the API will wait for an answer", async () => {
+    const client = createJudgeClient(
+      getEnv({ DATABASE_URL, CASSANDRA_ADAPTER_MODE: "fixture", JUDGE_BASE_URL: baseUrl, JUDGE_REQUEST_TIMEOUT_MS: "45000" }),
+    );
+
+    await client.plan?.({ event, evaluationTime: "2026-11-07T12:00:00Z", maxQueries: 3 });
+
+    expect(captured[0]?.headers["x-cassandra-timeout-ms"]).toBe("45000");
+  });
+
   it("falls back to the event being judged when no context is given", async () => {
     const client = createJudgeClient(env());
 

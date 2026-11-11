@@ -54,7 +54,7 @@ export function buildEvidenceCacheKey(
  * so all of them belong in the cache key; otherwise events that share a question would
  * reuse each other's provider output.
  */
-function evidenceQueryScope(event: EventRecord, queries: string[] | undefined): string {
+export function evidenceQueryScope(event: EventRecord, queries: string[] | undefined): string {
   const binding = createHash("sha256")
     .update(
       JSON.stringify([
