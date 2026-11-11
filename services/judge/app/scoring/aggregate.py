@@ -169,9 +169,18 @@ def aggregate_posterior(
     raw_posterior_log_odds = prior_log_odds
 
     informative_contributions: list[float] = []
+    evidence_by_judge = {
+        raw.judge_name: [evidence_lookup[evidence_id] for evidence_id in raw.evidence_ids if evidence_id in evidence_lookup]
+        for raw in raw_opinions
+    }
+    # The pool is a weighted average over the judges that read evidence. A judge with
+    # nothing to read abstains: it must not hold weight that scales the others down.
+    informative_weight = sum(
+        base_weights.get(raw.judge_name, 1.0) for raw in raw_opinions if evidence_by_judge[raw.judge_name]
+    )
 
     for raw in raw_opinions:
-        evidence_items = [evidence_lookup[evidence_id] for evidence_id in raw.evidence_ids if evidence_id in evidence_lookup]
+        evidence_items = evidence_by_judge[raw.judge_name]
         if not evidence_items:
             # Absence of evidence is not evidence: the judge cannot move the posterior
             # and must not register as disagreement.
@@ -187,6 +196,7 @@ def aggregate_posterior(
             else to_log_bf(raw.evidence_strength, mapping)
         )
         base_weight = base_weights.get(raw.judge_name, 1.0)
+        pool_weight = base_weight / informative_weight if evidence_items and informative_weight > 0 else 0.0
         dependency_discount = discounts.get(raw.judge_name, 1.0)
         freshness = (
             mean(
@@ -196,9 +206,10 @@ def aggregate_posterior(
             else 1.0
         )
         quality = evidence_quality_modifier(evidence_items)
-        effective = base_weight * dependency_discount * quality * freshness * log_bayes_factor
+        effective = pool_weight * dependency_discount * quality * freshness * log_bayes_factor
         raw_posterior_log_odds += effective
         if evidence_items:
+            # Disagreement keeps the snapshot's own weight scale, which `k_disagree` is tuned for.
             weighted_log_odds.append(base_weight * log_bayes_factor)
             informative_contributions.append(effective)
         finalized_opinions.append(

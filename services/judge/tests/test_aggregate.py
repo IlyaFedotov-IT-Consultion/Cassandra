@@ -176,3 +176,45 @@ def test_evidence_with_an_unknown_publication_date_gets_neutral_freshness() -> N
     )
 
     assert result.finalized_opinions[0].freshnessDecay == 0.5
+
+
+def _plain_evidence(evidence_id: str, source_family: str) -> EvidenceItem:
+    item = _family_evidence(evidence_id, source_family, "2026-10-11T12:00:00Z").model_dump()
+    item["qualitySignals"] = {}
+    return EvidenceItem.model_validate(item)
+
+
+def test_judges_without_evidence_do_not_dilute_the_one_that_has_some() -> None:
+    panel = aggregate_posterior(
+        prior_log_odds=0.0,
+        raw_opinions=[
+            _raw_opinion("official_records", [], "neutral"),
+            _raw_opinion("community_signal", [], "neutral"),
+            _raw_opinion("open_web_research", ["w1"], "strong_for"),
+        ],
+        base_weights={"official_records": 1 / 3, "community_signal": 1 / 3, "open_web_research": 1 / 3},
+        evidence_lookup={"w1": _plain_evidence("w1", "web")},
+        evaluation_time="2026-10-11T12:00:00Z",
+    )
+
+    # strong_for is a log Bayes factor of 3.0 on evidence published at the evaluation time.
+    assert abs(panel.raw_posterior_log_odds - 3.0) < 1e-9
+
+
+def test_pool_is_a_weighted_average_of_the_informative_judges() -> None:
+    result = aggregate_posterior(
+        prior_log_odds=0.0,
+        raw_opinions=[
+            _raw_opinion("official_records", ["o1"], "strong_for"),
+            _raw_opinion("community_signal", ["c1"], "neutral"),
+            _raw_opinion("open_web_research", [], "neutral"),
+        ],
+        base_weights={"official_records": 0.6, "community_signal": 0.2, "open_web_research": 0.2},
+        evidence_lookup={"o1": _plain_evidence("o1", "official"), "c1": _plain_evidence("c1", "community")},
+        evaluation_time="2026-10-11T12:00:00Z",
+    )
+
+    # Informative weights 0.6 and 0.2 renormalise to 0.75 and 0.25: 0.75 * 3.0 + 0.25 * 0.
+    assert abs(result.raw_posterior_log_odds - 2.25) < 1e-9
+    by_name = {opinion.judgeName: opinion for opinion in result.finalized_opinions}
+    assert by_name["official_records"].baseWeight == 0.6
