@@ -167,6 +167,17 @@ export function JudgmentsPage() {
   );
 }
 
+function describeRange(method: string) {
+  switch (method) {
+    case "model_spread":
+      return "Range across the ensemble's models";
+    case "bootstrap":
+      return "Range from resampling judges";
+    default:
+      return "Fixed-width range: no spread between models was measured";
+  }
+}
+
 export function JudgmentDetailPage() {
   const { judgmentId } = useParams();
   const navigate = useNavigate();
@@ -278,7 +289,7 @@ export function JudgmentDetailPage() {
               <ul className="verdict__facts">
                 <li>{`Prior ${formatProbability(trace.priorProbability)}`}</li>
                 <li>{`Range ${formatProbability(trace.confidenceLow)}–${formatProbability(trace.confidenceHigh)}`}</li>
-                <li>{trace.uncertaintyMethod === "bootstrap" ? "Range from resampling judges" : "Fixed-width range"}</li>
+                <li>{describeRange(trace.uncertaintyMethod)}</li>
                 <li>{humanizeToken(trace.replayFidelity)} replay fidelity</li>
               </ul>
             </div>

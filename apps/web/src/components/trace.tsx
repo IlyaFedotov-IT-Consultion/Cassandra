@@ -161,11 +161,22 @@ function StageSummary({ stage }: { stage: Stage }) {
         ? (details.judges as Record<string, { samples?: number; excludedSamples?: number }>)
         : {};
       const excluded = Object.values(judges).reduce((sum, judge) => sum + (judge.excludedSamples ?? 0), 0);
+      const failedJudges =
+        details.failedJudges && typeof details.failedJudges === "object"
+          ? Object.entries(details.failedJudges as Record<string, unknown>)
+          : [];
       return (
-        <p>
-          {models.length > 0 ? models.map(shortModelName).join(", ") : "Fake LLM"}
-          {excluded > 0 ? `; ${excluded} incoherent sample${excluded === 1 ? "" : "s"} excluded` : ""}
-        </p>
+        <>
+          <p>
+            {models.length > 0 ? models.map(shortModelName).join(", ") : "Fake LLM"}
+            {excluded > 0 ? `; ${excluded} incoherent sample${excluded === 1 ? "" : "s"} excluded` : ""}
+          </p>
+          {failedJudges.map(([judge, error]) => (
+            <p key={judge} className="stage__warning">
+              {humanizeToken(judge)} failed and abstained: {String(error)}
+            </p>
+          ))}
+        </>
       );
     }
     case "cross_examination":

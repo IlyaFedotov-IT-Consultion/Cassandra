@@ -388,6 +388,52 @@ describe("judgment trace", () => {
     expect(within(pipeline).getByText(/2 related markets found by search were not used/i)).toBeVisible();
   });
 
+  function withJudgmentTrace(overrides: Record<string, unknown>) {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
+      if (url.pathname === "/judgments/judgment-fed-2") {
+        const changed = trace(overrides);
+        return json({ ...judgments[0], verdictTrace: changed, judgeOpinions: changed.judgeOpinions });
+      }
+      return base(input, init);
+    });
+  }
+
+  it("says where the forecast range comes from", async () => {
+    withJudgmentTrace({ uncertaintyMethod: "model_spread" });
+    renderAt("/judgments/judgment-fed-2");
+    expect(await screen.findByText("Range across the ensemble's models")).toBeVisible();
+  });
+
+  it("says when the range is a fixed band because no model spread was measured", async () => {
+    withJudgmentTrace({ uncertaintyMethod: "none" });
+    renderAt("/judgments/judgment-fed-2");
+    expect(await screen.findByText("Fixed-width range: no spread between models was measured")).toBeVisible();
+  });
+
+  it("keeps the earlier label for traces whose range came from resampling judges", async () => {
+    withJudgmentTrace({ uncertaintyMethod: "bootstrap" });
+    renderAt("/judgments/judgment-fed-2");
+    expect(await screen.findByText("Range from resampling judges")).toBeVisible();
+  });
+
+  it("warns when a judge failed and abstained", async () => {
+    withJudgmentTrace({
+      pipelineStages: trace().pipelineStages.map((stage: { stage: string; details: Record<string, unknown> }) =>
+        stage.stage === "panel_reasoning"
+          ? { ...stage, details: { ...stage.details, failedJudges: { official_records: "upstream returned garbage" } } }
+          : stage,
+      ),
+    });
+    renderAt("/judgments/judgment-fed-2");
+
+    const pipeline = await screen.findByRole("list", { name: /pipeline stages/i });
+    expect(
+      within(pipeline).getByText("Official records failed and abstained: upstream returned garbage"),
+    ).toBeVisible();
+  });
+
   it("explains an estimated base rate when no market set the prior", async () => {
     const base = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
