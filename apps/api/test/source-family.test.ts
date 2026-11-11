@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createCommunitySearchProvider } from "../src/modules/evidence/providers/communitySearch.js";
 import type { ProviderDocument } from "../src/modules/evidence/providers/fixtureLoader.js";
 import { createOfficialSearchProvider } from "../src/modules/evidence/providers/officialSearch.js";
+import { createPerplexityProvider } from "../src/modules/evidence/providers/perplexity.js";
 import { createWebProvider } from "../src/modules/evidence/providers/web.js";
 import { classifySource } from "../src/modules/evidence/sourceFamily.js";
 import type { EventRecord } from "../src/modules/events/repository.js";
@@ -96,4 +97,36 @@ describe("source family of live search results", () => {
       ["community", "x_post"],
     ]);
   });
+
+  it("recognises government, official and community pages among Perplexity results", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            results: [
+              "https://www.sec.gov/Archives/edgar/data/1/8k.htm",
+              "https://investor.examplecorp.com/news/product-x",
+              "https://www.reddit.com/r/gadgets/comments/abc/product_x",
+              "https://www.theverge.com/2026/10/1/product-x",
+            ].map(document),
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const items = await createPerplexityProvider({ apiKey: "key" }).collect({
+      event,
+      evaluationTime: "2026-11-07T00:00:00Z",
+      mode: "live",
+    });
+
+    expect(items.map((item) => item.sourceFamily)).toEqual(["government", "official", "community", "llm_research"]);
+    expect(items[3]?.sourceType).toBe("perplexity_search_result");
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
