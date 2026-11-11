@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS judgments (
 ALTER TABLE judgments
   ADD COLUMN IF NOT EXISTS execution_log JSONB NOT NULL DEFAULT '[]'::jsonb;
 
+CREATE INDEX IF NOT EXISTS judgments_event_id_created_at_idx
+  ON judgments (event_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS judge_opinions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   judgment_id UUID NOT NULL REFERENCES judgments(id) ON DELETE CASCADE,
@@ -105,6 +108,9 @@ CREATE TABLE IF NOT EXISTS judge_opinions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS judge_opinions_judgment_id_idx
+  ON judge_opinions (judgment_id);
+
 CREATE TABLE IF NOT EXISTS outcomes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -113,6 +119,9 @@ CREATE TABLE IF NOT EXISTS outcomes (
   resolution_source_url TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS outcomes_event_id_created_at_idx
+  ON outcomes (event_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS calibration_snapshots (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -197,15 +197,19 @@ export async function getJudgmentById(
   return mapJudgmentRow(result.rows[0] as Record<string, unknown>);
 }
 
+/** Newest first. `limit` keeps a caller from loading every trace and execution log there is. */
 export async function listJudgments(
   pool: Pool,
   eventId?: string,
+  limit?: number,
 ): Promise<JudgmentRecord[]> {
+  const limitClause = limit === undefined ? "" : ` LIMIT ${Math.max(1, Math.floor(limit))}`;
   const result = eventId
-    ? await pool.query(`SELECT * FROM judgments WHERE event_id = $1 ORDER BY created_at DESC`, [
-        eventId,
-      ])
-    : await pool.query(`SELECT * FROM judgments ORDER BY created_at DESC`);
+    ? await pool.query(
+        `SELECT * FROM judgments WHERE event_id = $1 ORDER BY created_at DESC, id DESC${limitClause}`,
+        [eventId],
+      )
+    : await pool.query(`SELECT * FROM judgments ORDER BY created_at DESC, id DESC${limitClause}`);
 
   return result.rows.map((row) => mapJudgmentRow(row as Record<string, unknown>));
 }

@@ -111,4 +111,35 @@ describe("research routes", () => {
       await app.close();
     }
   });
+
+  it("keeps only the most recent research runs in memory", async () => {
+    let sequence = 0;
+    const app = buildApp({
+      dbPool: pool,
+      env: createEnv(),
+      runResearch: async (input) => ({
+        count: 1,
+        createdAt: "2026-10-11T12:00:00Z",
+        domains: [],
+        id: `research-capped-${(sequence += 1)}`,
+        query: input.query,
+        recency: "noLimit" as const,
+        results: [],
+        status: "completed" as const,
+        summary: "",
+      }),
+    });
+
+    try {
+      for (let run = 0; run < 201; run += 1) {
+        await app.inject({ method: "POST", url: "/research/runs", payload: { query: `query ${run}` } });
+      }
+
+      expect((await app.inject({ method: "GET", url: "/research/runs/research-capped-1" })).statusCode).toBe(404);
+      expect((await app.inject({ method: "GET", url: "/research/runs/research-capped-2" })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/research/runs/research-capped-201" })).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
 });

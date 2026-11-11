@@ -442,6 +442,40 @@ describe("judgment routes and service", () => {
     }
   });
 
+  it("lists only the newest judgments when given a limit, and rejects a bad one", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Official launch announcement.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const app = buildApp({
+      dbPool: pool,
+      env: createFixtureEnv(),
+      judgmentQueue: { enqueue: async () => undefined, close: async () => undefined } as JudgmentJobQueue,
+    });
+
+    try {
+      const created: string[] = [];
+      for (let run = 0; run < 3; run += 1) {
+        const response = await app.inject({ method: "POST", url: "/judgments", payload: { eventId: event.id } });
+        created.push(response.json().id);
+      }
+
+      const limited = await app.inject({ method: "GET", url: "/judgments?limit=2" });
+      const all = await app.inject({ method: "GET", url: "/judgments" });
+      const invalid = await app.inject({ method: "GET", url: "/judgments?limit=0" });
+
+      expect(limited.json().map((judgment: { id: string }) => judgment.id)).toEqual([created[2], created[1]]);
+      expect(all.json()).toHaveLength(3);
+      expect(invalid.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("fixes the evaluation time when the judgment is queued, so a retry reuses it", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",

@@ -157,6 +157,7 @@ export interface QueryPlanResult {
 }
 
 const MAX_PLANNED_QUERIES = 3;
+const RUNTIME_JUDGMENT_WINDOW = 200;
 // Plans are keyed by the hour of the evaluation time, like evidence, so they need not outlive it by much.
 const QUERY_PLAN_CACHE_TTL_SECONDS = 60 * 60 * 2;
 
@@ -1425,7 +1426,8 @@ export async function listRuntimeEvents(
   pool: Pool,
   filters: ListRuntimeEventsFilters = {},
 ): Promise<RuntimeEventRecord[]> {
-  const judgments = await listJudgments(pool);
+  // The activity log reads execution logs out of judgment rows, so it looks at recent runs only.
+  const judgments = await listJudgments(pool, undefined, RUNTIME_JUDGMENT_WINDOW);
   const normalizedSearch = filters.search?.trim().toLowerCase();
   const runtimeEvents = judgments
     .flatMap((judgment) =>
