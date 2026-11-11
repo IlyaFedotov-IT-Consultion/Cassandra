@@ -233,6 +233,8 @@ Runs candidate discovery for the watchlist now and returns the result. The run w
   - `markets`: `marketProvider`
   - `predictionMarkets`: `polymarketGamma` and `polymarketClob`
 - It clusters the evidence into candidates. Candidates already stored are upserted by signature, so a rerun keeps their promotion status.
+  - An item with entities of its own is identified by them: the entities, the action (launch, approve, delay, reject, announce) and its polarity.
+  - An item without any, which is what a live search result is, or whose only entities are the watchlist's keywords, is identified by its headline. It joins a candidate whose headline shares most of its words, at least two of them not watchlist keywords; that candidate's `candidateSignature.topic` holds the headline words it was first stored with.
 - It runs inside the request, with no queue, because it never calls the judge.
 - It records the run on the watchlist as `lastDiscovery`, with `trigger: "manual"`.
 
@@ -345,6 +347,10 @@ Notes:
 - The worker later stores a terminal status of `completed`, `insufficient_evidence`, or `failed`.
 - In both `fixture` and `live` modes, the forecasting trace is produced by the Python judge service at `JUDGE_BASE_URL`.
 - When live citation coverage is too weak, the API still calls the judge service, with `priorOnly: true`, and stores the returned prior-only trace as `insufficient_evidence`.
+- Evidence providers run concurrently, so retrieval takes as long as the slowest source.
+- A live search result's `sourceFamily` comes from where it was published, not from which search found it: government domains are `government`, Reddit and X posts are `community`, a press wire or a domain named after one of the event's entities is `official`, and everything else is `web`. `metadata.queryIntent` records what the search was looking for.
+- The panel reads at most 18 evidence items (6 per judge). Slots that a judge with little evidence leaves unused go to judges that have more candidates.
+- Stored evidence is immutable. A page whose content changed, or a new market quote, is stored as a new row with a new id, so the evidence a past trace cites keeps saying what it said then. Unchanged content reuses its row.
 - Before retrieval the API asks the judge service to plan up to 3 sub-question search queries (`POST /plan`); each search provider runs its own query plus up to 2 planned queries. Planning failures fall back to the templated queries.
 - `verdictTrace.pipelineStages` records every stage in order: `query_planning`, `retrieval`, `relevance_rating`, `prior`, `panel_reasoning`, `cross_examination`, `aggregation`, `calibration`, each with `status` (`completed`, `skipped`, `failed`) and `details`. The execution log has a `planning` entry.
 - The judgment uses the approved calibration snapshot. While none is approved it uses the identity baseline, whose id is `baseline-identity`.
@@ -630,6 +636,8 @@ Notes:
   4. **Uninformed.** 0.5, when no estimate is available.
 - The `prior` pipeline stage records the `source` (`market`, `reference_class`, `estimated_base_rate`, `uninformed`), the `probability`, the market price and liquidity, `relatedMarketsIgnored`, and for an estimate its `rationale`, `referenceClass` and per-model `samples`. Its status is `failed` when the estimate failed and the prior fell back to 0.5.
 - A panel judge with no evidence for its source families is neutral and does not call the LLM. The pool is a weighted average over the judges that had evidence: a judge without evidence holds no weight, so it does not scale the others down.
+- A judge whose model call fails abstains in the same way, with the failure in its `warnings` and in the `panel_reasoning` stage's `failedJudges`. The request fails with `502` only when every judge that had evidence failed.
+- `confidenceLow` and `confidenceHigh` say how much the forecast depends on which models were asked (`uncertaintyMethod: "model_spread"`): the ensemble's models are redrawn with replacement, the per-judge and base-rate medians retaken, and the result pooled as the forecast was, 500 times; the range is the middle 90%. When nothing was answered by more than one model there is no spread to measure, and the range is a fixed band of one log-odds unit either side (`"none"`). Traces from before this change may say `"bootstrap"`, a resampling of the panel's judges.
 - The caller's `x-cassandra-timeout-ms` header sets the request's model budget: the judge stops starting model calls at 90% of it. Without the header, `JUDGE_REQUEST_BUDGET_SECONDS` applies (default 330).
 - Relevance stage: before the panel runs, every non-market evidence item is rated 1–6 for the question by the utility model, items below 4 are dropped, and the rest are passed to the judges with question-focused summaries (the original snippet is kept in `metadata.originalSummary`). If rating rejected evidence and fewer than 2 relevant items remain, the trace is prior-only with status `insufficient_evidence`. A rating failure falls back to unfiltered evidence.
 - Ensemble consistency guard: a sample whose moderate/strong label contradicts its own probability (for example `strong_against` with p ≥ 0.75) is marked `excluded` in `samples` and left out of the median, unless every sample is incoherent.
@@ -687,7 +695,7 @@ The main forecasting artifact includes:
 
 - event and evaluation metadata
 - prior, raw posterior (before disagreement shrinkage), `preCalibrationProbability` (after shrinkage, before calibration), and final probability
-- confidence interval
+- confidence range and `uncertaintyMethod` (`model_spread`, `none`, or the earlier `bootstrap`)
 - judge opinions and weight breakdown
 - dependency matrix and disagreement shrinkage
 - conflicts and missing evidence

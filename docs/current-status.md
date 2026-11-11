@@ -18,12 +18,12 @@ Cassandra is a working research prototype for multi-source event forecasting:
 Every judgment, in both `fixture` and `live` mode, goes through the judge service. The stages, recorded in `verdictTrace.pipelineStages`, are:
 
 1. **Query planning:** generates sub-question search queries (judge `POST /plan`).
-2. **Retrieval:** official, government, community and web search, Perplexity, and Polymarket Gamma/CLOB.
+2. **Retrieval:** official, government, community and web search, Perplexity, and Polymarket Gamma/CLOB, all run concurrently. A search result's source family comes from where it was published, not from which search found it. Stored evidence is immutable, so a trace's citations keep saying what they said.
 3. **Relevance rating:** scores sources and keeps only the relevant ones.
 4. **Prior:** the bound market's price; failing that, the reference class's observed base rate; failing that, a base rate the judge model estimates without evidence. Sources are not blended, and a market found only by search never sets the prior.
-5. **Panel reasoning:** a multi-model judge ensemble, with a consistency guard that excludes samples whose label contradicts their probability.
+5. **Panel reasoning:** a multi-model judge ensemble, with a consistency guard that excludes samples whose label contradicts their probability. A judge whose model call fails abstains; the others still decide.
 6. **Cross-examination:** runs when at least two judges had evidence.
-7. **Aggregation:** log-odds pooling around the prior, as a weighted average over the judges that had evidence.
+7. **Aggregation:** log-odds pooling around the prior, as a weighted average over the judges that had evidence. The forecast's range is the spread across the ensemble's models.
 8. **Calibration:** applies the approved snapshot. Until one is approved, forecasts are uncalibrated.
 
 What is learned takes effect only through an approved calibration snapshot: the calibration map, the judge weights, the reference-class base rates, and how far a market price is trusted (fitted on resolved benchmark prices). A snapshot carries a held-out score for its calibration map, and approving one that does not beat uncalibrated forecasts needs an explicit override.
@@ -59,7 +59,7 @@ The judge service exposes `GET /health`, `POST /judge`, `POST /plan` and `POST /
   - how the forecast moved from prior to final;
   - judge cards with their per-model samples;
   - citations ranked by relevance, with diagnostics and the execution log kept collapsed.
-- **Watchlists:** each page shows the watchlist's schedule, its next run and how the last run went. Discovery can also run from the page, and sources that failed are listed. Candidates can be seeded as events.
+- **Watchlists:** each page shows the watchlist's schedule, its next run and how the last run went. Discovery can also run from the page, and sources that failed are listed. Live search results are grouped into candidates by headline. Candidates can be seeded as events.
 - **Evaluation:**
   - a comparison of baselines on the same paired sample;
   - a reliability chart;
@@ -94,8 +94,8 @@ There is no migration framework. Both SQL files are re-applied on every migrate 
 
 | Check | Result |
 | --- | --- |
-| `pnpm test` | shared 10, web 77, API 217 tests pass (API against local Postgres and Redis, in `cassandra_test`) |
-| `cd services/judge && uv run pytest` | 126 tests pass |
+| `pnpm test` | shared 10, web 81, API 248 tests pass (API against local Postgres and Redis, in `cassandra_test`) |
+| `cd services/judge && uv run pytest` | 134 tests pass |
 | `pnpm exec vitest run scripts/harness/real-e2e-support.test.ts` | 4 tests pass |
 | `pnpm build` | passes |
 | Browser check (Playwright MCP, fixture mode) | every route at 1440 and 390 px wide: no horizontal overflow, no console errors |
