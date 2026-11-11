@@ -8,6 +8,22 @@ export interface CandidateSignature {
   action: string;
   objectTokens: string[];
   polarity: "positive" | "negative" | "neutral";
+  /**
+   * Headline words that identify the story, set when the item had no entities of its own
+   * to identify it. Later runs match new headlines against it.
+   */
+  topic?: string[];
+}
+
+export interface ClusterOptions {
+  /**
+   * Entities every item of this run shares, such as the watchlist's keywords. They say
+   * nothing about which story an item belongs to, so items that carry only these are
+   * grouped by headline instead.
+   */
+  genericEntities?: string[];
+  /** Candidates stored by earlier runs, so a story found again keeps its candidate. */
+  existing?: Array<{ clusterKey: string; candidateSignature: CandidateSignature | null }>;
 }
 
 export interface CandidateCluster {
@@ -89,6 +105,17 @@ const ACTION_SYNONYMS: Record<string, string> = {
 };
 
 const NEGATIVE_ACTIONS = new Set(["delay", "reject"]);
+const ACTION_LABELS = new Set(["launch", "approve", "delay", "reject", "announce"]);
+
+/** Words too common in headlines to say which story a headline is about. */
+const TOPIC_STOP_WORDS = new Set([
+  "about", "after", "amid", "are", "as", "at", "be", "from", "has", "have", "into", "it", "its",
+  "new", "over", "said", "says", "than", "that", "this", "was", "with",
+]);
+// Two headlines are one story when most of the shorter one's words appear in the other.
+const MIN_TOPIC_OVERLAP = 0.6;
+const MIN_SHARED_TOPIC_TOKENS = 2;
+const MAX_TOPIC_TOKENS = 12;
 
 interface EvidenceProfile {
   actionLabels: Set<string>;
@@ -136,30 +163,6 @@ function tokenize(value: string): string[] {
     .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
 }
 
-function jaccardSimilarity(left: string[], right: string[]): number {
-  const leftSet = new Set(left);
-  const rightSet = new Set(right);
-  const union = new Set([...leftSet, ...rightSet]);
-
-  if (union.size === 0) {
-    return 0;
-  }
-
-  let intersectionSize = 0;
-
-  for (const token of leftSet) {
-    if (rightSet.has(token)) {
-      intersectionSize += 1;
-    }
-  }
-
-  return intersectionSize / union.size;
-}
-
-function buildClusterKey(tokens: string[]): string {
-  return [...new Set(tokens)].sort().join("-");
-}
-
 function overlapRatio(left: string[], right: string[]): number {
   const leftSet = new Set(left);
   const rightSet = new Set(right);
@@ -189,7 +192,9 @@ function buildEvidenceProfile(items: EvidenceItem[]): EvidenceProfile {
       .map((item) => `${item.title} ${item.summary} ${item.claims.join(" ")} ${item.entities.join(" ")}`)
       .join(" "),
   );
-  const actionLabels = new Set(combinedTokens.filter((token) => token in ACTION_SYNONYMS || token === "launch" || token === "approve" || token === "delay" || token === "reject" || token === "announce"));
+  const actionLabels = new Set(
+    combinedTokens.filter((token) => token in ACTION_SYNONYMS || ACTION_LABELS.has(token)),
+  );
 
   return {
     actionLabels,
@@ -257,17 +262,99 @@ export function buildCandidateSignatureKey(signature: CandidateSignature): strin
   return createHash("sha256").update(payload).digest("hex").slice(0, 24);
 }
 
-export function clusterCandidateEvidence(items: EvidenceItem[]): CandidateCluster[] {
+/**
+ * Two headlines are one story when most of the shorter one's words appear in the other and
+ * at least two of the shared words are distinctive. Words every item of the run shares (the
+ * watchlist's keywords) count toward the overlap but cannot establish it on their own:
+ * otherwise "Fed cuts rates" and "Fed raises rate forecast" would be one story.
+ */
+function isSameStory(left: string[], right: string[], genericTokens: Set<string>): boolean {
+  const rightSet = new Set(right);
+  const sharedDistinctive = [...new Set(left)].filter(
+    (token) => rightSet.has(token) && !genericTokens.has(token),
+  ).length;
+
+  return sharedDistinctive >= MIN_SHARED_TOPIC_TOKENS && overlapRatio(left, right) >= MIN_TOPIC_OVERLAP;
+}
+
+/** The headline words that identify an item's story: no filler and no action words. */
+function topicTokens(item: EvidenceItem): string[] {
+  const titleTokens = sortUnique(tokenize(item.title));
+  const topic = titleTokens.filter((token) => !TOPIC_STOP_WORDS.has(token) && !ACTION_LABELS.has(token));
+
+  return (topic.length > 0 ? topic : titleTokens).slice(0, MAX_TOPIC_TOKENS);
+}
+
+function buildTopicKey(signature: CandidateSignature, topic: string[]): string {
+  const payload = JSON.stringify({
+    version: signature.version,
+    entities: signature.entities,
+    action: signature.action,
+    polarity: signature.polarity,
+    topic,
+  });
+  return createHash("sha256").update(payload).digest("hex").slice(0, 24);
+}
+
+function sameFrame(left: CandidateSignature, right: CandidateSignature): boolean {
+  return (
+    left.action === right.action &&
+    left.polarity === right.polarity &&
+    left.entities.join("|") === right.entities.join("|")
+  );
+}
+
+/**
+ * Groups evidence into candidate events.
+ *
+ * An item with entities of its own is identified by them: who did what, with which
+ * polarity. An item without any, which is what a live search result is, is identified by
+ * its headline instead: it joins a candidate whose headline shares most of its words.
+ * Without this, every entity-less item with the same action word would be one candidate.
+ */
+export function clusterCandidateEvidence(
+  items: EvidenceItem[],
+  options: ClusterOptions = {},
+): CandidateCluster[] {
   const clustersByKey = new Map<string, CandidateCluster>();
+  const genericEntities = new Set((options.genericEntities ?? []).map(normalizeEntity));
+  const genericTokens = new Set(tokenize([...genericEntities].join(" ")));
+  const storedTopics = (options.existing ?? []).flatMap((candidate) =>
+    candidate.candidateSignature?.topic
+      ? [{ clusterKey: candidate.clusterKey, signature: candidate.candidateSignature, topic: candidate.candidateSignature.topic }]
+      : [],
+  );
+
+  const resolve = (item: EvidenceItem): { clusterKey: string; signature: CandidateSignature } => {
+    const signature = extractCandidateSignature(item);
+
+    if (signature.entities.some((entity) => !genericEntities.has(entity))) {
+      return { clusterKey: buildCandidateSignatureKey(signature), signature };
+    }
+
+    const topic = topicTokens(item);
+    const sameStory = (candidate: { signature: CandidateSignature; topic: string[] }) =>
+      sameFrame(candidate.signature, signature) && isSameStory(candidate.topic, topic, genericTokens);
+    const inThisRun = [...clustersByKey.values()]
+      .flatMap((cluster) =>
+        cluster.candidateSignature.topic
+          ? [{ clusterKey: cluster.clusterKey, signature: cluster.candidateSignature, topic: cluster.candidateSignature.topic }]
+          : [],
+      )
+      .find(sameStory);
+    const known = inThisRun ?? storedTopics.find(sameStory);
+
+    // A story keeps the topic it was first stored with, so its key stays put as wording drifts.
+    return known
+      ? { clusterKey: known.clusterKey, signature: { ...signature, topic: known.topic } }
+      : { clusterKey: buildTopicKey(signature, topic), signature: { ...signature, topic } };
+  };
 
   for (const item of items) {
-    const signature = extractCandidateSignature(item);
-    const clusterKey = buildCandidateSignatureKey(signature);
+    const { clusterKey, signature } = resolve(item);
     const existingCluster = clustersByKey.get(clusterKey);
 
     if (!existingCluster) {
-      const profile = buildEvidenceProfile([item]);
-
       clustersByKey.set(clusterKey, {
         title: item.title,
         description: item.summary,
