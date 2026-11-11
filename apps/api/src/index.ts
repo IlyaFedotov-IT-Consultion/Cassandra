@@ -7,6 +7,11 @@ import {
   createRedisConnection,
 } from "./lib/queue.js";
 import {
+  createBullMqEvaluationQueue,
+  createBullMqEvaluationWorker,
+} from "./modules/evaluation/jobQueue.js";
+import { executeEvaluationRun } from "./modules/evaluation/replay.js";
+import {
   createEvidenceCacheStore,
   createJudgeCacheStore,
 } from "./modules/judgments/service.js";
@@ -29,6 +34,9 @@ const redisConnection = createRedisConnection(env.REDIS_URL);
 const judgmentQueue = createBullMqJudgmentQueue({
   connection: redisConnection,
 });
+const evaluationQueue = createBullMqEvaluationQueue({
+  connection: redisConnection,
+});
 const discoveryScheduler =
   env.CASSANDRA_DISCOVERY_SCHEDULE === "on"
     ? createBullMqWatchlistDiscoveryScheduler({ connection: redisConnection })
@@ -39,6 +47,7 @@ const app = buildApp({
   env,
   redisConnection,
   judgmentQueue,
+  evaluationQueue,
   watchlistDiscoveryScheduler: discoveryScheduler,
   checkDb: async () => checkDbReady(dbPool),
   checkRedis: async () => checkRedisReady(redisConnection),
@@ -60,6 +69,41 @@ const judgmentWorker = createBullMqJudgmentWorker({
       }),
       input,
     }),
+});
+
+const evaluationLogger = app.log.child({ area: "evaluation" });
+const evaluationWorker = createBullMqEvaluationWorker({
+  connection: redisConnection,
+  processJob: async ({ runId }) => {
+    evaluationLogger.info({ event: "evaluation_run_started", runId }, "evaluation run started");
+
+    try {
+      await executeEvaluationRun({
+        pool: dbPool,
+        env,
+        runId,
+        evidenceCacheStore,
+        judgeCacheStore,
+        onMarketCompleted: async ({ market, completedMarkets, totalMarkets, predictions }) => {
+          evaluationLogger.info(
+            {
+              event: "evaluation_market_completed",
+              runId,
+              benchmarkMarketId: market.id,
+              completedMarkets,
+              totalMarkets,
+              predictionCount: predictions.length,
+            },
+            `evaluation run finished market ${completedMarkets} of ${totalMarkets}`,
+          );
+        },
+      });
+      evaluationLogger.info({ event: "evaluation_run_completed", runId }, "evaluation run completed");
+    } catch (error) {
+      evaluationLogger.error({ event: "evaluation_run_failed", runId, err: error }, "evaluation run failed");
+      throw error;
+    }
+  },
 });
 
 const discoveryLogger = app.log.child({ area: "watchlists" });
@@ -101,9 +145,15 @@ const discoveryWorker = discoveryScheduler
 app.addHook("onClose", async () => {
   await Promise.all([
     judgmentWorker.close(),
-    judgmentQueue.close(),
+    evaluationWorker.close(),
     discoveryWorker?.close(),
+  ]);
+  await Promise.all([
+    judgmentQueue.close(),
+    evaluationQueue.close(),
     discoveryScheduler?.close(),
+  ]);
+  await Promise.all([
     closeDbPool(dbPool),
     closeRedisConnection(redisConnection),
   ]);

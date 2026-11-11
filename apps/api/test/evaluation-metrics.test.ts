@@ -4,6 +4,7 @@ import {
   averageAbsoluteError,
   brierScore,
   calibrationBins,
+  clusteredBrierDifference,
   expectedCalibrationError,
   logLoss,
   sliceMetrics,
@@ -175,5 +176,49 @@ describe("evaluation metrics", () => {
       { predicted: 0, outcome: 0 },
     ];
     expect(averageAbsoluteError(correct)).toBe(0);
+  });
+
+  describe("Brier difference against the market, with markets as the unit", () => {
+    const forecasts = (count: number, predicted: number, referencePredicted: number, outcome: number) =>
+      Array.from({ length: count }, (_, market) => ({
+        groupId: `market-${market}`,
+        predicted,
+        referencePredicted,
+        outcome,
+      }));
+
+    it("reports the mean difference and an interval that excludes zero when the model is clearly worse", () => {
+      // Model says 0.6 where the market says 0.9 and every market resolves Yes: 0.16 - 0.01.
+      const difference = clusteredBrierDifference(forecasts(30, 0.6, 0.9, 1));
+
+      expect(difference?.mean).toBeCloseTo(0.15, 6);
+      expect(difference?.low).toBeCloseTo(0.15, 6);
+      expect(difference?.high).toBeCloseTo(0.15, 6);
+      expect(difference?.groups).toBe(30);
+    });
+
+    it("gives a wide interval when one market's many forecasts carry the whole difference", () => {
+      const oneBadMarket = [
+        ...Array.from({ length: 12 }, () => ({ groupId: "market-bad", predicted: 0.1, referencePredicted: 0.9, outcome: 1 })),
+        ...forecasts(8, 0.9, 0.9, 1),
+      ];
+
+      const difference = clusteredBrierDifference(oneBadMarket);
+
+      // Resampling markets, the bad market is sometimes absent: the interval reaches zero.
+      expect(difference?.low).toBe(0);
+      expect(difference?.high).toBeGreaterThan(difference?.mean ?? 0);
+    });
+
+    it("has nothing to say with fewer than two markets or no market price to compare with", () => {
+      expect(clusteredBrierDifference(forecasts(1, 0.6, 0.9, 1))).toBeNull();
+      expect(clusteredBrierDifference([{ groupId: "a", predicted: 0.6, outcome: 1 }, { groupId: "b", predicted: 0.6, outcome: 1 }])).toBeNull();
+    });
+
+    it("gives the same interval every time", () => {
+      const mixed = [...forecasts(10, 0.6, 0.9, 1), ...forecasts(10, 0.2, 0.4, 0).map((pair) => ({ ...pair, groupId: `no-${pair.groupId}` }))];
+
+      expect(clusteredBrierDifference(mixed)).toEqual(clusteredBrierDifference(mixed));
+    });
   });
 });

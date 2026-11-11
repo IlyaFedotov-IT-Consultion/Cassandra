@@ -530,6 +530,7 @@ def calibrate(request: CalibrationRequest) -> dict:
     snapshot = fit_calibration_snapshot(
         historical_traces=[trace.model_dump(by_alias=True, exclude_none=True) for trace in request.historical_traces],
         resolved_outcomes=[outcome.model_dump(by_alias=True, exclude_none=True) for outcome in request.resolved_outcomes],
-        market_price_pairs=[pair.model_dump() for pair in request.market_price_pairs],
+        market_price_pairs=[pair.model_dump(by_alias=True, exclude_none=True) for pair in request.market_price_pairs],
+        forecast_pairs=[pair.model_dump(by_alias=True) for pair in request.forecast_pairs],
     )
     return snapshot.model_dump(by_alias=True, exclude_none=True)

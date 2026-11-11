@@ -894,6 +894,21 @@ class SliceResult(BaseModel):
     sampleSize: conint(ge=0, le=9007199254740991)
 
 
+class Status11(StrEnum):
+    queued = 'queued'
+    running = 'running'
+    completed = 'completed'
+    failed = 'failed'
+
+
+class Progress(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    completedMarkets: conint(ge=0, le=9007199254740991)
+    totalMarkets: conint(ge=0, le=9007199254740991)
+
+
 class EvaluationRun(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -907,6 +922,9 @@ class EvaluationRun(BaseModel):
     replayFidelity: ReplayFidelity
     leakageWarnings: list[constr(min_length=1)]
     createdAt: constr(min_length=1)
+    status: Status11
+    progress: Progress | None
+    error: str | None
 
 
 class EvaluationRunSummary(BaseModel):
@@ -921,6 +939,9 @@ class EvaluationRunSummary(BaseModel):
     replayFidelity: ReplayFidelity
     leakageWarnings: list[constr(min_length=1)]
     createdAt: constr(min_length=1)
+    status: Status11
+    progress: Progress | None
+    error: str | None
 
 
 class EvaluationPrediction(BaseModel):

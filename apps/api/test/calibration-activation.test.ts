@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import type { CalibrationSnapshot, VerdictTrace } from "@cassandra/shared";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -104,7 +106,7 @@ describe("calibration snapshot activation", () => {
   beforeEach(async () => {
     await pool.query(
       `TRUNCATE TABLE judge_opinions, judgments, evidence_items, outcomes, calibration_snapshots, events,
-        benchmark_price_snapshots, benchmark_markets RESTART IDENTITY CASCADE`,
+        evaluation_predictions, evaluation_runs, benchmark_price_snapshots, benchmark_markets RESTART IDENTITY CASCADE`,
     );
   });
 
@@ -197,7 +199,7 @@ describe("calibration training data sources", () => {
   beforeEach(async () => {
     await pool.query(
       `TRUNCATE TABLE judge_opinions, judgments, evidence_items, outcomes, calibration_snapshots, events,
-        benchmark_price_snapshots, benchmark_markets RESTART IDENTITY CASCADE`,
+        evaluation_predictions, evaluation_runs, benchmark_price_snapshots, benchmark_markets RESTART IDENTITY CASCADE`,
     );
   });
 
@@ -225,7 +227,7 @@ describe("calibration training data sources", () => {
 
     const data = await loadCalibrationTrainingData(pool);
 
-    expect(data.marketPricePairs).toEqual([{ price: 0.7, outcome: true }]);
+    expect(data.marketPricePairs).toEqual([{ groupId: "market-yes", price: 0.7, outcome: true }]);
   });
 
   it("keeps an event's completed judgment when a later one was prior-only", async () => {
@@ -257,5 +259,69 @@ describe("calibration training data sources", () => {
       "completed",
       "insufficient_evidence",
     ]);
+  });
+
+  it("leaves replayed forecasts out of a retrain when asked to", async () => {
+    await upsertBenchmarkMarkets(pool, [
+      {
+        id: "market-replayed",
+        benchmarkSetId: "set-1",
+        title: "Will A happen?",
+        resolutionCriteria: "A happens.",
+        theme: "technology",
+        volume: 1000,
+        liquidity: 500,
+        resolvedAt: "2026-06-10T00:00:00Z",
+        endDate: "2026-06-09T00:00:00Z",
+        resolvedValue: true,
+        marketUrl: "https://polymarket.com/event/a",
+      },
+    ]);
+    const run = await pool.query(
+      `INSERT INTO evaluation_runs (id, benchmark_set_id, cutoffs, baselines)
+       VALUES (gen_random_uuid(), 'set-1', '["7d"]'::jsonb, '["model_without_polymarket"]'::jsonb) RETURNING id`,
+    );
+    await pool.query(
+      `INSERT INTO evaluation_predictions (evaluation_run_id, benchmark_market_id, baseline, cutoff_at, predicted_probability, outcome, metadata)
+       VALUES ($1, 'market-replayed', 'model_without_polymarket', '2026-06-02T00:00:00Z', 0.7, true, $2::jsonb)`,
+      [
+        run.rows[0].id,
+        JSON.stringify({ calibration: { preCalibrationProbability: 0.7, priorProbability: 0.5, status: "completed", judgeOpinions: [] } }),
+      ],
+    );
+    const sent: Array<{ forecastPairs: unknown[] }> = [];
+    const judge = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        sent.push(JSON.parse(body));
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            id: "snapshot-from-judge",
+            createdAt: "2026-06-11T00:00:00Z",
+            ...snapshotInput({ calibrationParams: { method: "identity" }, weightRegime: "cold_start" }),
+          }),
+        );
+      });
+    });
+    await new Promise<void>((resolve) => judge.listen(0, "127.0.0.1", resolve));
+    const app = buildApp({
+      dbPool: pool,
+      env: getEnv({
+        CASSANDRA_ADAPTER_MODE: "live",
+        JUDGE_BASE_URL: `http://127.0.0.1:${(judge.address() as AddressInfo).port}`,
+      }),
+    });
+
+    try {
+      await app.inject({ method: "POST", url: "/backtests/retrain" });
+      await app.inject({ method: "POST", url: "/backtests/retrain", payload: { includeReplay: false } });
+
+      expect(sent.map((request) => request.forecastPairs.length)).toEqual([1, 0]);
+    } finally {
+      await app.close();
+      await new Promise<void>((resolve) => judge.close(() => resolve()));
+    }
   });
 });

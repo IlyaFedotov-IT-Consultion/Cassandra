@@ -246,13 +246,49 @@ def _join_traces_and_outcomes(
     return [
         {
             "eventId": event_id,
+            "groupId": event_id,
             "referenceClass": trace.get("referenceClass"),
             "predicted": probability,
             "outcome": int(bool(outcomes_by_event_id[event_id]["resolvedValue"])),
-            "judgeOpinions": list(trace.get("judgeOpinions", [])),
+            "priorProbability": trace.get("priorProbability"),
+            "judgeOpinions": [
+                {
+                    "judgeName": opinion["judgeName"],
+                    "logBayesFactor": opinion.get("logBayesFactor"),
+                    "hadEvidence": bool(opinion.get("evidenceIds")),
+                }
+                for opinion in trace.get("judgeOpinions", [])
+                if "judgeName" in opinion
+            ],
         }
         for event_id, (_, trace, probability) in selected.items()
     ]
+
+
+def _replay_training_pairs(forecast_pairs: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Training pairs from replayed benchmark forecasts.
+
+    A market replayed at several horizons gives several forecasts of one outcome. Each is a
+    pair, but they share a `groupId` so that folds and the regime count the market once.
+    """
+    pairs: list[dict[str, Any]] = []
+    for index, forecast in enumerate(forecast_pairs or []):
+        probability = forecast.get("probability")
+        if isinstance(probability, bool) or not isinstance(probability, int | float):
+            continue
+        group_id = f"replay:{forecast.get('groupId')}"
+        pairs.append(
+            {
+                "eventId": f"{group_id}#{index}",
+                "groupId": group_id,
+                "referenceClass": None,
+                "predicted": float(probability),
+                "outcome": int(bool(forecast.get("outcome"))),
+                "priorProbability": forecast.get("priorProbability"),
+                "judgeOpinions": list(forecast.get("judgeOpinions") or []),
+            }
+        )
+    return pairs
 
 
 def pool_adjacent_violators(values: list[float], weights: list[float] | None = None) -> list[float]:
@@ -303,22 +339,36 @@ def fit_platt_scaling(
     l2_toward_identity: float = 1.0,
     iterations: int = 50,
 ) -> dict[str, Any]:
-    """Fit p' = sigmoid(slope * logit(p) + intercept) by penalized Newton-Raphson.
+    """Fit p' = sigmoid(slope * logit(p) + intercept) by penalized, damped Newton-Raphson.
 
     The L2 penalty pulls (slope, intercept) toward the identity map (1, 0), which keeps
-    small samples from producing wild recalibrations.
+    small samples from producing wild recalibrations. Each Newton step is halved until it
+    lowers the objective: a full step can overshoot when the starting map is far from the
+    data, and then the iteration diverges instead of converging.
     """
-    slope, intercept = 1.0, 0.0
     features = [_logit(float(pair["predicted"])) for pair in pairs]
     labels = [float(pair["outcome"]) for pair in pairs]
+    weights = [float(pair.get("weight", 1.0)) for pair in pairs]
+
+    def objective(slope: float, intercept: float) -> float:
+        penalty = 0.5 * l2_toward_identity * ((slope - 1.0) ** 2 + intercept**2)
+        loss = 0.0
+        for x, y, weight in zip(features, labels, weights):
+            z = slope * x + intercept
+            # log(1 + exp(z)) - y * z, written so that it cannot overflow.
+            loss += weight * (max(z, 0.0) + log(1 + exp(-abs(z))) - y * z)
+        return loss + penalty
+
+    slope, intercept = 1.0, 0.0
+    current = objective(slope, intercept)
     for _ in range(iterations):
         grad_slope = l2_toward_identity * (slope - 1.0)
         grad_intercept = l2_toward_identity * intercept
         h_ss = h_si = h_ii = 0.0
-        for x, y in zip(features, labels):
+        for x, y, weight in zip(features, labels, weights):
             q = _sigmoid(slope * x + intercept)
-            residual = q - y
-            curvature = q * (1 - q)
+            residual = weight * (q - y)
+            curvature = weight * q * (1 - q)
             grad_slope += residual * x
             grad_intercept += residual
             h_ss += curvature * x * x
@@ -331,30 +381,51 @@ def fit_platt_scaling(
             break
         step_slope = (h_ii * grad_slope - h_si * grad_intercept) / determinant
         step_intercept = (h_ss * grad_intercept - h_si * grad_slope) / determinant
-        slope -= step_slope
-        intercept -= step_intercept
-        if abs(step_slope) + abs(step_intercept) < 1e-10:
+
+        damping = 1.0
+        while damping > 1e-6:
+            candidate = objective(slope - damping * step_slope, intercept - damping * step_intercept)
+            if candidate <= current:
+                break
+            damping /= 2
+        else:
+            break
+        slope -= damping * step_slope
+        intercept -= damping * step_intercept
+        improvement = current - candidate
+        current = candidate
+        if improvement < 1e-12:
             break
     return {"method": "logistic", "slope": slope, "intercept": intercept}
 
 
 def _judge_regrets(joined_pairs: list[dict[str, Any]], judge_names: list[str]) -> dict[str, float]:
-    regrets: dict[str, list[float]] = {judge_name: [] for judge_name in judge_names}
-    for pair in joined_pairs:
-        outcome = float(pair["outcome"])
-        opinions_by_name = {
-            str(opinion["judgeName"]): float(opinion["probability"])
-            for opinion in pair["judgeOpinions"]
-            if "judgeName" in opinion and "probability" in opinion
-        }
-        for judge_name in judge_names:
-            predicted = opinions_by_name.get(judge_name, 0.5)
-            regrets[judge_name].append((predicted - outcome) ** 2)
+    """Each judge's cumulative regret from how it read its evidence.
 
-    return {
-        judge_name: mean(values) if values else 0.25
-        for judge_name, values in regrets.items()
-    }
+    For every resolved forecast where the judge had evidence, compare the Brier score of
+    the prior moved by that judge's log Bayes factor alone with the Brier score of the
+    prior left alone. Negative regret means its readings pointed the right way. This scores
+    what the pool actually uses from a judge, its log Bayes factor.
+    """
+    regrets = {judge_name: 0.0 for judge_name in judge_names}
+    for pair in joined_pairs:
+        prior = pair.get("priorProbability")
+        if isinstance(prior, bool) or not isinstance(prior, int | float):
+            continue
+        outcome = float(pair["outcome"])
+        for opinion in pair.get("judgeOpinions", []):
+            judge_name = opinion.get("judgeName")
+            log_bayes_factor = opinion.get("logBayesFactor")
+            if (
+                judge_name not in regrets
+                or not opinion.get("hadEvidence")
+                or isinstance(log_bayes_factor, bool)
+                or not isinstance(log_bayes_factor, int | float)
+            ):
+                continue
+            moved = _sigmoid(_logit(float(prior)) + float(log_bayes_factor))
+            regrets[judge_name] += (moved - outcome) ** 2 - (float(prior) - outcome) ** 2
+    return regrets
 
 
 def _fit_calibration_params(pairs: list[dict[str, Any]], regime: str) -> dict[str, Any]:
@@ -381,20 +452,24 @@ def held_out_calibration_scores(
     """Cross-validated scores of the calibration map against leaving forecasts alone.
 
     Each fold is scored by a map fitted on the other folds, so the comparison shows what
-    the map does to forecasts it has not seen. Folds are assigned by event id order,
-    which keeps the result reproducible.
+    the map does to forecasts it has not seen. Folds are assigned by group order, which
+    keeps the result reproducible.
     """
-    if regime == "cold_start" or len(pairs) < folds:
+    # A market forecast at several horizons must sit in one fold: scoring one of its
+    # forecasts with a map fitted on another would leak the outcome.
+    groups = sorted({str(pair.get("groupId", pair.get("eventId", ""))) for pair in pairs})
+    if regime == "cold_start" or len(groups) < folds:
         return None
 
-    ordered = sorted(pairs, key=lambda pair: str(pair.get("eventId", "")))
+    fold_of_group = {group: index % folds for index, group in enumerate(groups)}
+    fold_of = [fold_of_group[str(pair.get("groupId", pair.get("eventId", "")))] for pair in pairs]
     identity: list[dict[str, float | int]] = []
     calibrated: list[dict[str, float | int]] = []
     for fold in range(folds):
-        training = [pair for index, pair in enumerate(ordered) if index % folds != fold]
+        training = [pair for pair, pair_fold in zip(pairs, fold_of) if pair_fold != fold]
         params = _fit_calibration_params(training, regime)
-        for index, pair in enumerate(ordered):
-            if index % folds != fold:
+        for pair, pair_fold in zip(pairs, fold_of):
+            if pair_fold != fold:
                 continue
             identity.append({"predicted": pair["predicted"], "outcome": pair["outcome"]})
             calibrated.append(
@@ -408,7 +483,7 @@ def held_out_calibration_scores(
     brier_calibrated = brier_score(calibrated)
     return {
         "folds": folds,
-        "sampleSize": len(ordered),
+        "sampleSize": len(pairs),
         "brierIdentity": brier_identity,
         "brierCalibrated": brier_calibrated,
         "logLossIdentity": log_loss(identity),
@@ -425,24 +500,33 @@ def fit_market_trust(market_price_pairs: list[dict[str, Any]] | None) -> dict[st
 
     A Platt fit of outcomes on the market's log-odds: a slope below 1 means prices were
     overconfident, above 1 underconfident. With too few resolved markets, or only one
-    kind of outcome, the price is trusted as is.
+    kind of outcome, the price is trusted as is. Each market has total weight one,
+    divided across its cutoffs, retaining each cutoff's price signal. Callers without
+    `groupId` retain the legacy behavior of one independent market per pair.
     """
     pairs: list[dict[str, Any]] = []
-    for pair in market_price_pairs or []:
+    group_sizes: dict[tuple[str, str | int], int] = defaultdict(int)
+    for index, pair in enumerate(market_price_pairs or []):
         price = pair.get("price")
         if isinstance(price, bool) or not isinstance(price, int | float) or not 0.0 <= price <= 1.0:
             continue
-        pairs.append({"predicted": float(price), "outcome": int(bool(pair.get("outcome")))})
+        group_id = pair.get("groupId")
+        group = ("market", str(group_id)) if group_id is not None else ("legacy", index)
+        group_sizes[group] += 1
+        pairs.append({"predicted": float(price), "outcome": int(bool(pair.get("outcome"))), "group": group})
 
-    if len(pairs) < MIN_MARKET_TRUST_PAIRS or len({pair["outcome"] for pair in pairs}) < 2:
-        return {"trustSlope": 1.0, "trustIntercept": 0.0, "fitted": False, "sampleSize": len(pairs)}
+    sample_size = len(group_sizes)
+    if sample_size < MIN_MARKET_TRUST_PAIRS or len({pair["outcome"] for pair in pairs}) < 2:
+        return {"trustSlope": 1.0, "trustIntercept": 0.0, "fitted": False, "sampleSize": sample_size}
 
+    for pair in pairs:
+        pair["weight"] = 1.0 / group_sizes[pair["group"]]
     fit = fit_platt_scaling(pairs)
     return {
         "trustSlope": fit["slope"],
         "trustIntercept": fit["intercept"],
         "fitted": True,
-        "sampleSize": len(pairs),
+        "sampleSize": sample_size,
     }
 
 
@@ -451,12 +535,23 @@ def fit_calibration_snapshot(
     historical_traces: list[dict[str, Any]],
     resolved_outcomes: list[dict[str, Any]],
     market_price_pairs: list[dict[str, Any]] | None = None,
+    forecast_pairs: list[dict[str, Any]] | None = None,
 ) -> CalibrationSnapshot:
-    joined_pairs = _join_traces_and_outcomes(historical_traces, resolved_outcomes, completed_only=True)
-    resolved_outcome_count = len(joined_pairs)
+    judgment_pairs = _join_traces_and_outcomes(historical_traces, resolved_outcomes, completed_only=True)
+    replay_pairs = _replay_training_pairs(forecast_pairs)
+    joined_pairs = judgment_pairs + replay_pairs
+    # Forecasts of one market are not independent, so the sample size that decides how
+    # much to trust the fit is the number of markets and events, not of forecasts.
+    resolved_outcome_count = len({pair["groupId"] for pair in joined_pairs})
     regime = select_regime(resolved_outcome_count)
     judge_names = sorted(
         {
+            str(opinion["judgeName"])
+            for pair in joined_pairs
+            for opinion in pair["judgeOpinions"]
+            if "judgeName" in opinion
+        }
+        | {
             str(opinion["judgeName"])
             for trace in historical_traces
             for opinion in trace.get("judgeOpinions", [])
@@ -488,13 +583,24 @@ def fit_calibration_snapshot(
         for pair in joined_pairs
     ]
     metrics: dict[str, Any] = {
-        "brierScore": brier_score(metrics_pairs),
-        "logLoss": log_loss(metrics_pairs),
-        "expectedCalibrationError": expected_calibration_error(metrics_pairs),
-        "referenceClassMetrics": calibration_error_by_reference_class(joined_pairs),
         "traceCount": len(joined_pairs),
         "outcomeCount": resolved_outcome_count,
+        "trainingSources": {
+            "judgments": len(judgment_pairs),
+            "replayForecasts": len(replay_pairs),
+            "groups": resolved_outcome_count,
+        },
     }
+    if metrics_pairs:
+        # With nothing to score there are no scores; a 0 would read as a perfect forecast.
+        metrics.update(
+            {
+                "brierScore": brier_score(metrics_pairs),
+                "logLoss": log_loss(metrics_pairs),
+                "expectedCalibrationError": expected_calibration_error(metrics_pairs),
+                "referenceClassMetrics": calibration_error_by_reference_class(judgment_pairs),
+            }
+        )
     held_out = held_out_calibration_scores(joined_pairs, regime)
     if held_out is not None:
         metrics["heldOut"] = held_out

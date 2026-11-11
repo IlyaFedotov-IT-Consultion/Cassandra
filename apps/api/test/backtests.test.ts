@@ -107,6 +107,24 @@ describe("backtest retrain route", () => {
           };
         }
 
+        if (text.includes("FROM evaluation_predictions")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                benchmark_market_id: "market-1",
+                outcome: true,
+                calibration: {
+                  preCalibrationProbability: 0.64,
+                  priorProbability: 0.5,
+                  status: "completed",
+                  judgeOpinions: [{ judgeName: "open_web_research", logBayesFactor: 0.5, hadEvidence: true }],
+                },
+              },
+            ],
+          };
+        }
+
         if (text.includes("INSERT INTO calibration_snapshots")) {
           return {
             rowCount: 1,
@@ -200,6 +218,15 @@ describe("backtest retrain route", () => {
       const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
       expect(requestBody).toMatchObject({
         marketPricePairs: [{ price: 0.7, outcome: true }],
+        forecastPairs: [
+          {
+            groupId: "market-1",
+            probability: 0.64,
+            outcome: true,
+            priorProbability: 0.5,
+            judgeOpinions: [{ judgeName: "open_web_research", logBayesFactor: 0.5, hadEvidence: true }],
+          },
+        ],
         historicalTraces: [expect.objectContaining({ id: "trace-1", eventId: "event-1" })],
         resolvedOutcomes: [
           expect.objectContaining({
@@ -254,6 +281,10 @@ describe("backtest retrain route", () => {
         }
 
         if (text.includes("FROM benchmark_price_snapshots")) {
+          return { rowCount: 0, rows: [] };
+        }
+
+        if (text.includes("FROM evaluation_predictions")) {
           return { rowCount: 0, rows: [] };
         }
 

@@ -196,8 +196,20 @@ export async function listCalibrationSnapshots(pool: Pool): Promise<CalibrationS
 }
 
 export interface MarketPricePair {
+  groupId?: string;
   price: number;
   outcome: boolean;
+}
+
+/** A replayed benchmark forecast, in the shape the judge service trains calibration on. */
+export interface ForecastPair {
+  /** The benchmark market: its forecasts at several horizons are not independent. */
+  groupId: string;
+  /** The forecast before any calibration map was applied. */
+  probability: number;
+  outcome: boolean;
+  priorProbability: number | null;
+  judgeOpinions: Array<{ judgeName: string; logBayesFactor: number; hadEvidence: boolean }>;
 }
 
 export async function loadCalibrationTrainingData(
@@ -206,6 +218,7 @@ export async function loadCalibrationTrainingData(
   historicalTraces: VerdictTrace[];
   resolvedOutcomes: OutcomeInput[];
   marketPricePairs: MarketPricePair[];
+  forecastPairs: ForecastPair[];
 }> {
   // One outcome per event: the most recently recorded one wins (corrections supersede).
   const outcomesResult = await pool.query(`
@@ -253,13 +266,29 @@ export async function loadCalibrationTrainingData(
   // Benchmark market prices from before each market resolved, with how it resolved: the
   // judge service fits how far a market price can be trusted from these.
   const marketPricesResult = await pool.query(`
-    SELECT s.probability, m.resolved_value
+    SELECT s.benchmark_market_id, s.probability, m.resolved_value
     FROM benchmark_price_snapshots s
     JOIN benchmark_markets m
       ON m.id = s.benchmark_market_id
     WHERE s.source = 'polymarket'
       AND s.cutoff_at < m.resolved_at
     ORDER BY s.benchmark_market_id, s.cutoff_at
+  `);
+
+  // Replayed model forecasts that went through the panel, with the probability they had
+  // before calibration. A market replayed by several runs counts once per cutoff and
+  // baseline, with its newest forecast.
+  const forecastsResult = await pool.query(`
+    SELECT DISTINCT ON (p.benchmark_market_id, p.cutoff_at, p.baseline)
+      p.benchmark_market_id,
+      p.outcome,
+      p.metadata->'calibration' AS calibration
+    FROM evaluation_predictions p
+    WHERE p.baseline IN ('model_with_polymarket', 'model_without_polymarket')
+      AND p.outcome IS NOT NULL
+      AND p.metadata->'calibration'->>'status' = 'completed'
+      AND jsonb_typeof(p.metadata->'calibration'->'preCalibrationProbability') = 'number'
+    ORDER BY p.benchmark_market_id, p.cutoff_at, p.baseline, p.created_at DESC
   `);
 
   const historicalTraces: VerdictTrace[] = [];
@@ -286,9 +315,24 @@ export async function loadCalibrationTrainingData(
     historicalTraces,
     resolvedOutcomes,
     marketPricePairs: (marketPricesResult.rows as Record<string, unknown>[]).map((row) => ({
+      groupId: String(row.benchmark_market_id),
       price: Number(row.probability),
       outcome: Boolean(row.resolved_value),
     })),
+    forecastPairs: (forecastsResult.rows as Record<string, unknown>[]).map((row) => {
+      const calibration = row.calibration as Record<string, unknown>;
+
+      return {
+        groupId: String(row.benchmark_market_id),
+        probability: Number(calibration.preCalibrationProbability),
+        outcome: Boolean(row.outcome),
+        priorProbability:
+          typeof calibration.priorProbability === "number" ? calibration.priorProbability : null,
+        judgeOpinions: Array.isArray(calibration.judgeOpinions)
+          ? (calibration.judgeOpinions as ForecastPair["judgeOpinions"])
+          : [],
+      };
+    }),
   };
 }
 
@@ -297,6 +341,7 @@ export async function requestCalibrationSnapshot(args: {
   historicalTraces: VerdictTrace[];
   resolvedOutcomes: OutcomeInput[];
   marketPricePairs?: MarketPricePair[];
+  forecastPairs?: ForecastPair[];
   fetchImpl?: typeof fetch;
 }): Promise<CalibrationSnapshot> {
   const fetchImpl = args.fetchImpl ?? fetch;
@@ -309,6 +354,7 @@ export async function requestCalibrationSnapshot(args: {
       historicalTraces: args.historicalTraces,
       resolvedOutcomes: args.resolvedOutcomes,
       marketPricePairs: args.marketPricePairs ?? [],
+      forecastPairs: args.forecastPairs ?? [],
     }),
   });
 

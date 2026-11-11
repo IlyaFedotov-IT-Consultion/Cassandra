@@ -20,6 +20,9 @@ ALTER TABLE benchmark_markets
 ALTER TABLE benchmark_markets
   ADD COLUMN IF NOT EXISTS end_date TIMESTAMPTZ;
 
+ALTER TABLE benchmark_markets
+  ADD COLUMN IF NOT EXISTS is_current BOOLEAN NOT NULL DEFAULT TRUE;
+
 CREATE INDEX IF NOT EXISTS benchmark_markets_benchmark_set_id_resolved_at_idx
   ON benchmark_markets (benchmark_set_id, resolved_at DESC, id ASC);
 
@@ -45,6 +48,20 @@ CREATE TABLE IF NOT EXISTS evaluation_runs (
   leakage_warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- A run is queued and worked through market by market. Rows from before that have no
+-- status and are complete.
+ALTER TABLE evaluation_runs
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'completed';
+
+ALTER TABLE evaluation_runs
+  ADD COLUMN IF NOT EXISTS error TEXT;
+
+ALTER TABLE evaluation_runs
+  ADD COLUMN IF NOT EXISTS progress JSONB;
+
+ALTER TABLE evaluation_runs
+  ADD COLUMN IF NOT EXISTS request JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS evaluation_predictions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

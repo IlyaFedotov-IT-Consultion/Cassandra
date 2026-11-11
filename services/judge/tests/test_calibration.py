@@ -11,6 +11,7 @@ from app.scoring.calibration import (
     reliability_bins,
 )
 from fastapi.testclient import TestClient
+import pytest
 
 
 client = TestClient(app)
@@ -415,3 +416,241 @@ def test_calibrate_endpoint_accepts_benchmark_market_prices() -> None:
 
     assert response.status_code == 200, response.text
     assert response.json()["marketPriorParams"]["fitted"] is True
+
+
+def _replay_forecasts(markets: int, horizons: int = 2, probability_for=lambda market: 0.9 if market % 2 else 0.1) -> list[dict]:
+    """Forecasts of 0.9 or 0.1 that come true half the time, several horizons per market."""
+    return [
+        {
+            "groupId": f"market-{market}",
+            "probability": probability_for(market),
+            "outcome": (market // 2) % 2 == 0,
+            "priorProbability": 0.5,
+            "judgeOpinions": [],
+        }
+        for market in range(markets)
+        for _ in range(horizons)
+    ]
+
+
+def test_replay_forecasts_alone_can_train_a_calibration_map() -> None:
+    snapshot = fit_calibration_snapshot(
+        historical_traces=[], resolved_outcomes=[], forecast_pairs=_replay_forecasts(markets=30)
+    )
+
+    assert snapshot.weightRegime == "warming"
+    assert snapshot.calibrationParams["method"] == "logistic"
+    assert apply_probability_calibration(0.9, snapshot.calibrationParams) < 0.7
+    assert snapshot.metrics["trainingSources"] == {"judgments": 0, "replayForecasts": 60, "groups": 30}
+    assert snapshot.metrics["traceCount"] == 60
+
+
+def test_the_regime_counts_markets_not_the_forecasts_made_of_them() -> None:
+    snapshot = fit_calibration_snapshot(
+        historical_traces=[], resolved_outcomes=[], forecast_pairs=_replay_forecasts(markets=15, horizons=4)
+    )
+
+    assert snapshot.resolvedOutcomeCount == 15
+    assert snapshot.weightRegime == "cold_start"
+    assert snapshot.calibrationParams["method"] == "identity"
+
+
+def test_replay_forecasts_add_to_resolved_judgments() -> None:
+    traces, outcomes = _traces_for(_overconfident_pairs()[:10])
+
+    snapshot = fit_calibration_snapshot(
+        historical_traces=traces, resolved_outcomes=outcomes, forecast_pairs=_replay_forecasts(markets=12)
+    )
+
+    assert snapshot.resolvedOutcomeCount == 22
+    assert snapshot.weightRegime == "warming"
+    assert snapshot.metrics["trainingSources"] == {"judgments": 10, "replayForecasts": 24, "groups": 22}
+
+
+def test_held_out_scores_need_enough_markets_to_keep_each_one_in_a_single_fold() -> None:
+    from app.scoring.calibration import held_out_calibration_scores
+
+    pairs = [
+        {"eventId": f"market-{market}#{horizon}", "groupId": f"market-{market}", "predicted": 0.9, "outcome": market % 2}
+        for market in range(4)
+        for horizon in range(5)
+    ]
+
+    assert held_out_calibration_scores(pairs, "warming") is None
+
+
+def test_calibrate_endpoint_accepts_replay_forecasts() -> None:
+    forecasts = [dict(forecast, outcome=bool(forecast["outcome"])) for forecast in _replay_forecasts(markets=30)]
+
+    response = client.post(
+        "/calibrate",
+        json={"historicalTraces": [], "resolvedOutcomes": [], "forecastPairs": forecasts},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["weightRegime"] == "warming"
+
+
+def test_a_snapshot_with_nothing_to_score_reports_no_scores() -> None:
+    snapshot = fit_calibration_snapshot(historical_traces=[], resolved_outcomes=[])
+
+    assert "brierScore" not in snapshot.metrics
+    assert "logLoss" not in snapshot.metrics
+    assert snapshot.metrics["traceCount"] == 0
+
+
+def _judged_forecasts(markets: int) -> list[dict]:
+    """Every market resolves Yes. One judge read its evidence as support, one as evidence against."""
+    return [
+        {
+            "groupId": f"market-{market}",
+            "probability": 0.6,
+            "outcome": True,
+            "priorProbability": 0.5,
+            "judgeOpinions": [
+                {"judgeName": "official_records", "logBayesFactor": 1.5, "hadEvidence": True},
+                {"judgeName": "community_signal", "logBayesFactor": -1.5, "hadEvidence": True},
+                {"judgeName": "open_web_research", "logBayesFactor": 3.0, "hadEvidence": False},
+            ],
+        }
+        for market in range(markets)
+    ]
+
+
+def test_weights_favour_the_judge_whose_reading_of_the_evidence_pointed_the_right_way() -> None:
+    weights = fit_calibration_snapshot(
+        historical_traces=[], resolved_outcomes=[], forecast_pairs=_judged_forecasts(markets=40)
+    ).judgeWeights
+
+    assert weights["official_records"] > weights["open_web_research"] > weights["community_signal"]
+    assert abs(sum(weights.values()) - 1.0) < 1e-9
+    assert weights["official_records"] > 0.5
+
+
+def test_weights_move_further_as_more_markets_resolve() -> None:
+    few = fit_calibration_snapshot(
+        historical_traces=[], resolved_outcomes=[], forecast_pairs=_judged_forecasts(markets=20)
+    ).judgeWeights
+    many = fit_calibration_snapshot(
+        historical_traces=[], resolved_outcomes=[], forecast_pairs=_judged_forecasts(markets=60)
+    ).judgeWeights
+
+    assert many["official_records"] > few["official_records"] > 1 / 3
+
+
+def test_weights_learn_from_resolved_judgments_too() -> None:
+    traces, outcomes = _traces_for([{"predicted": 0.6, "outcome": 1} for _ in range(30)], priorProbability=0.5)
+    for trace in traces:
+        trace["judgeOpinions"] = [
+            {"judgeName": "official_records", "probability": 0.7, "logBayesFactor": 1.5, "evidenceIds": ["e1"]},
+            {"judgeName": "community_signal", "probability": 0.3, "logBayesFactor": -1.5, "evidenceIds": ["e2"]},
+            {"judgeName": "open_web_research", "probability": 0.5, "logBayesFactor": 0.0, "evidenceIds": []},
+        ]
+
+    weights = fit_calibration_snapshot(historical_traces=traces, resolved_outcomes=outcomes).judgeWeights
+
+    assert weights["official_records"] > weights["open_web_research"] > weights["community_signal"]
+
+
+def test_logistic_fit_converges_when_overconfident_forecasts_are_not_perfectly_balanced() -> None:
+    from app.scoring.calibration import fit_platt_scaling
+
+    # Forecasts of 0.9 and 0.1 that come true 16 times out of 30 either way: the forecasts
+    # carry no information, so the fitted slope must be near zero. An undamped Newton
+    # iteration overshoots on this sample and diverges.
+    pairs = (
+        [{"predicted": 0.9, "outcome": 1}] * 16
+        + [{"predicted": 0.9, "outcome": 0}] * 14
+        + [{"predicted": 0.1, "outcome": 1}] * 16
+        + [{"predicted": 0.1, "outcome": 0}] * 14
+    )
+
+    fit = fit_platt_scaling(pairs)
+
+    assert 0.0 <= fit["slope"] < 0.1
+    assert 0.0 < fit["intercept"] < 0.3
+
+
+def test_weights_stay_finite_for_large_replays_with_consistently_helpful_evidence() -> None:
+    from math import isfinite
+
+    forecasts = [
+        dict(
+            forecast,
+            priorProbability=0.2,
+            judgeOpinions=[
+                {"judgeName": "official_records", "logBayesFactor": 3.0, "hadEvidence": True},
+                {"judgeName": "community_signal", "logBayesFactor": 0.0, "hadEvidence": True},
+                {"judgeName": "open_web_research", "logBayesFactor": -3.0, "hadEvidence": True},
+            ],
+        )
+        for forecast in _judged_forecasts(markets=500)
+        for _ in range(8)
+    ]
+
+    snapshot = fit_calibration_snapshot(historical_traces=[], resolved_outcomes=[], forecast_pairs=forecasts)
+
+    assert snapshot.resolvedOutcomeCount == 500
+    assert all(isfinite(weight) for weight in snapshot.judgeWeights.values())
+    assert sum(snapshot.judgeWeights.values()) == pytest.approx(1.0)
+    assert snapshot.judgeWeights["official_records"] > 0.5
+
+
+def test_market_trust_counts_distinct_markets_at_multiple_horizons() -> None:
+    pairs = [
+        {"groupId": f"market-{market}", "price": 0.9, "outcome": bool(market % 2)}
+        for market in range(10)
+        for _ in range(4)
+    ]
+
+    assert fit_market_trust(pairs) == {
+        "trustSlope": 1.0,
+        "trustIntercept": 0.0,
+        "fitted": False,
+        "sampleSize": 10,
+    }
+
+
+def test_repeating_one_markets_horizons_does_not_change_its_weight_in_the_price_fit() -> None:
+    pairs = [
+        {"groupId": f"market-{market}", "price": price, "outcome": bool(market % 2)}
+        for market in range(40)
+        for price in (0.7, 0.9)
+    ]
+
+    original = fit_market_trust(pairs)
+    repeated = fit_market_trust(pairs + pairs[:2] * 50)
+
+    assert original["fitted"] is True
+    assert repeated["sampleSize"] == original["sampleSize"] == 40
+    assert repeated["trustSlope"] == pytest.approx(original["trustSlope"])
+    assert repeated["trustIntercept"] == pytest.approx(original["trustIntercept"])
+
+
+def test_grouped_market_price_fit_retains_the_signal_at_each_horizon() -> None:
+    pairs = [
+        {"groupId": f"market-{market}", "price": price, "outcome": bool(market % 2)}
+        for market in range(100)
+        for price in ((0.5, 0.95) if market % 2 else (0.05, 0.5))
+    ]
+
+    trust = fit_market_trust(pairs)
+
+    assert trust["fitted"] is True
+    assert trust["sampleSize"] == 100
+    assert trust["trustSlope"] > 1.0
+    assert abs(trust["trustIntercept"]) < 1e-9
+
+
+def test_calibrate_endpoint_preserves_market_price_groups() -> None:
+    pairs = [
+        {"groupId": f"market-{market}", "price": 0.9, "outcome": bool(market % 2)}
+        for market in range(10)
+        for _ in range(4)
+    ]
+
+    response = client.post("/calibrate", json={"marketPricePairs": pairs})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["marketPriorParams"]["sampleSize"] == 10
+    assert response.json()["marketPriorParams"]["fitted"] is False

@@ -21,6 +21,7 @@ import {
   registerEvaluationRoutes,
   type RegisterEvaluationRoutesArgs,
 } from "./modules/evaluation/routes.js";
+import type { EvaluationJobQueue } from "./modules/evaluation/jobQueue.js";
 import { registerEventRoutes } from "./modules/events/routes.js";
 import type { EvidenceProvider } from "./modules/evidence/types.js";
 import { registerJudgmentRoutes } from "./modules/judgments/routes.js";
@@ -41,6 +42,7 @@ export interface ReadinessChecks {
   getEvaluationRun?: RegisterEvaluationRoutesArgs["getEvaluationRun"];
   listBenchmarkSets?: RegisterEvaluationRoutesArgs["listBenchmarkSets"];
   judgmentQueue?: JudgmentJobQueue;
+  evaluationQueue?: EvaluationJobQueue;
   watchlistEvidenceProviders?: EvidenceProvider[];
   watchlistDiscoveryScheduler?: WatchlistDiscoveryScheduler;
   checkDb?: () => Promise<void>;
@@ -226,6 +228,7 @@ export function buildApp(checks: ReadinessChecks = {}) {
       fetchImpl: checks.fetchImpl,
       redisConnection: checks.redisConnection,
       runEvaluation: checks.runEvaluation,
+      evaluationQueue: checks.evaluationQueue,
       getEvaluationRun: checks.getEvaluationRun,
       listBenchmarkSets: checks.listBenchmarkSets,
     });

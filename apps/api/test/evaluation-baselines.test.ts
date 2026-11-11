@@ -4,6 +4,7 @@ import type { CalibrationSnapshot, EvidenceItem } from "@cassandra/shared";
 import type { EvidenceProvider } from "../src/modules/evidence/types.js";
 import {
   assertNoPolymarketLeak,
+  computeBenchmarkBaseRate,
   computeBaseRateOnlyProbability,
   providersForBaseline,
   selectPolymarketSnapshotAtCutoff,
@@ -181,5 +182,50 @@ describe("evaluation baselines", () => {
     expect(result).not.toBeCloseTo(rawSmoothed, 6);
     expect(result).toBeGreaterThan(0.5);
     expect(result).toBeLessThan(rawSmoothed);
+  });
+
+  describe("benchmark base rate", () => {
+    const market = (id: string, theme: string, resolvedAt: string, resolvedValue: boolean) => ({
+      id,
+      theme,
+      resolvedAt,
+      resolvedValue,
+    });
+    const earlier = [
+      ...Array.from({ length: 4 }, (_, index) => market(`yes-${index}`, "macro_economics", "2026-09-01T00:00:00Z", true)),
+      ...Array.from({ length: 2 }, (_, index) => market(`no-${index}`, "macro_economics", "2026-09-02T00:00:00Z", false)),
+    ];
+    const target = market("target", "macro_economics", "2026-10-01T00:00:00Z", true);
+
+    it("is the share of same-theme markets that had resolved Yes by the cutoff", () => {
+      // 4 of 6 resolved Yes; with one pseudo-count each way that is 5 of 8.
+      expect(
+        computeBenchmarkBaseRate({ market: target, markets: [...earlier, target], cutoffAt: "2026-09-15T00:00:00Z" }),
+      ).toBeCloseTo(5 / 8, 6);
+    });
+
+    it("does not use outcomes that were not known at the cutoff, including the market's own", () => {
+      const later = market("later", "macro_economics", "2026-09-20T00:00:00Z", false);
+
+      expect(
+        computeBenchmarkBaseRate({ market: target, markets: [...earlier, later, target], cutoffAt: "2026-09-15T00:00:00Z" }),
+      ).toBeCloseTo(5 / 8, 6);
+    });
+
+    it("pools every theme when its own theme has too few resolved markets", () => {
+      const otherTheme = Array.from({ length: 6 }, (_, index) =>
+        market(`other-${index}`, "politics_elections", "2026-09-01T00:00:00Z", false),
+      );
+      const lonely = market("lonely", "science_health", "2026-10-01T00:00:00Z", true);
+
+      // No science markets had resolved: all 12 known outcomes are used, 4 Yes -> 5 of 14.
+      expect(
+        computeBenchmarkBaseRate({ market: lonely, markets: [...earlier, ...otherTheme, lonely], cutoffAt: "2026-09-15T00:00:00Z" }),
+      ).toBeCloseTo(5 / 14, 6);
+    });
+
+    it("is 0.5 when nothing had resolved yet", () => {
+      expect(computeBenchmarkBaseRate({ market: target, markets: [target], cutoffAt: "2026-09-15T00:00:00Z" })).toBe(0.5);
+    });
   });
 });

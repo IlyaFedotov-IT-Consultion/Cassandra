@@ -104,3 +104,39 @@ export function computeBaseRateOnlyProbability(args: {
 
   return smoothed;
 }
+
+const MIN_SAME_THEME_MARKETS = 5;
+
+/**
+ * The share of benchmark markets that had resolved Yes by the cutoff: what a forecaster
+ * who knew nothing about this question, only how such markets tend to resolve, would say.
+ *
+ * Only outcomes known at the cutoff count, which leaves out the market's own. The
+ * market's theme is used when enough of its markets had resolved, otherwise every theme.
+ * One pseudo-count each way keeps a small sample from giving 0 or 1.
+ */
+export function computeBenchmarkBaseRate(args: {
+  market: Pick<BenchmarkMarketLike, "id" | "theme">;
+  markets: BenchmarkMarketLike[];
+  cutoffAt: string;
+}): number {
+  const cutoffMillis = new Date(args.cutoffAt).getTime();
+  const known = args.markets.filter(
+    (market) => market.id !== args.market.id && new Date(market.resolvedAt).getTime() < cutoffMillis,
+  );
+  const sameTheme = known.filter((market) => market.theme === args.market.theme);
+  const sample = sameTheme.length >= MIN_SAME_THEME_MARKETS ? sameTheme : known;
+
+  if (sample.length === 0) {
+    return 0.5;
+  }
+
+  return (sample.filter((market) => market.resolvedValue).length + 1) / (sample.length + 2);
+}
+
+interface BenchmarkMarketLike {
+  id: string;
+  theme: string;
+  resolvedAt: string;
+  resolvedValue: boolean;
+}

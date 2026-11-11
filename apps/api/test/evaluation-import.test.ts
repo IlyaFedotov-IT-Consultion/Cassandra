@@ -443,7 +443,7 @@ describe("evaluation import", () => {
       async query(text: string, params?: unknown[]) {
         captured.push(params ?? []);
 
-        if (text.includes("DELETE FROM benchmark_markets")) {
+        if (text.includes("UPDATE benchmark_markets")) {
           return {
             rows: [],
             rowCount: 0,
@@ -574,11 +574,11 @@ describe("evaluation import", () => {
     );
   });
 
-  it("reconciles a benchmark set by deleting stale rows during import", async () => {
+  it("reconciles a benchmark set by retiring stale rows during import", async () => {
     const deleted: unknown[][] = [];
     const pool = {
       async query(text: string, params?: unknown[]) {
-        if (text.includes("DELETE FROM benchmark_markets")) {
+        if (text.includes("UPDATE benchmark_markets")) {
           deleted.push(params ?? []);
           return {
             rows: [{ id: "market-stale" }],
@@ -682,7 +682,7 @@ describe("evaluation import", () => {
     const snapshotWrites: unknown[][] = [];
     const pool = {
       async query(text: string, params?: unknown[]) {
-        if (text.includes("DELETE FROM benchmark_markets")) {
+        if (text.includes("UPDATE benchmark_markets")) {
           return {
             rows: [],
             rowCount: 0,
@@ -841,5 +841,56 @@ describe("benchmark import metadata", () => {
     });
 
     expect(offsets.slice(0, 3)).toEqual([null, "100", "200"]);
+  });
+
+  describe("a larger benchmark set, to give calibration more to learn from", () => {
+    const politics = (count: number, closedTime: string) =>
+      Array.from({ length: count }, (_, index) =>
+        buildResolvedMarket({
+          id: `politics-${closedTime}-${index}`,
+          question: `Will Candidate ${index} win the 2026 mayoral election (${closedTime})?`,
+          market_slug: `candidate-${index}-${closedTime}`,
+          closedTime,
+          end_date_iso: closedTime,
+          startDate: "2025-10-01T12:00:00Z",
+        }),
+      );
+    const importWith = (markets: unknown[], selection: Record<string, number>) =>
+      importResolvedPolymarketBenchmarks({
+        baseUrl: "https://gamma-api.polymarket.com",
+        now: new Date("2026-04-12T00:00:00Z"),
+        selection,
+        fetchImpl: async () => new Response(JSON.stringify(markets), { status: 200 }),
+      });
+
+    it("keeps as many markets, and as many per theme, as asked", async () => {
+      const markets = politics(30, "2026-04-10T12:00:00Z");
+
+      expect(await importWith(markets, {})).toHaveLength(RECENT_BENCHMARK_THEME_LIMIT);
+      expect(await importWith(markets, { themeLimit: 25 })).toHaveLength(25);
+      expect(await importWith(markets, { themeLimit: 25, limit: 7 })).toHaveLength(7);
+    });
+
+    it("reaches further back when given a longer window", async () => {
+      const markets = [...politics(2, "2026-04-10T12:00:00Z"), ...politics(2, "2025-12-01T12:00:00Z")];
+
+      expect(await importWith(markets, {})).toHaveLength(2);
+      expect(await importWith(markets, { windowDays: 200 })).toHaveLength(4);
+    });
+
+    it("scans as many pages of closed markets as asked", async () => {
+      const offsets: Array<string | null> = [];
+      await importResolvedPolymarketBenchmarks({
+        baseUrl: "https://gamma-api.polymarket.com",
+        now: new Date("2027-01-15T00:00:00Z"),
+        selection: { pages: 3 },
+        fetchImpl: async (input) => {
+          offsets.push(new URL(String(input)).searchParams.get("offset"));
+          return new Response("[]", { status: 200 });
+        },
+      });
+
+      expect(offsets).toEqual([null, "100", "200"]);
+    });
   });
 });

@@ -21,6 +21,17 @@ const ApproveSnapshotInputSchema = z
   })
   .strict();
 
+const RetrainInputSchema = z
+  .object({
+    /**
+     * Train on replayed benchmark forecasts as well as resolved judgments (the default).
+     * Replays search today's web, so their forecasts are somewhat better informed than a
+     * live forecast was; turn this off to calibrate on live judgments only.
+     */
+    includeReplay: z.boolean().optional(),
+  })
+  .strict();
+
 export function registerBacktestRoutes(
   app: FastifyInstance,
   args: {
@@ -99,7 +110,17 @@ export function registerBacktestRoutes(
     }
   });
 
-  app.post("/backtests/retrain", async (_request, reply) => {
+  app.post("/backtests/retrain", async (request, reply) => {
+    const parsed = RetrainInputSchema.safeParse(request.body ?? {});
+
+    if (!parsed.success) {
+      reply.code(400);
+      return {
+        error: "Invalid retrain input",
+        issues: parsed.error.issues,
+      };
+    }
+
     const calibrationData = await loadCalibrationTrainingData(args.pool);
     const snapshot =
       args.env.CASSANDRA_ADAPTER_MODE === "fixture"
@@ -110,6 +131,7 @@ export function registerBacktestRoutes(
               historicalTraces: calibrationData.historicalTraces,
               resolvedOutcomes: calibrationData.resolvedOutcomes,
               marketPricePairs: calibrationData.marketPricePairs,
+              forecastPairs: parsed.data.includeReplay === false ? [] : calibrationData.forecastPairs,
             });
 
             return persistCalibrationSnapshotFromService(args.pool, snapshotFromService);

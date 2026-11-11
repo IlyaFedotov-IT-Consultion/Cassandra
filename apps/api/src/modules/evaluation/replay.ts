@@ -29,12 +29,14 @@ import {
 import {
   assertNoPolymarketLeak,
   computeBaseRateOnlyProbability,
+  computeBenchmarkBaseRate,
   providersForBaseline,
   selectPolymarketSnapshotAtCutoff,
 } from "./baselines.js";
 import {
   averageAbsoluteError,
   brierScore,
+  clusteredBrierDifference,
   expectedCalibrationError,
   logLoss,
   sliceMetrics,
@@ -43,9 +45,16 @@ import {
 } from "./metrics.js";
 import { assertLiveEvaluationMode } from "./liveMode.js";
 import {
+  completeEvaluationRun,
   createEvaluationRunWithPredictions as persistEvaluationRunWithPredictions,
+  failEvaluationRun,
+  getEvaluationRunRequest,
+  insertEvaluationPredictions,
   listBenchmarkMarkets as loadBenchmarkMarkets,
+  listEvaluationPredictionsForRun,
   listPriceSnapshotsForBenchmark as loadPriceSnapshotsForBenchmark,
+  markEvaluationRunRunning,
+  recordEvaluationRunProgress,
   type BenchmarkPriceSnapshotRecord,
   type EvaluationPredictionInput,
 } from "./repository.js";
@@ -88,10 +97,23 @@ export interface RunHistoricalEvaluationInput {
   baselines?: EvaluationRun["baselines"];
 }
 
+/**
+ * What calibration needs from one replayed forecast: the probability before any
+ * calibration map, the prior it started from, and how each judge read its evidence.
+ */
+export interface ForecastCalibrationInputs {
+  preCalibrationProbability: number | null;
+  priorProbability: number;
+  status: "completed" | "insufficient_evidence" | "failed" | "queued" | "running";
+  calibrationVersion: string;
+  judgeOpinions: Array<{ judgeName: string; logBayesFactor: number; hadEvidence: boolean }>;
+}
+
 export interface ModelBaselineEvaluationResult {
   probability: number;
   replayFidelity: EvaluationRun["replayFidelity"];
   leakageWarnings?: string[];
+  calibration?: ForecastCalibrationInputs;
 }
 
 export interface EvaluateModelBaselineArgs {
@@ -108,6 +130,34 @@ export interface EvaluateModelBaselineArgs {
   judgeCacheStore: JudgeCacheStore;
   sharedEvidenceStore: Map<string, EvidenceItem[]>;
   judgeClient?: JudgeClient;
+}
+
+/** Called after each market: its forecasts are final and can be stored. */
+export type MarketCompletedHook = (args: {
+  market: BenchmarkMarket;
+  predictions: EvaluationPredictionInput[];
+  completedMarkets: number;
+  totalMarkets: number;
+  replayFidelity: EvaluationRun["replayFidelity"];
+  leakageWarnings: string[];
+}) => Promise<void>;
+
+interface ReplayDependencies {
+  pool: Pool;
+  env: AppEnv;
+  evidenceProviders?: EvidenceProvider[];
+  evidenceCacheStore?: EvidenceCacheStore;
+  judgeCacheStore?: JudgeCacheStore;
+  judgeClient?: JudgeClient;
+  listBenchmarkMarkets?: (pool: Pool, benchmarkSetId: string) => Promise<BenchmarkMarket[]>;
+  listPriceSnapshotsForBenchmark?: (
+    pool: Pool,
+    benchmarkMarketId: string,
+  ) => Promise<BenchmarkPriceSnapshotRecord[]>;
+  getCalibrationSnapshot?: (pool: Pool) => Promise<CalibrationSnapshot | null>;
+  evaluateModelBaseline?: (
+    args: EvaluateModelBaselineArgs,
+  ) => Promise<ModelBaselineEvaluationResult>;
 }
 
 export interface RunHistoricalEvaluationArgs {
@@ -276,6 +326,11 @@ function predictionReferenceKey(benchmarkMarketId: string, cutoffAt: string): st
 }
 
 function summarizePairs(pairs: EvaluationPair[]) {
+  if (pairs.length === 0) {
+    // Nothing was scored, so there are no scores: a 0 would read as a perfect forecast.
+    return { sampleSize: 0 };
+  }
+
   return {
     brierScore: brierScore(pairs),
     logLoss: logLoss(pairs),
@@ -309,22 +364,27 @@ function summarizePairedBaselines(
   );
   const shared = new Set(sharedKeys);
 
+  const sharedPairsFor = (baseline: string) =>
+    pairs.flatMap((pair, index) => {
+      const prediction = predictions[index];
+      return pair.baseline === baseline &&
+        prediction !== undefined &&
+        shared.has(predictionReferenceKey(prediction.benchmarkMarketId, prediction.cutoffAt))
+        ? [{ ...pair, groupId: prediction.benchmarkMarketId }]
+        : [];
+    });
+
   return {
     sampleSize: shared.size,
     byBaseline: Object.fromEntries(
-      baselines.map((baseline) => [
-        baseline,
-        summarizePairs(
-          pairs.filter((pair, index) => {
-            const prediction = predictions[index];
-            return (
-              pair.baseline === baseline &&
-              prediction !== undefined &&
-              shared.has(predictionReferenceKey(prediction.benchmarkMarketId, prediction.cutoffAt))
-            );
-          }),
-        ),
-      ]),
+      baselines.map((baseline) => [baseline, summarizePairs(sharedPairsFor(baseline))]),
+    ),
+    // Each baseline's Brier score minus Polymarket's on the same pairs, with an interval
+    // from resampling markets: a market's horizons are not independent forecasts.
+    vsPolymarket: Object.fromEntries(
+      baselines
+        .filter((baseline) => baseline !== "polymarket_only")
+        .map((baseline) => [baseline, clusteredBrierDifference(sharedPairsFor(baseline))]),
     ),
   };
 }
@@ -501,22 +561,24 @@ async function defaultEvaluateModelBaseline(
     probability: verdictTrace.finalProbability,
     replayFidelity,
     leakageWarnings: replayWarnings,
+    calibration: {
+      preCalibrationProbability: verdictTrace.preCalibrationProbability ?? null,
+      priorProbability: verdictTrace.priorProbability,
+      status: verdictTrace.status,
+      calibrationVersion: verdictTrace.calibrationVersion,
+      judgeOpinions: verdictTrace.judgeOpinions.map((opinion) => ({
+        judgeName: opinion.judgeName,
+        logBayesFactor: opinion.logBayesFactor,
+        hadEvidence: opinion.evidenceIds.length > 0,
+      })),
+    },
   };
 }
 
-export async function runHistoricalEvaluation(
-  args: RunHistoricalEvaluationArgs,
-): Promise<EvaluationRun> {
-  assertLiveEvaluationMode(args.env);
-  const baselines = args.input.baselines ?? [...DEFAULT_BASELINES];
-  const listBenchmarks = args.listBenchmarkMarkets ?? loadBenchmarkMarkets;
-  const listSnapshots = args.listPriceSnapshotsForBenchmark ?? loadPriceSnapshotsForBenchmark;
-  const getCalibrationSnapshot = args.getCalibrationSnapshot ?? getActiveCalibrationSnapshot;
-  const evaluateModelBaseline = args.evaluateModelBaseline ?? defaultEvaluateModelBaseline;
-  const persistEvaluationResult =
-    args.persistEvaluationRunResult ?? persistEvaluationRunWithPredictions;
-  const benchmarkMarkets = await listBenchmarks(args.pool, args.input.benchmarkSetId);
-  const requestedMarketIds = args.input.benchmarkMarketIds;
+function selectBenchmarkMarkets(
+  benchmarkMarkets: BenchmarkMarket[],
+  requestedMarketIds: string[] | undefined,
+): BenchmarkMarket[] {
   const selectedMarkets = requestedMarketIds?.length
     ? benchmarkMarkets.filter((market) => requestedMarketIds.includes(market.id))
     : benchmarkMarkets;
@@ -534,6 +596,60 @@ export async function runHistoricalEvaluation(
     throw new Error("No benchmark markets available for evaluation");
   }
 
+  return selectedMarkets;
+}
+
+/** Checks a run request against the stored benchmark set and says what it will cover. */
+export async function planEvaluationRun(args: {
+  pool: Pool;
+  input: RunHistoricalEvaluationInput;
+  listBenchmarkMarkets?: (pool: Pool, benchmarkSetId: string) => Promise<BenchmarkMarket[]>;
+}): Promise<{ baselines: EvaluationRun["baselines"]; cutoffs: string[]; totalMarkets: number; benchmarkMarketIds: string[] }> {
+  const benchmarkMarkets = await (args.listBenchmarkMarkets ?? loadBenchmarkMarkets)(
+    args.pool,
+    args.input.benchmarkSetId,
+  );
+
+  return {
+    baselines: args.input.baselines ?? [...DEFAULT_BASELINES],
+    cutoffs: REPLAY_HORIZONS.map(({ horizon }) => horizon),
+    totalMarkets: selectBenchmarkMarkets(benchmarkMarkets, args.input.benchmarkMarketIds).length,
+    benchmarkMarketIds: selectBenchmarkMarkets(benchmarkMarkets, args.input.benchmarkMarketIds).map((market) => market.id),
+  };
+}
+
+function predictionKey(prediction: Pick<EvaluationPredictionInput, "benchmarkMarketId" | "cutoffAt" | "baseline">) {
+  return `${prediction.benchmarkMarketId}|${new Date(prediction.cutoffAt).toISOString()}|${prediction.baseline}`;
+}
+
+/**
+ * Replays the selected markets at every cutoff for every baseline, one market at a time.
+ * Forecasts in `existingPredictions` are not made again, which is what lets a run resume.
+ */
+async function replayBenchmarkMarkets(
+  args: ReplayDependencies & {
+    input: RunHistoricalEvaluationInput;
+    existingPredictions?: EvaluationPredictionInput[];
+    initialLeakageWarnings?: string[];
+    onMarketCompleted?: MarketCompletedHook;
+  },
+): Promise<{
+  baselines: EvaluationRun["baselines"];
+  selectedMarkets: BenchmarkMarket[];
+  predictions: EvaluationPredictionInput[];
+  replayFidelity: EvaluationRun["replayFidelity"];
+  leakageWarnings: string[];
+}> {
+  assertLiveEvaluationMode(args.env);
+  const baselines = args.input.baselines ?? [...DEFAULT_BASELINES];
+  const listBenchmarks = args.listBenchmarkMarkets ??
+    ((pool: Pool, setId: string) => loadBenchmarkMarkets(pool, setId, Boolean(args.input.benchmarkMarketIds)));
+  const listSnapshots = args.listPriceSnapshotsForBenchmark ?? loadPriceSnapshotsForBenchmark;
+  const getCalibrationSnapshot = args.getCalibrationSnapshot ?? getActiveCalibrationSnapshot;
+  const evaluateModelBaseline = args.evaluateModelBaseline ?? defaultEvaluateModelBaseline;
+  const benchmarkMarkets = await listBenchmarks(args.pool, args.input.benchmarkSetId);
+  const selectedMarkets = selectBenchmarkMarkets(benchmarkMarkets, args.input.benchmarkMarketIds);
+
   if (
     baselines.some((baseline) => isModelBaseline(baseline)) &&
     !args.evidenceProviders &&
@@ -549,11 +665,16 @@ export async function runHistoricalEvaluation(
   const evidenceCacheStore = args.evidenceCacheStore ?? new InMemoryEvidenceCacheStore();
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
   const sharedEvidenceStore = new Map<string, EvidenceItem[]>();
+  const alreadyPredicted = new Set((args.existingPredictions ?? []).map(predictionKey));
   const predictions: EvaluationPredictionInput[] = [];
-  const leakageWarnings = new Set<string>();
-  let replayFidelity: EvaluationRun["replayFidelity"] = "exact";
+  const leakageWarnings = new Set<string>(args.initialLeakageWarnings ?? []);
+  // A resumed run cannot know how faithful its earlier markets were, so it starts as approximate.
+  let replayFidelity: EvaluationRun["replayFidelity"] =
+    alreadyPredicted.size > 0 ? "approximate" : "exact";
+  let completedMarkets = 0;
 
   for (const market of selectedMarkets) {
+    const marketPredictions: EvaluationPredictionInput[] = [];
     const snapshots = await listSnapshots(args.pool, market.id);
     const cutoffs = buildMarketReplayCutoffs(market);
     const evaluatedHorizons = new Set(cutoffs.map((cutoff) => cutoff.horizon));
@@ -575,6 +696,10 @@ export async function runHistoricalEvaluation(
       const polymarketProbability = polymarketSnapshot?.probability ?? 0.5;
 
       for (const baseline of baselines) {
+        if (alreadyPredicted.has(predictionKey({ benchmarkMarketId: market.id, cutoffAt: cutoff.cutoffAt, baseline }))) {
+          continue;
+        }
+
         if (
           (baseline === "polymarket_only" || baseline === "model_with_polymarket") &&
           !polymarketSnapshot
@@ -587,14 +712,22 @@ export async function runHistoricalEvaluation(
         }
 
         let predictedProbability: number;
+        let metadata: Record<string, unknown> = {};
 
         if (baseline === "base_rate_only") {
-          predictedProbability = computeBaseRateOnlyProbability({
-            referenceClass: event?.referenceClass ?? null,
-            calibrationSnapshot,
-          });
+          // A reference class with history gives the base rate. Benchmark markets have
+          // none, so theirs is how such markets had resolved by the cutoff.
+          predictedProbability = event?.referenceClass
+            ? computeBaseRateOnlyProbability({ referenceClass: event.referenceClass, calibrationSnapshot })
+            : computeBenchmarkBaseRate({ market, markets: benchmarkMarkets, cutoffAt: cutoff.cutoffAt });
         } else if (baseline === "polymarket_only") {
           predictedProbability = polymarketProbability;
+          metadata = polymarketSnapshot
+            ? {
+                benchmarkPriceSnapshotId: polymarketSnapshot.id,
+                benchmarkSnapshotSource: polymarketSnapshot.source,
+              }
+            : {};
         } else {
           if (!event) {
             throw new Error(`Missing replay event for baseline ${baseline}`);
@@ -617,6 +750,10 @@ export async function runHistoricalEvaluation(
               judgeClient: args.judgeClient,
             });
             predictedProbability = evaluated.probability;
+            metadata = {
+              replayFidelity: evaluated.replayFidelity,
+              ...(evaluated.calibration ? { calibration: evaluated.calibration } : {}),
+            };
 
             if (evaluated.replayFidelity === "approximate") {
               replayFidelity = "approximate";
@@ -636,7 +773,7 @@ export async function runHistoricalEvaluation(
           }
         }
 
-        predictions.push({
+        marketPredictions.push({
           benchmarkMarketId: market.id,
           baseline,
           cutoffAt: cutoff.cutoffAt,
@@ -645,18 +782,33 @@ export async function runHistoricalEvaluation(
           theme: market.theme,
           horizon: cutoff.horizon,
           sourceConfiguration: sourceConfigurationForBaseline(baseline),
-          metadata:
-            baseline === "polymarket_only" && polymarketSnapshot
-              ? {
-                  benchmarkPriceSnapshotId: polymarketSnapshot.id,
-                  benchmarkSnapshotSource: polymarketSnapshot.source,
-                }
-              : {},
+          metadata,
         });
       }
     }
+
+    completedMarkets += 1;
+    await args.onMarketCompleted?.({
+      market,
+      predictions: marketPredictions,
+      completedMarkets,
+      totalMarkets: selectedMarkets.length,
+      replayFidelity,
+      leakageWarnings: [...leakageWarnings],
+    });
+    predictions.push(...marketPredictions);
   }
 
+  return { baselines, selectedMarkets, predictions, replayFidelity, leakageWarnings: [...leakageWarnings] };
+}
+
+/** Scores a set of predictions: per baseline, on the pairs every baseline scored, and by slice. */
+export function summarizeEvaluationPredictions(args: {
+  baselines: EvaluationRun["baselines"];
+  predictions: EvaluationPredictionInput[];
+  benchmarkCount: number;
+}): Pick<EvaluationRun, "overallMetrics" | "sliceResults"> {
+  const { baselines, predictions } = args;
   const polymarketReferences = new Map<string, number>();
 
   for (const prediction of predictions) {
@@ -679,41 +831,96 @@ export async function runHistoricalEvaluation(
       predictionReferenceKey(prediction.benchmarkMarketId, prediction.cutoffAt),
     ),
   }));
-  const overallMetrics = {
-    benchmarkCount: selectedMarkets.length,
-    predictionCount: predictions.length,
-    byBaseline: Object.fromEntries(
-      baselines.map((baseline) => [
-        baseline,
-        summarizePairs(pairs.filter((pair) => pair.baseline === baseline)),
-      ]),
-    ),
-    paired: summarizePairedBaselines(baselines, predictions, pairs),
+
+  return {
+    overallMetrics: {
+      benchmarkCount: args.benchmarkCount,
+      predictionCount: predictions.length,
+      byBaseline: Object.fromEntries(
+        baselines.map((baseline) => [
+          baseline,
+          summarizePairs(pairs.filter((pair) => pair.baseline === baseline)),
+        ]),
+      ),
+      paired: summarizePairedBaselines(baselines, predictions, pairs),
+    },
+    sliceResults: baselines.flatMap((baseline) => [
+      ...sliceMetrics(pairs, { key: "theme", baseline }),
+      ...sliceMetrics(pairs, { key: "horizon", baseline }),
+      ...sliceMetrics(pairs, { key: "sourceConfiguration", baseline }),
+    ]),
   };
-  const sliceResults = baselines.flatMap((baseline) => [
-    ...sliceMetrics(pairs, {
-      key: "theme",
-      baseline,
-    }),
-    ...sliceMetrics(pairs, {
-      key: "horizon",
-      baseline,
-    }),
-    ...sliceMetrics(pairs, {
-      key: "sourceConfiguration",
-      baseline,
-    }),
-  ]);
+}
+
+/** Runs a whole evaluation in one call and stores it when it is done. */
+export async function runHistoricalEvaluation(
+  args: RunHistoricalEvaluationArgs,
+): Promise<EvaluationRun> {
+  const persistEvaluationResult =
+    args.persistEvaluationRunResult ?? persistEvaluationRunWithPredictions;
+  const replay = await replayBenchmarkMarkets(args);
+
   return persistEvaluationResult(args.pool, {
     run: {
       benchmarkSetId: args.input.benchmarkSetId,
       cutoffs: REPLAY_HORIZONS.map(({ horizon }) => horizon),
-      baselines,
-      overallMetrics,
-      sliceResults,
-      replayFidelity,
-      leakageWarnings: [...leakageWarnings],
+      baselines: replay.baselines,
+      ...summarizeEvaluationPredictions({
+        baselines: replay.baselines,
+        predictions: replay.predictions,
+        benchmarkCount: replay.selectedMarkets.length,
+      }),
+      replayFidelity: replay.replayFidelity,
+      leakageWarnings: replay.leakageWarnings,
     },
-    predictions,
+    predictions: replay.predictions,
   });
+}
+
+/**
+ * Works through a queued run. Each market's forecasts are stored as soon as the market is
+ * done, so a run that fails or is interrupted keeps what it paid for, and running it again
+ * continues from there instead of starting over.
+ */
+export async function executeEvaluationRun(
+  args: ReplayDependencies & {
+    runId: string;
+    onMarketCompleted?: MarketCompletedHook;
+  },
+): Promise<void> {
+  const stored = await getEvaluationRunRequest(args.pool, args.runId);
+
+  if (!stored) {
+    throw new Error(`Evaluation run not found or not queued: ${args.runId}`);
+  }
+
+  await markEvaluationRunRunning(args.pool, args.runId);
+
+  try {
+    const existingPredictions = await listEvaluationPredictionsForRun(args.pool, args.runId);
+    const replay = await replayBenchmarkMarkets({
+      ...args,
+      input: stored.request,
+      existingPredictions,
+      initialLeakageWarnings: stored.leakageWarnings,
+      onMarketCompleted: async (completed) => {
+        await args.onMarketCompleted?.(completed);
+        await insertEvaluationPredictions(args.pool, args.runId, completed.predictions);
+        await recordEvaluationRunProgress(args.pool, args.runId, completed);
+      },
+    });
+
+    await completeEvaluationRun(args.pool, args.runId, {
+      ...summarizeEvaluationPredictions({
+        baselines: replay.baselines,
+        predictions: [...existingPredictions, ...replay.predictions],
+        benchmarkCount: replay.selectedMarkets.length,
+      }),
+      replayFidelity: replay.replayFidelity,
+      leakageWarnings: replay.leakageWarnings,
+    });
+  } catch (error) {
+    await failEvaluationRun(args.pool, args.runId, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 }
