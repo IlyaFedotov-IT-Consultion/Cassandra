@@ -50,6 +50,7 @@ import {
 } from "@cassandra/shared";
 import {
   buildHarnessEnvironmentReport,
+  isEvaluationRunFinished,
   validateEvaluationPipelineOutcome,
   validateTerminalJudgmentStatus,
   type HarnessEnvironmentReport,
@@ -867,7 +868,7 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
         steps,
       );
 
-      if (runResponse.status === 201 || runResponse.status === 200) {
+      if (runResponse.status === 202 || runResponse.status === 201 || runResponse.status === 200) {
         const run = runResponse.body as { id: string };
         shared.evaluationRunId = run.id;
         evaluationRunCreated = true;
@@ -876,11 +877,35 @@ async function scenarioEvaluationPipeline(): Promise<ScenarioResult> {
           failures.push("POST /evaluation/runs did not return an id");
         }
 
+        // A run is queued (202) and worked through in the background: wait for it to stop.
         const runDetail = await timed(
-          "GET /evaluation/runs/:id",
-          () => apiRequest<unknown>("GET", `/evaluation/runs/${run.id}`),
+          "GET /evaluation/runs/:id (until finished)",
+          async () => {
+            const deadline = Date.now() + TIMEOUT_MS;
+
+            for (;;) {
+              const current = await apiRequest<{ status?: string; error?: string | null }>(
+                "GET",
+                `/evaluation/runs/${run.id}`,
+              );
+
+              if (isEvaluationRunFinished(current)) {
+                return current;
+              }
+
+              if (Date.now() > deadline) {
+                throw new Error(`evaluation run ${run.id} did not finish within ${TIMEOUT_MS} ms`);
+              }
+
+              await sleep(POLL_INTERVAL_MS);
+            }
+          },
           steps,
         );
+
+        if ((runDetail as { status?: string }).status === "failed") {
+          failures.push(`evaluation run failed: ${(runDetail as { error?: string | null }).error ?? "no reason given"}`);
+        }
 
         const parsedRun = EvaluationRunSchema.safeParse(runDetail);
         if (!parsedRun.success) {
