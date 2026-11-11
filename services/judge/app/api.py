@@ -20,7 +20,7 @@ from app.scoring.judges.cross_examiner import evaluate as evaluate_cross_examine
 from app.scoring.judges.official_records import evaluate as evaluate_official_records
 from app.scoring.judges.open_web_research import evaluate as evaluate_open_web_research
 from app.scoring.priors import build_prior_log_odds, extract_market_signal
-from app.scoring.types import CrossExaminerResult
+from app.scoring.types import CrossExaminerResult, PriorResult
 from app.scoring.uncertainty import posterior_bootstrap_interval
 from app.scoring.weights import default_judge_weights, select_regime
 
@@ -179,6 +179,58 @@ def _logit(probability: float) -> float:
     return log(bounded / (1 - bounded))
 
 
+# An estimate made without evidence should never be near-certain.
+BASE_RATE_BOUNDS = (0.02, 0.98)
+
+
+def _resolve_prior(request: JudgeRequest, evidence: list[EvidenceItem], llm: LLMClient) -> tuple[PriorResult, dict]:
+    """Stage: pick the prior. A bound market or a sampled reference class settles it for
+    free; only when neither exists is the model asked for an outside-view base rate."""
+    related_markets_ignored = sum(
+        1
+        for item in evidence
+        if str(item.sourceFamily) == "prediction_market" and (item.metadata or {}).get("matchedBy") == "search"
+    )
+    market_signals = extract_market_signal(evidence)
+    prior = build_prior_log_odds(request.event, request.calibration_snapshot, market_signals=market_signals)
+    status = "completed"
+    details: dict = {}
+
+    estimate = getattr(llm, "estimate_base_rate", None)
+    if prior.source == "uninformed" and callable(estimate):
+        try:
+            estimated = estimate(event=request.event, evaluation_time=request.evaluation_time)
+        except LLMError as error:
+            estimated = None
+            status = "failed"
+            details = {"error": str(error)[:300], "fallback": "uninformed prior"}
+        if estimated is not None:
+            low, high = BASE_RATE_BOUNDS
+            prior = build_prior_log_odds(
+                request.event,
+                request.calibration_snapshot,
+                market_signals=market_signals,
+                estimated_base_rate=min(max(float(estimated["probability"]), low), high),
+            )
+            details = {
+                "model": str(getattr(llm, "model_version", "fake-llm")),
+                "rationale": str(estimated.get("rationale", "")),
+                "referenceClass": estimated.get("referenceClass") or None,
+                "samples": estimated.get("samples") or None,
+            }
+
+    return prior, _stage(
+        "prior",
+        status,
+        source=prior.source,
+        probability=_log_odds_to_probability(prior.prior_log_odds),
+        marketPrice=None if market_signals is None else market_signals.get("price"),
+        marketLiquidity=None if market_signals is None else market_signals.get("depth"),
+        relatedMarketsIgnored=related_markets_ignored,
+        **{key: value for key, value in details.items() if value is not None},
+    )
+
+
 def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     ordered_evidence = _sort_evidence_for_judging(request.evidence)
     citations = [
@@ -201,7 +253,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     relevant_evidence, relevance_stage, enough_relevant = _rate_relevance(request, ordered_evidence, llm)
     # Prior-only runs (insufficient coverage, or too little relevant evidence after rating)
     # keep the evidence for the market prior and citations, but give the panel nothing to
-    # read, so no LLM call is made.
+    # read, so no panel or cross-examiner call is made.
     prior_only = request.prior_only or not enough_relevant
     panel_evidence = [] if prior_only else relevant_evidence
     # The three judges are independent (and may each fan out to an ensemble), so run them
@@ -233,11 +285,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             if judge_name in base_weights and isinstance(weight, int | float)
         }
     )
-    prior = build_prior_log_odds(
-        request.event,
-        request.calibration_snapshot,
-        market_signals=extract_market_signal(ordered_evidence),
-    )
+    prior, prior_stage = _resolve_prior(request, ordered_evidence, llm)
     aggregate = aggregate_posterior(
         prior_log_odds=prior.prior_log_odds,
         raw_opinions=raw_opinions,
@@ -279,6 +327,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     confidence_high = max(calibrated_low, calibrated_high, final_probability)
     pipeline_stages = [
         relevance_stage,
+        prior_stage,
         _stage(
             "panel_reasoning",
             "skipped" if prior_only else "completed",

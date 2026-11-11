@@ -227,3 +227,24 @@ def test_query_planning_returns_sub_questions_and_queries() -> None:
 
     assert plan == {"subQuestions": ["Has a date been announced?"], "queries": ["Product X launch date"]}
     assert "at most 3" in http_client.calls[0]["json"]["messages"][1]["content"]
+
+
+def test_base_rate_estimate_uses_the_judge_model_and_sees_no_evidence() -> None:
+    http_client = _RecordingHttpClient(
+        [_content_response('{"referenceClass": "consumer product launches", "probability": 0.35, "rationale": "Launches often slip."}')]
+    )
+    client = OpenRouterLLMClient(api_key="test-key", http_client=http_client, retries=0, judge_model="openai/gpt-test")
+
+    estimate = client.estimate_base_rate(event=_event(), evaluation_time="2026-10-11T12:00:00Z")
+
+    body = http_client.calls[0]["json"]
+    assert body["model"] == "openai/gpt-test"
+    assert body["response_format"]["json_schema"]["name"] == "base_rate_estimate"
+    assert "As of: 2026-10-11T12:00:00Z" in body["messages"][1]["content"]
+    assert "<evidence>" not in body["messages"][1]["content"]
+    assert estimate == {
+        "probability": 0.35,
+        "referenceClass": "consumer product launches",
+        "rationale": "Launches often slip.",
+    }
+

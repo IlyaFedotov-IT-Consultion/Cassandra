@@ -4,7 +4,7 @@ from app.scoring.priors import (
     build_prior_log_odds,
     empirical_bayes_base_rate,
     extract_market_signal,
-    liquidity_adjusted_market_probability,
+    market_trust_probability,
 )
 
 
@@ -58,12 +58,14 @@ def test_empirical_bayes_shrinks_sparse_classes_toward_global_prior() -> None:
     assert 0.5 < result.probability < 0.75
 
 
-def test_market_probability_is_discounted_by_spread_and_volatility() -> None:
-    liquid = liquidity_adjusted_market_probability(0.7, spread=0.01, depth=1_000_000, volatility=0.02)
-    noisy = liquidity_adjusted_market_probability(0.7, spread=0.15, depth=500, volatility=0.3)
+def test_an_unfitted_snapshot_trusts_the_market_price_as_is() -> None:
+    assert abs(market_trust_probability(0.9, {}) - 0.9) < 1e-9
+    assert abs(market_trust_probability(0.9, {"defaultAlpha": 0.6}) - 0.9) < 1e-9
 
-    assert liquid > noisy
-    assert 0.5 < noisy < 0.7
+
+def test_a_fitted_trust_slope_rescales_the_market_log_odds() -> None:
+    # logit(0.8) = ln 4; half of it is ln 2, which is a probability of 2/3.
+    assert abs(market_trust_probability(0.8, {"trustSlope": 0.5, "trustIntercept": 0.0}) - 2 / 3) < 1e-9
 
 
 def test_build_prior_log_odds_uses_market_only_when_reference_class_is_unsampled() -> None:
@@ -159,14 +161,58 @@ def test_prior_follows_a_liquid_market_price() -> None:
     assert 0.8 < log_odds_to_probability(result.prior_log_odds) <= 0.85
 
 
-def test_unknown_market_liquidity_keeps_a_partial_market_signal() -> None:
+def test_prior_does_not_discount_a_market_for_thin_or_unknown_liquidity() -> None:
+    for metadata in ({"price": 0.85}, {"price": 0.85, "liquidity": 5000}):
+        result = build_prior_log_odds(
+            _event(None),
+            _snapshot(),
+            market_signals=extract_market_signal([_market_item(metadata)]),
+        )
+
+        assert abs(log_odds_to_probability(result.prior_log_odds) - 0.85) < 1e-9
+        assert result.source == "market"
+
+
+def test_a_market_found_by_search_is_not_this_events_prior() -> None:
+    related = _market_item({"probability": 0.08, "liquidity": 400000, "matchedBy": "search"})
+    bound = _market_item({"probability": 0.7, "liquidity": 20000, "matchedBy": "id"})
+
+    assert extract_market_signal([related]) is None
+    assert extract_market_signal([related, bound])["price"] == 0.7
+
+
+def test_a_well_sampled_base_rate_does_not_override_a_market_price() -> None:
     result = build_prior_log_odds(
-        _event(None),
+        _event("regulatory_approval"),
         _snapshot(),
-        market_signals=extract_market_signal([_market_item({"price": 0.85})]),
+        market_signals=extract_market_signal([_market_item({"price": 0.95, "liquidity": 1_000_000})]),
     )
 
-    assert 0.6 < log_odds_to_probability(result.prior_log_odds) < 0.85
+    assert abs(log_odds_to_probability(result.prior_log_odds) - 0.95) < 1e-9
+    assert result.source == "market"
+
+
+def test_an_estimated_base_rate_is_the_prior_when_nothing_better_exists() -> None:
+    result = build_prior_log_odds(_event(None), _snapshot(), market_signals=None, estimated_base_rate=0.1)
+
+    assert abs(log_odds_to_probability(result.prior_log_odds) - 0.1) < 1e-9
+    assert result.source == "estimated_base_rate"
+
+
+def test_a_sampled_reference_class_beats_an_estimated_base_rate() -> None:
+    result = build_prior_log_odds(
+        _event("regulatory_approval"), _snapshot(), market_signals=None, estimated_base_rate=0.1
+    )
+
+    assert abs(log_odds_to_probability(result.prior_log_odds) - 71 / 102) < 1e-9
+    assert result.source == "reference_class"
+
+
+def test_prior_is_uninformed_without_a_market_or_any_base_rate() -> None:
+    result = build_prior_log_odds(_event(None), _snapshot(), market_signals=None)
+
+    assert result.prior_log_odds == 0.0
+    assert result.source == "uninformed"
 
 
 def test_missing_market_does_not_dilute_a_sampled_base_rate() -> None:

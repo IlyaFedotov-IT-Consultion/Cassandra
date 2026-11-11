@@ -12,6 +12,7 @@ from math import exp, log
 from statistics import median
 
 from app.llm.client import (
+    BaseRateEstimate,
     CrossExaminerResponse,
     EvidenceRating,
     LLMClient,
@@ -183,6 +184,41 @@ class EnsembleLLMClient(LLMClient):
         max_queries: int = 4,
     ) -> QueryPlan:
         return self._utility.plan_queries(event=event, evaluation_time=evaluation_time, max_queries=max_queries)
+
+    def estimate_base_rate(
+        self,
+        *,
+        event: EventInput,
+        evaluation_time: str | None = None,
+    ) -> BaseRateEstimate | None:
+        def ask(member: tuple[str, LLMClient]):
+            name, client = member
+            try:
+                return name, client.estimate_base_rate(event=event, evaluation_time=evaluation_time), None
+            except LLMError as error:
+                return name, None, error
+
+        with ContextThreadPoolExecutor(max_workers=min(self._max_workers, len(self._members))) as pool:
+            results = list(pool.map(ask, self._members))
+
+        samples = [
+            {"model": name, "probability": float(estimate["probability"]), "rationale": str(estimate.get("rationale", ""))}
+            for name, estimate, _ in results
+            if estimate is not None
+        ]
+        if not samples:
+            failures = [f"{name} failed: {error}" for name, _, error in results if error is not None]
+            if failures:
+                raise LLMResponseError(f"every ensemble member failed to estimate a base rate: {'; '.join(failures)}")
+            return None
+
+        median_log_odds = median(_logit(sample["probability"]) for sample in samples)
+        representative = min(samples, key=lambda sample: abs(_logit(sample["probability"]) - median_log_odds))
+        return BaseRateEstimate(
+            probability=1 / (1 + exp(-median_log_odds)),
+            rationale=f"[{representative['model']}] {representative['rationale']}",
+            samples=samples,
+        )
 
     def close(self) -> None:
         for _, client in self._members:

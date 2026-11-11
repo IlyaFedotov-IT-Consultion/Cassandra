@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.llm.client import (
+    BaseRateEstimate,
     CrossExaminerResponse,
     EvidenceRating,
     LLMClient,
@@ -18,6 +19,7 @@ CROSS_EXAMINER_KEY = "__cross_examiner__"
 SEARCH_KEY = "__search__"
 RELEVANCE_KEY = "__relevance__"
 PLAN_KEY = "__plan__"
+BASE_RATE_KEY = "__base_rate__"
 DEFAULT_FAKE_RELEVANCE = 5
 
 
@@ -143,3 +145,21 @@ class FakeLLMClient(LLMClient):
                 queries=list(canned.get("queries", [])),
             )
         return QueryPlan(subQuestions=[event.question], queries=[])
+
+    def estimate_base_rate(
+        self,
+        *,
+        event: EventInput,
+        evaluation_time: str | None = None,
+    ) -> BaseRateEstimate | None:
+        # No estimate unless a test seeds one, so fixture-mode priors stay deterministic.
+        canned = self._responses.get(BASE_RATE_KEY)
+        if canned is None:
+            return None
+        estimate = BaseRateEstimate(
+            probability=float(canned["probability"]),
+            rationale=str(canned.get("rationale", "")),
+        )
+        if canned.get("referenceClass"):
+            estimate["referenceClass"] = str(canned["referenceClass"])
+        return estimate

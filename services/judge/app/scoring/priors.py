@@ -81,31 +81,6 @@ def build_base_rate_params(
     }
 
 
-def build_market_prior_params(base_rate_params: Mapping[str, Any]) -> dict[str, Any]:
-    historical_counts = base_rate_params.get("historicalCounts", {}) or {}
-    minimum_sample = int(base_rate_params.get("minimumSample", 20))
-    totals = [int(counts.get("total", 0)) for counts in historical_counts.values() if int(counts.get("total", 0)) > 0]
-
-    if totals:
-        weighted_confidence = sum(
-            total * (total / (total + minimum_sample))
-            for total in totals
-        ) / sum(totals)
-    else:
-        weighted_confidence = 0.0
-
-    return {
-        "defaultAlpha": weighted_confidence,
-        "minimumSample": minimum_sample,
-        "sampleSize": sum(totals),
-        "referenceClassCount": len(totals),
-    }
-
-
-UNKNOWN_DEPTH_SUPPORT = 0.5
-DEPTH_SCALE_USD = 50_000
-
-
 def _as_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -154,10 +129,12 @@ def _yes_probability(metadata: Mapping[str, Any]) -> float | None:
 
 
 def extract_market_signal(evidence: list[Any]) -> dict[str, float | None] | None:
-    """Return the most liquid prediction-market Yes probability, or None when absent.
+    """Return the most liquid Yes probability of a market bound to this event, or None.
 
     Only `prediction_market` evidence is a probability prior; traditional quotes
-    (`market`) are prices, not event probabilities.
+    (`market`) are prices, not event probabilities. Markets the provider found by search
+    (`matchedBy: "search"`) answer a related question, not this one, so they never set
+    the prior.
     """
     best: dict[str, float | None] | None = None
     best_rank = -1.0
@@ -165,6 +142,8 @@ def extract_market_signal(evidence: list[Any]) -> dict[str, float | None] | None
         if str(getattr(item, "sourceFamily", "")) != "prediction_market":
             continue
         metadata = getattr(item, "metadata", None) or {}
+        if metadata.get("matchedBy") == "search":
+            continue
         probability = _yes_probability(metadata)
         if probability is None or not 0.0 <= probability <= 1.0:
             continue
@@ -183,31 +162,33 @@ def extract_market_signal(evidence: list[Any]) -> dict[str, float | None] | None
     return best
 
 
-def liquidity_adjusted_market_probability(
-    price: float,
-    *,
-    spread: float | None,
-    depth: float | None,
-    volatility: float | None,
-) -> float:
-    """Discount the market's log-odds toward 0 by observed spread, volatility and depth.
+def market_trust_probability(price: float, market_prior_params: Mapping[str, Any] | None) -> float:
+    """Map a market price through the trust curve fitted on resolved benchmark markets.
 
-    Unobserved spread/volatility apply no penalty; unobserved depth gets partial trust.
+    `trustSlope` and `trustIntercept` are a Platt fit of outcomes on market log-odds
+    (see `fit_market_trust`). Until a snapshot carries a fit the price is used as is:
+    the identity is the only map that assumes nothing about how markets misprice.
     """
-    spread_penalty = 1.0 if spread is None else max(0.0, 1.0 - min(spread, 0.9))
-    volatility_penalty = 1.0 if volatility is None else max(0.0, 1.0 - min(volatility, 0.9))
-    depth_support = (
-        UNKNOWN_DEPTH_SUPPORT if depth is None else 1.0 - exp(-max(depth, 0.0) / DEPTH_SCALE_USD)
-    )
-    confidence = min(max(spread_penalty * volatility_penalty * depth_support, 0.0), 1.0)
-    return 1 / (1 + exp(-confidence * _logit(price)))
+    params = market_prior_params or {}
+    slope = _as_float(params.get("trustSlope"))
+    intercept = _as_float(params.get("trustIntercept"))
+    log_odds = (1.0 if slope is None else slope) * _logit(price) + (0.0 if intercept is None else intercept)
+    return 1 / (1 + exp(-log_odds))
 
 
 def build_prior_log_odds(
     event: Any,
     snapshot: Any,
     market_signals: Mapping[str, float | None] | None = None,
+    estimated_base_rate: float | None = None,
 ) -> PriorResult:
+    """The prior comes from the best source available, in this order: the bound market's
+    price, the reference class's observed base rate, a base rate estimated for this
+    question, and otherwise an uninformed 0.5.
+
+    Sources are not blended. A market price already reflects base rates, so mixing a
+    reference-class rate back in would count that information twice.
+    """
     base_rate_params = getattr(snapshot, "baseRateParams", {}) or {}
     market_prior_params = getattr(snapshot, "marketPriorParams", {}) or {}
     reference_class = getattr(event, "referenceClass", None)
@@ -217,30 +198,23 @@ def build_prior_log_odds(
     base_rate = empirical_bayes_base_rate(reference_class, historical_counts, minimum_sample)
     market_price = _as_float((market_signals or {}).get("price"))
     market_probability = (
-        None
-        if market_price is None
-        else liquidity_adjusted_market_probability(
-            market_price,
-            spread=_as_float(market_signals.get("spread")),
-            depth=_as_float(market_signals.get("depth")),
-            volatility=_as_float(market_signals.get("volatility")),
-        )
+        None if market_price is None else market_trust_probability(market_price, market_prior_params)
     )
 
-    if market_probability is None:
-        alpha = 0.0 if base_rate.used_fallback else 1.0
-    elif base_rate.used_fallback:
-        alpha = 0.0
+    if market_probability is not None:
+        source, prior_log_odds, alpha = "market", _logit(market_probability), 0.0
+    elif not base_rate.used_fallback:
+        source, prior_log_odds, alpha = "reference_class", _logit(base_rate.probability), 1.0
+    elif estimated_base_rate is not None:
+        source, prior_log_odds, alpha = "estimated_base_rate", _logit(estimated_base_rate), 0.0
     else:
-        alpha = min(max(float(market_prior_params.get("defaultAlpha", 0.6)), 0.0), 1.0)
+        source, prior_log_odds, alpha = "uninformed", 0.0, 0.0
 
-    market_log_odds = 0.0 if market_probability is None else _logit(market_probability)
-    base_rate_log_odds = 0.0 if base_rate.used_fallback else _logit(base_rate.probability)
-    prior_log_odds = alpha * base_rate_log_odds + (1 - alpha) * market_log_odds
     return PriorResult(
         prior_log_odds=prior_log_odds,
         base_rate_probability=base_rate.probability,
         market_probability=market_probability,
         alpha=alpha,
         reference_class_fallback=base_rate.used_fallback,
+        source=source,
     )

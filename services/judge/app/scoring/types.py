@@ -41,6 +41,8 @@ class PriorResult:
     market_probability: float | None
     alpha: float
     reference_class_fallback: bool
+    # "market", "reference_class", "estimated_base_rate" or "uninformed".
+    source: str = "uninformed"
 
 
 @dataclass(slots=True)

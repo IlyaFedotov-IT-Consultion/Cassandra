@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from app.llm.client import (
+    BaseRateEstimate,
     CrossExaminerResponse,
     EVIDENCE_STRENGTHS,
     EvidenceRating,
@@ -111,6 +112,26 @@ PLAN_SCHEMA: dict[str, Any] = {
     },
     "required": ["subQuestions", "queries"],
 }
+
+BASE_RATE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "referenceClass": {"type": "string"},
+        "probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "rationale": {"type": "string", "minLength": 1},
+    },
+    "required": ["referenceClass", "probability", "rationale"],
+}
+
+BASE_RATE_PROMPT = (
+    "You estimate base rates for forecasting questions. Take the outside view: name a reference class of "
+    "comparable past situations, consider how often they resolved true and how much time is left until "
+    "the deadline, and estimate the probability that this question resolves true. You are given no "
+    "evidence about the current situation and must not assume any. Treat the as-of date as today: ignore "
+    "anything you know about events after the as-of date, including how the question resolved. Return the "
+    "reference class, the probability, and a one- or two-sentence rationale."
+)
 
 RELEVANCE_PROMPT = (
     "You screen evidence for a forecasting question. For every evidence item, rate how useful it is for "
@@ -419,6 +440,41 @@ class OpenRouterLLMClient(LLMClient):
         return QueryPlan(
             subQuestions=[str(item) for item in parsed.get("subQuestions", []) if isinstance(item, str)],
             queries=[str(item) for item in parsed.get("queries", []) if isinstance(item, str)],
+        )
+
+    def estimate_base_rate(
+        self,
+        *,
+        event: EventInput,
+        evaluation_time: str | None = None,
+    ) -> BaseRateEstimate | None:
+        user_prompt = (
+            f"As of: {evaluation_time or 'unspecified'}\n"
+            f"Question: {event.question}\n"
+            f"Resolution criteria: {event.resolutionCriteria}\n"
+            f"Deadline: {event.deadline}\n"
+            f"Entities: {', '.join(str(entity) for entity in event.entities)}"
+        )
+        parsed = self._chat_json_with_length_retry(
+            model=self._judge_model,
+            messages=[{"role": "system", "content": BASE_RATE_PROMPT}, {"role": "user", "content": user_prompt}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "base_rate_estimate", "strict": True, "schema": BASE_RATE_SCHEMA},
+            },
+            initial_max_tokens=self._judge_max_tokens,
+            reasoning_effort=self._judge_reasoning_effort,
+        )
+        try:
+            probability = float(parsed["probability"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LLMResponseError(f"base rate response missing a probability: {parsed!r}") from exc
+        if not 0.0 <= probability <= 1.0:
+            raise LLMResponseError(f"base rate out of range: {probability}")
+        return BaseRateEstimate(
+            probability=probability,
+            referenceClass=str(parsed.get("referenceClass") or ""),
+            rationale=str(parsed.get("rationale") or ""),
         )
 
     # -- Helpers -----------------------------------------------------------------

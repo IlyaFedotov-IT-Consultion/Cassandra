@@ -183,3 +183,38 @@ def test_ensemble_keeps_everything_when_every_sample_is_incoherent() -> None:
 
     assert opinion.log_bayes_factor == 0.0
     assert any("incoherent" in warning for warning in opinion.warnings)
+
+
+def _base_rate_member(probability: float) -> FakeLLMClient:
+    return FakeLLMClient({"__base_rate__": {"probability": probability, "rationale": f"p={probability}"}})
+
+
+class _FailingBaseRate(FakeLLMClient):
+    def estimate_base_rate(self, **_kwargs):
+        raise LLMResponseError("upstream returned garbage")
+
+
+def test_ensemble_base_rate_is_the_median_across_models_in_log_odds() -> None:
+    ensemble = EnsembleLLMClient(
+        [("model-a", _base_rate_member(0.05)), ("model-b", _base_rate_member(0.2)), ("model-c", _base_rate_member(0.9))]
+    )
+
+    estimate = ensemble.estimate_base_rate(event=_event(), evaluation_time="2026-11-07T00:00:00Z")
+
+    assert abs(estimate["probability"] - 0.2) < 1e-9
+    assert estimate["rationale"] == "[model-b] p=0.2"
+    assert [sample["model"] for sample in estimate["samples"]] == ["model-a", "model-b", "model-c"]
+
+
+def test_ensemble_base_rate_tolerates_failing_members_but_not_total_failure() -> None:
+    survivor = EnsembleLLMClient([("broken", _FailingBaseRate()), ("ok", _base_rate_member(0.3))])
+    assert abs(survivor.estimate_base_rate(event=_event())["probability"] - 0.3) < 1e-9
+
+    with pytest.raises(LLMResponseError):
+        EnsembleLLMClient([("broken", _FailingBaseRate())]).estimate_base_rate(event=_event())
+
+
+def test_ensemble_has_no_base_rate_when_no_member_offers_one() -> None:
+    ensemble = EnsembleLLMClient([("model-a", FakeLLMClient()), ("model-b", FakeLLMClient())])
+
+    assert ensemble.estimate_base_rate(event=_event()) is None
