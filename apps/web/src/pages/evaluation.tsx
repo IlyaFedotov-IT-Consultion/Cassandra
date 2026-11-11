@@ -16,6 +16,7 @@ import {
 import {
   type EvaluationRun,
   createEvaluationRun,
+  resumeEvaluationRun,
   fetchEvaluationRun,
   importPolymarketBenchmarks,
   listBenchmarkMarkets,
@@ -241,7 +242,9 @@ export function EvaluationPage() {
                       </p>
                     </div>
                     <div className="list-row__tail">
-                      <span>{benchmarkCount} benchmarks · {predictionCount} predictions</span>
+                      <span>
+                        {describeRunState(run, ", ") ?? `${benchmarkCount} benchmarks · ${predictionCount} predictions`}
+                      </span>
                       <small>{humanizeToken(run.replayFidelity)}</small>
                     </div>
                   </Link>
@@ -490,15 +493,87 @@ function sentenceCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+const RUN_POLL_MS = 5000;
+
+type RunState = Pick<EvaluationRun, "status" | "progress" | "error">;
+
+function isRunUnfinished(run: RunState | undefined) {
+  return run?.status === "queued" || run?.status === "running";
+}
+
+/** One line on where an unfinished or failed run stands; null for a completed run. */
+function describeRunState(run: RunState, separator: ": " | ", "): string | null {
+  const completed = run.progress?.completedMarkets ?? 0;
+  const total = run.progress?.totalMarkets ?? 0;
+
+  switch (run.status) {
+    case "queued":
+      return `Queued${separator}${total} markets to replay`;
+    case "running":
+      return separator === ": "
+        ? `Running: ${completed} of ${total} markets replayed`
+        : `Running, ${completed} of ${total} markets`;
+    case "failed":
+      return `Failed after ${completed} of ${total} markets${run.error ? `: ${run.error}` : ""}`;
+    default:
+      return null;
+  }
+}
+
+interface MarketComparison {
+  mean: number;
+  low: number;
+  high: number;
+  groups: number;
+}
+
+function readMarketComparisons(value: unknown): Array<[string, MarketComparison]> {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  return sortByBaselineOrder(
+    Object.entries(value as Record<string, unknown>).flatMap(([baseline, comparison]) =>
+      comparison &&
+      typeof comparison === "object" &&
+      typeof (comparison as MarketComparison).mean === "number"
+        ? [[baseline, comparison as MarketComparison] as [string, MarketComparison]]
+        : [],
+    ),
+  );
+}
+
+function describeMarketComparison(baseline: string, comparison: MarketComparison) {
+  const direction = comparison.mean > 0 ? "worse" : "better";
+  const includesZero = comparison.low <= 0 && comparison.high >= 0;
+
+  return (
+    `${baselineLabel(baseline)}: Brier ${Math.abs(comparison.mean).toFixed(3)} ${direction} than Polymarket ` +
+    `(95% interval ${comparison.low.toFixed(3)} to ${comparison.high.toFixed(3)} over ${comparison.groups} markets)` +
+    (includesZero ? "; the interval includes no difference" : "")
+  );
+}
+
 export function EvaluationRunPage() {
   const { runId } = useParams();
+  const queryClient = useQueryClient();
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeEvaluationRun(runId ?? ""),
+    onSuccess(run) {
+      queryClient.setQueryData(["evaluation-run", runId], run);
+      void queryClient.invalidateQueries({ queryKey: ["evaluation-runs"] });
+    },
+  });
   const runQuery = useQuery({
     queryKey: ["evaluation-run", runId],
     queryFn: () => fetchEvaluationRun(runId ?? ""),
     enabled: Boolean(runId),
+    // A run is worked through in the background, so keep checking until it stops.
+    refetchInterval: (query) => (isRunUnfinished(query.state.data) ? RUN_POLL_MS : false),
   });
+  const runUnfinished = isRunUnfinished(runQuery.data);
   const predictionsQuery = useQuery({
-    queryKey: ["evaluation-predictions", runId],
+    queryKey: ["evaluation-predictions", runId, runQuery.data?.status],
     queryFn: () => listEvaluationPredictions(runId ?? ""),
     enabled: Boolean(runId),
   });
@@ -537,10 +612,13 @@ export function EvaluationRunPage() {
   const byBaseline = readBaselineMetrics(overall.byBaseline);
   const paired =
     overall.paired && typeof overall.paired === "object"
-      ? (overall.paired as { sampleSize?: number; byBaseline?: unknown })
+      ? (overall.paired as { sampleSize?: number; byBaseline?: unknown; vsPolymarket?: unknown })
       : null;
+  const marketComparisons = readMarketComparisons(paired?.vsPolymarket);
+  const runState = describeRunState(run, ": ");
   const pairedByBaseline = readBaselineMetrics(paired?.byBaseline);
-  const benchmarkCount = typeof overall.benchmarkCount === "number" ? overall.benchmarkCount : 0;
+  const benchmarkCount =
+    typeof overall.benchmarkCount === "number" ? overall.benchmarkCount : (run.progress?.totalMarkets ?? 0);
   const predictionCount = typeof overall.predictionCount === "number" ? overall.predictionCount : predictions.length;
   const reliability = buildReliabilitySeries(predictions);
   const sliceGroups = groupSlices(run.sliceResults);
@@ -580,6 +658,27 @@ export function EvaluationRunPage() {
         </li>
       </ul>
 
+      {runState ? (
+        <SectionCard title="Progress">
+          {resumeMutation.isError ? <InlineError message={resumeMutation.error.message} /> : null}
+          <p role="status">
+            <strong>{runState}</strong>
+          </p>
+          <p className="helper-text">
+            {run.status === "failed"
+              ? "The forecasts of the finished markets are kept and still count toward calibration. Resume this run to continue without repeating stored forecasts."
+              : "Scores appear when the run finishes. Each market's forecasts are stored as soon as that market is done."}
+          </p>
+          {run.status === "failed" ? (
+            <button type="button" disabled={resumeMutation.isPending} onClick={() => resumeMutation.mutate()}>
+              {resumeMutation.isPending ? "Resuming…" : "Resume run"}
+            </button>
+          ) : null}
+        </SectionCard>
+      ) : null}
+
+      {runUnfinished || run.status === "failed" ? null : (
+        <>
       <SectionCard title="Scores">
         {pairedByBaseline && Object.keys(pairedByBaseline).length > 0 ? (
           <>
@@ -588,6 +687,11 @@ export function EvaluationRunPage() {
               each column is marked.
             </p>
             <ScoreTable label="Paired comparison" metrics={pairedByBaseline} />
+            {marketComparisons.map(([baseline, comparison]) => (
+              <p key={baseline} className="helper-text">
+                {describeMarketComparison(baseline, comparison)}
+              </p>
+            ))}
             {byBaseline ? (
               <details className="disclosure">
                 <summary>All predictions (sample sizes differ by baseline)</summary>
@@ -785,6 +889,8 @@ export function EvaluationRunPage() {
           </div>
         )}
       </details>
+        </>
+      )}
     </div>
   );
 }

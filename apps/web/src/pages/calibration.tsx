@@ -71,6 +71,21 @@ function readHeldOut(metrics: Record<string, unknown>): HeldOutCheck | null {
     : null;
 }
 
+/** What the snapshot learned from: live judgments that resolved, and replayed benchmark forecasts. */
+function describeTrainingSources(metrics: Record<string, unknown>) {
+  const sources = metrics.trainingSources;
+
+  if (!sources || typeof sources !== "object") {
+    return null;
+  }
+
+  const { judgments, replayForecasts, groups } = sources as Record<string, unknown>;
+
+  return typeof judgments === "number" && typeof replayForecasts === "number" && typeof groups === "number"
+    ? `${judgments} resolved judgments and ${replayForecasts} replayed forecasts, from ${groups} markets and events`
+    : null;
+}
+
 function describeMarketTrust(params: Record<string, unknown>) {
   const sampleSize = typeof params.sampleSize === "number" ? params.sampleSize : 0;
 
@@ -178,6 +193,7 @@ export function CalibrationPage() {
   const metrics = (selectedSnapshot?.metrics ?? {}) as Record<string, unknown>;
   const hasScores = typeof metrics.brierScore === "number";
   const heldOut = readHeldOut(metrics);
+  const trainingSources = describeTrainingSources(metrics);
   const changesForecasts = detail ? (detail.calibrationParams.method ?? "identity") !== "identity" : false;
   // The API refuses to approve a map that is not shown to help; approving then needs an explicit override.
   const needsOverride = changesForecasts && heldOut?.improves !== true;
@@ -290,6 +306,12 @@ export function CalibrationPage() {
                     {detail ? describeCalibration(detail.calibrationParams) : "Loading…"}
                   </dd>
                 </div>
+                {trainingSources ? (
+                  <div>
+                    <dt>Trained on</dt>
+                    <dd>{trainingSources}</dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>Market prices</dt>
                   <dd>{detail ? describeMarketTrust(detail.marketPriorParams) : "Loading…"}</dd>

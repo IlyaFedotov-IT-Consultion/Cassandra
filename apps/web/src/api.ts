@@ -401,6 +401,12 @@ export function listEvaluationPredictions(runId: string) {
   );
 }
 
+export function resumeEvaluationRun(runId: string) {
+  return requestJson(`/evaluation/runs/${encodeURIComponent(runId)}/resume`, EvaluationRunSchema, {
+    method: "POST",
+  });
+}
+
 export async function createEvaluationRun(args: {
   benchmarkSetId: string;
   baselines?: string[];

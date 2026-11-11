@@ -770,6 +770,103 @@ describe("watchlist discovery", () => {
 });
 
 describe("evaluation run", () => {
+  function withEvaluationRun(overrides: Record<string, unknown>) {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
+      if (url.pathname === "/evaluation/runs/run-paired") return json({ ...evaluationRun, ...overrides });
+      if (url.pathname === "/evaluation/runs") return json([{ ...evaluationRun, ...overrides, sliceResults: undefined }]);
+      if (url.pathname === "/evaluation/benchmark-sets") return json([]);
+      return base(input, init);
+    });
+  }
+
+  it("shows how far a running run has got instead of scores", async () => {
+    withEvaluationRun({
+      status: "running",
+      progress: { completedMarkets: 3, totalMarkets: 30 },
+      overallMetrics: {},
+      sliceResults: [],
+    });
+
+    renderAt("/evaluation/runs/run-paired");
+
+    expect(await screen.findByText("Running: 3 of 30 markets replayed")).toBeVisible();
+    expect(screen.getByText(/scores appear when the run finishes/i)).toBeVisible();
+    expect(screen.queryByRole("table", { name: /paired comparison/i })).not.toBeInTheDocument();
+  });
+
+  it("says why a run failed and that its finished markets were kept", async () => {
+    withEvaluationRun({
+      status: "failed",
+      error: "judge service is down",
+      progress: { completedMarkets: 5, totalMarkets: 30 },
+      overallMetrics: {},
+      sliceResults: [],
+    });
+
+    renderAt("/evaluation/runs/run-paired");
+
+    expect(await screen.findByText("Failed after 5 of 30 markets: judge service is down")).toBeVisible();
+    expect(screen.getByText(/forecasts of the finished markets are kept/i)).toBeVisible();
+  });
+
+  it("resumes the failed run and shows its queued progress", async () => {
+    withEvaluationRun({ status: "failed", error: "interrupted", progress: { completedMarkets: 5, totalMarkets: 30 }, overallMetrics: {}, sliceResults: [] });
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    let resumed = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/evaluation/runs/run-paired/resume" && init?.method === "POST") {
+        resumed = true;
+        return json({ ...evaluationRun, status: "queued", progress: { completedMarkets: 5, totalMarkets: 30 } }, 202);
+      }
+      if (resumed && url.pathname === "/evaluation/runs/run-paired") return json({ ...evaluationRun, status: "queued", progress: { completedMarkets: 5, totalMarkets: 30 } });
+      return base(input, init);
+    });
+    renderAt("/evaluation/runs/run-paired");
+    await userEvent.click(await screen.findByRole("button", { name: "Resume run" }));
+    expect(await screen.findByText("Queued: 30 markets to replay")).toBeVisible();
+    expect(resumed).toBe(true);
+  });
+
+  it("compares each baseline with the market, with an interval over markets", async () => {
+    withEvaluationRun({
+      overallMetrics: {
+        ...evaluationRun.overallMetrics,
+        paired: {
+          ...evaluationRun.overallMetrics.paired,
+          vsPolymarket: {
+            base_rate_only: { mean: 0.071, low: 0.02, high: 0.125, groups: 28 },
+            model_with_polymarket: { mean: -0.004, low: -0.03, high: 0.021, groups: 28 },
+            model_without_polymarket: null,
+          },
+        },
+      },
+    });
+
+    renderAt("/evaluation/runs/run-paired");
+
+    expect(
+      await screen.findByText(
+        "Base rate only: Brier 0.071 worse than Polymarket (95% interval 0.020 to 0.125 over 28 markets)",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Model with Polymarket: Brier 0.004 better than Polymarket (95% interval -0.030 to 0.021 over 28 markets); the interval includes no difference",
+      ),
+    ).toBeVisible();
+  });
+
+  it("marks an unfinished run in the run history", async () => {
+    withEvaluationRun({ status: "running", progress: { completedMarkets: 3, totalMarkets: 30 }, overallMetrics: {} });
+
+    renderAt("/evaluation");
+
+    expect(await screen.findByText("Running, 3 of 30 markets")).toBeVisible();
+  });
+
   it("compares baselines on the paired sample and marks the best score", async () => {
     renderAt("/evaluation/runs/run-paired");
 
@@ -891,6 +988,23 @@ describe("calibration", () => {
     await waitFor(() => {
       expect(requests.find((request) => request.path.endsWith("/snapshot-new/approve"))?.body).toBeUndefined();
     });
+  });
+
+  it("says what a snapshot was trained on", async () => {
+    const trained = {
+      ...snapshots[0]!,
+      metrics: {
+        ...snapshots[0]!.metrics,
+        trainingSources: { judgments: 4, replayForecasts: 176, groups: 28 },
+      },
+    };
+    withCalibrationSnapshots([trained], snapshotDetail(trained));
+
+    renderAt("/calibration");
+
+    expect(
+      await screen.findByText("4 resolved judgments and 176 replayed forecasts, from 28 markets and events"),
+    ).toBeVisible();
   });
 
   it("says how far market prices are trusted", async () => {
