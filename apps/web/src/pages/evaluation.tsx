@@ -132,6 +132,7 @@ export function EvaluationPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="evaluation"
         title="Evaluation"
         description="Review benchmark sets, launch replay runs, and inspect the most recent scorecards."
       />
@@ -632,8 +633,9 @@ export function EvaluationRunPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="evaluation"
         title="Evaluation run"
-        description={`Replayed on ${formatDateTime(run.createdAt)} at the ${run.cutoffs.join(", ")} cutoffs before each market resolved.`}
+        description={`Replayed on ${formatDateTime(run.createdAt)} at the ${run.cutoffs.join(", ")} cutoffs before each market’s scheduled end date.`}
         returnLink={{
           to: "/evaluation",
           label: "Back to evaluation",

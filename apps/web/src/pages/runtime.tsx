@@ -92,6 +92,7 @@ export function RuntimePage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="runtime"
         title="Runtime"
         description="Inspect the live execution timeline across all judgment runs, with filters for status, stage, severity, and search terms."
       />

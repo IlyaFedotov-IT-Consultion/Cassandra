@@ -8,5 +8,6 @@ __pycache__/
 dist/
 coverage/
 .playwright-mcp/
+.impeccable/hook.cache.json
 scripts/harness/runs/
 pnpm-lock 2.yaml

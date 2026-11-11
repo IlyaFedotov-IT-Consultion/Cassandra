@@ -1,6 +1,6 @@
 # Current Project Status
 
-**Reviewed on:** 2026-11-11, on branch `feat/forecast-priors-and-calibration-gating`
+**Reviewed on:** 2026-11-11. This snapshot includes the merged forecasting/calibration work and the workspace help and documentation update.
 
 This page records what the repository does today, what is still partial, and what was verified at the last review. HTTP contracts are in [api-reference.md](api-reference.md). The architecture review and its remediation status are in [reviews/2026-11-07-architecture-and-algorithms-review.md](reviews/2026-11-07-architecture-and-algorithms-review.md).
 
@@ -36,7 +36,7 @@ Models and reasoning effort are set only through the `OPENROUTER_*` variables in
 
 ### API
 
-The API has 27 routes covering:
+The API has 31 routes covering:
 
 - health and readiness;
 - events;
@@ -44,6 +44,7 @@ The API has 27 routes covering:
 - outcomes (recording, and listing newest first);
 - judgments (queueing, detail and listing);
 - runtime activity;
+- research runs (an auxiliary API with bounded in-memory history, not a persisted web workflow);
 - calibration retraining and snapshots;
 - the evaluation workflow: Polymarket benchmark import, benchmark sets and markets, replay runs, and predictions.
 
@@ -70,6 +71,7 @@ The judge service exposes `GET /health`, `POST /judge`, `POST /plan` and `POST /
   - leakage warnings grouped by reason.
 - **Calibration:** snapshot history, with the snapshot in use marked, what each snapshot was trained on, its held-out check and how far market prices are trusted.
 - **Runtime:** a filterable activity log across runs.
+- **Help:** a guide available from the navigation even when the API is offline, with contextual disclosures on every workspace screen and accessible hints in the event form. See [user-guide.md](user-guide.md).
 
 The visual identity is an "instrument" look: graph-paper ground, ink-blue text, and one magenta reserved for forecast probabilities. Fonts are self-hosted.
 
@@ -91,10 +93,39 @@ There is no migration framework. Both SQL files are re-applied on every migrate 
 - **No OpenAPI document.** The contract in [api-reference.md](api-reference.md) is maintained by hand.
 - **No browser end-to-end suite.** UI changes are checked with Testing Library plus manual Playwright MCP sessions.
 - **No linter or formatter.** `pnpm lint` does nothing.
+- **Development queue durability.** The Compose Redis service disables persistence. The API process hosts the workers; the supplied stack is not a durable, independently scaled production queue deployment.
+- **Full Compose browser wiring.** The optional app profile sets the web API URL to `http://api:3000`, which a host browser normally cannot resolve. Use the native quick start in the README; the full container profile needs browser-reachable API configuration before acceptance.
+- **No committed CI workflow.** Verification below comes from local commands and browser sessions, not hosted CI.
 - **Replay retrieval is present-day search.** A replay searches today's web and keeps results dated before the cutoff, so its forecasts are somewhat better informed than a live forecast was. Calibration trained on replays inherits that; `includeReplay: false` trains on live judgments only.
-- **No calibration data yet.** A calibration map needs 20 resolved markets or events. None has been produced in this checkout: `pnpm harness:calibration` has not been run, because it costs money.
+- **Calibration sample is still small.** The paid live cycle on 2026-11-11 produced 47 eligible replay training forecasts across 13 resolved market groups, below the 20-group threshold for a non-identity calibration map. These are local database contents, not data bundled with the repository.
 
-## Verification snapshot (2026-11-11)
+## Live exercise (2026-11-11)
+
+The authorized paid calibration cycle completed in the isolated local database
+`cassandra_live_calibration_20261111`. It imported 15 markets out of a requested
+30, completed all 15, and stored 149 predictions. One model forecast was skipped
+after an API-side fetch failure. The resulting snapshot remained cold start with
+an identity map; the harness did not approve it. This run does not establish
+calibrated live accuracy.
+
+A subsequent read-only API check on the same day found this snapshot approved and
+active, still with 13 groups and an identity map. The three live judgments used
+that identity snapshot. Approval did not produce a fitted calibration adjustment;
+the harness's original report correctly records its unapproved state at completion.
+
+Three open events were then created and judged through the live pipeline: the
+December Fed rate decision, Merz's departure by year-end, and a Perplexity AI
+acquisition agreement by year-end. All three completed. The Fed run used fallback
+queries after a planning error; the Perplexity trace reported missing official
+evidence. These events remain unresolved and therefore add no resolved live
+training outcomes yet.
+
+Local reports are under the ignored `scripts/harness/runs/` directory:
+`calibration-2026-11-11T11-09-33-630Z/report.json` and
+`live-events-2026-11-11/`. The default dev database was preserved. Service uptime,
+snapshot approval and event outcomes can change after this dated observation.
+
+## Verification snapshot before the help update (2026-11-11)
 
 | Check | Result |
 | --- | --- |
@@ -105,3 +136,40 @@ There is no migration framework. Both SQL files are re-applied on every migrate 
 | Browser check (Playwright MCP, intercepted fixture responses) | evaluation run queued, running, failed and completed at 1440 and 390 px; polling transitions and keyboard Resume action pass; no horizontal page overflow, console errors or failed requests |
 | Redis queue smoke | synthetic failure stays failed without automatic retry; explicit requeue completes; active jobs drain before shared connections close; shutdown exits cleanly |
 | Generated judge schemas | regeneration matches `models_generated.py` |
+
+## Help and documentation verification (2026-11-11)
+
+| Check | Result |
+| --- | --- |
+| `pnpm --filter @cassandra/web test` | 90 tests pass, including three new help/navigation/accessibility tests; the new tests failed before implementation |
+| `pnpm --filter @cassandra/web exec vitest run test/help.test.tsx` | 3 tests pass after correcting the new test queries' TypeScript options |
+| `pnpm --filter @cassandra/web build` | TypeScript check and production build pass |
+| Playwright MCP, Chromium, live local app | Contextual help on Events, event detail, Judgments, judgment detail, Watchlists, Runtime, Evaluation, evaluation run and Calibration; keyboard expansion, guide anchor focus, and event form hints checked at 1440×1000 and 390×844 |
+| Browser observations | No unexpected console errors, failed requests or mutation requests during those checks; Help had no horizontal overflow |
+| Additional browser states | Watchlist detail help passed at both widths with intercepted fixture responses; Help remained usable with simulated API 503 responses. An initial fixture URL pattern also intercepted the page document; restricting it to the API origin corrected the check. |
+| Visual check | Compared Events before/after using the existing layout as reference; added help disclosure and navigation entry are intentional. Inspected guide and form screenshots under `.playwright-mcp/help-*.png` |
+
+This update changes web help, field descriptions and documentation. API, judge and
+harness suites were not rerun for it; their earlier results above are separate evidence.
+
+Reviewable guide screenshots: [desktop](images/help-desktop.png) and
+[phone](images/help-mobile.png). The earlier API/judge/harness checks and the paid
+exercise are dated evidence; the documentation update does not claim a fresh
+full-stack or paid acceptance run.
+
+## Architecture and quick-start documentation release (2026-11-11)
+
+- Rechecked service boundaries, environment loading, API route inventory (31 routes)
+  and live/fake mode controls against current source. The README now includes a
+  fixture quick start, explicit live-mode setup, component diagram, judgment
+  sequence and prediction pipeline.
+- Rechecked the running local API: health and readiness returned 200, all three
+  live judgments were completed, and the approved snapshot remained cold start.
+- Fresh `pnpm --filter @cassandra/web test`: **90 passed**. Fresh `pnpm build`:
+  **shared, API and web passed**.
+- All three README Mermaid diagrams parsed and rendered in Chromium. Relative
+  documentation links and section anchors passed a local check.
+- Independent read-only review found no blocking issues; fixed the removed README
+  anchors and clarified that the approval override applies to non-identity maps.
+- A clean-machine dependency install and the full Compose app profile were not
+  executed for this release. No new paid provider runs were started.

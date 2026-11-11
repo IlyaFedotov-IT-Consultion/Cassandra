@@ -87,6 +87,7 @@ export function WatchlistsPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="watchlists"
         title="Watchlists"
         description="Keyword streams that surface candidate events worth forecasting."
         actions={
@@ -263,6 +264,7 @@ export function WatchlistDetailPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="watchlists"
         title={watchlist.name}
         description={`Watching for ${watchlist.keywords.join(", ")}${
           watchlist.jurisdictions.length > 0 ? ` in ${watchlist.jurisdictions.join(", ")}` : ""

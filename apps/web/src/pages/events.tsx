@@ -122,6 +122,7 @@ export function EventsPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="events"
         title="Events"
         description="Forecast targets and their latest judged probability."
         actions={
@@ -345,6 +346,7 @@ export function EventDetailPage() {
   return (
     <div className="page-stack">
       <PageIntro
+        helpTopic="events"
         title={event.question}
         returnLink={{
           to: "/events",

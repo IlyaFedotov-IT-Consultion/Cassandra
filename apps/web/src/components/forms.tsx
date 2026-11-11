@@ -92,48 +92,70 @@ export function EventComposerForm({
       }}
     >
       {errorMessage ? <InlineError message={errorMessage} /> : null}
-      <label>
-        <span>Question</span>
-        <input defaultValue={defaults?.question ?? ""} name="question" required />
-      </label>
-      <label>
-        <span>Deadline</span>
-        <input defaultValue={defaults?.deadline ?? ""} name="deadline" required type="datetime-local" />
-      </label>
-      <label className="form-grid__full">
-        <span>Resolution Criteria</span>
-        <textarea
-          defaultValue={defaults?.resolutionCriteria ?? ""}
-          name="resolutionCriteria"
-          required
-          rows={4}
-        />
-      </label>
-      <label>
-        <span>Entities</span>
-        <input defaultValue={defaults?.entities ?? ""} name="entities" placeholder="Comma-separated" required />
-      </label>
-      <label>
-        <span>Reference Class</span>
-        <select defaultValue={defaults?.referenceClass ?? ""} name="referenceClass">
-          <option value="">None</option>
-          <option value="regulatory_approval">Regulatory approval</option>
-          <option value="election">Election</option>
-          <option value="product_launch">Product launch</option>
-          <option value="court_decision">Court decision</option>
-          <option value="macro_release">Macro release</option>
-          <option value="policy_decision">Policy decision</option>
-          <option value="geopolitical_event">Geopolitical event</option>
-        </select>
-      </label>
-      <label>
-        <span>Market Symbols</span>
-        <input defaultValue={defaults?.marketSymbols ?? ""} name="marketSymbols" placeholder="Comma-separated" />
-      </label>
-      <label>
-        <span>Polymarket Market ID</span>
-        <input defaultValue={defaults?.polymarketMarketId ?? ""} name="polymarketMarketId" />
-      </label>
+      <div className="form-field">
+        <label htmlFor={`${formId}-question`}>
+          <span>Question</span>
+          <input id={`${formId}-question`} aria-describedby={`${formId}-question-hint`} defaultValue={defaults?.question ?? ""} name="question" required />
+        </label>
+        <p className="field-hint" id={`${formId}-question-hint`}>Ask one Yes or No question with an observable outcome.</p>
+      </div>
+      <div className="form-field">
+        <label htmlFor={`${formId}-deadline`}>
+          <span>Deadline</span>
+          <input id={`${formId}-deadline`} aria-describedby={`${formId}-deadline-hint`} defaultValue={defaults?.deadline ?? ""} name="deadline" required type="datetime-local" />
+        </label>
+        <p className="field-hint" id={`${formId}-deadline-hint`}>Enter your local time. Saved deadlines are displayed in UTC.</p>
+      </div>
+      <div className="form-field form-grid__full">
+        <label>
+          <span>Resolution Criteria</span>
+          <textarea
+            defaultValue={defaults?.resolutionCriteria ?? ""}
+            name="resolutionCriteria"
+            aria-describedby={`${formId}-criteria-hint`}
+            required
+            rows={4}
+          />
+        </label>
+        <p className="field-hint" id={`${formId}-criteria-hint`}>State what counts as Yes, what counts as No, and which source will settle the outcome.</p>
+      </div>
+      <div className="form-field">
+        <label>
+          <span>Entities</span>
+          <input aria-describedby={`${formId}-entities-hint`} defaultValue={defaults?.entities ?? ""} name="entities" placeholder="Comma-separated" required />
+        </label>
+        <p className="field-hint" id={`${formId}-entities-hint`}>People, organizations or places to search for, separated by commas.</p>
+      </div>
+      <div className="form-field">
+        <label>
+          <span>Reference Class</span>
+          <select aria-describedby={`${formId}-class-hint`} defaultValue={defaults?.referenceClass ?? ""} name="referenceClass">
+            <option value="">None</option>
+            <option value="regulatory_approval">Regulatory approval</option>
+            <option value="election">Election</option>
+            <option value="product_launch">Product launch</option>
+            <option value="court_decision">Court decision</option>
+            <option value="macro_release">Macro release</option>
+            <option value="policy_decision">Policy decision</option>
+            <option value="geopolitical_event">Geopolitical event</option>
+          </select>
+        </label>
+        <p className="field-hint" id={`${formId}-class-hint`}>Optional group of similar events used for the base rate. Choose None if none fits.</p>
+      </div>
+      <div className="form-field">
+        <label>
+          <span>Market Symbols</span>
+          <input aria-describedby={`${formId}-symbols-hint`} defaultValue={defaults?.marketSymbols ?? ""} name="marketSymbols" placeholder="Comma-separated" />
+        </label>
+        <p className="field-hint" id={`${formId}-symbols-hint`}>Optional market tickers for evidence lookup; these do not bind a Polymarket prior.</p>
+      </div>
+      <div className="form-field">
+        <label>
+          <span>Polymarket Market ID</span>
+          <input aria-describedby={`${formId}-market-hint`} defaultValue={defaults?.polymarketMarketId ?? ""} name="polymarketMarketId" />
+        </label>
+        <p className="field-hint" id={`${formId}-market-hint`}>Optional ID of the exact binary market, not its URL or event slug. Match its resolution rules to this question.</p>
+      </div>
       <button type="submit">{submitLabel}</button>
     </form>
   );

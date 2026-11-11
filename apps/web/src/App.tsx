@@ -1,3 +1,4 @@
+import { HelpPage } from "./pages/help";
 import {
   MemoryRouter,
   Navigate,
@@ -44,6 +45,7 @@ export function App() {
           <Navigate replace to="/events" />
         ) : (
           <Routes>
+            <Route path="/help" element={<HelpPage />} />
             <Route path="/events" element={<EventsPage />} />
             <Route path="/events/:eventId" element={<EventDetailPage />} />
             <Route path="/watchlists" element={<WatchlistsPage />} />
