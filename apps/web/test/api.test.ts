@@ -99,3 +99,34 @@ describe("recording outcomes", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("API key", () => {
+  async function requestHeaders(): Promise<Headers> {
+    const { listEvents } = await import("../src/api");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response("[]", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listEvents();
+
+    vi.unstubAllGlobals();
+    return new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+  }
+
+  it("sends the configured key with every request", async () => {
+    vi.stubEnv("VITE_API_KEY", "s3cret-key");
+
+    expect((await requestHeaders()).get("x-api-key")).toBe("s3cret-key");
+
+    vi.unstubAllEnvs();
+  });
+
+  it("sends no key header when none is configured", async () => {
+    vi.stubEnv("VITE_API_KEY", "");
+
+    expect((await requestHeaders()).has("x-api-key")).toBe(false);
+
+    vi.unstubAllEnvs();
+  });
+});

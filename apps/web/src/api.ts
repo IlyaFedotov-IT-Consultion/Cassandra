@@ -141,6 +141,13 @@ async function requestJson<T>(
     headers.set("content-type", "application/json");
   }
 
+  // Read per request so the key can be supplied when the app is built or served.
+  const apiKey = String(import.meta.env.VITE_API_KEY ?? "").trim();
+
+  if (apiKey && !headers.has("x-api-key")) {
+    headers.set("x-api-key", apiKey);
+  }
+
   const response = await fetch(`${apiBaseUrl}${path}`, {
     headers,
     ...init,
@@ -424,12 +431,17 @@ export async function retrainCalibrationSnapshot(): Promise<CalibrationSnapshot>
   });
 }
 
-export async function approveCalibrationSnapshot(snapshotId: string): Promise<CalibrationSnapshot> {
+/** `force` approves a snapshot even though its held-out check does not show it helping. */
+export async function approveCalibrationSnapshot(
+  snapshotId: string,
+  options: { force?: boolean } = {},
+): Promise<CalibrationSnapshot> {
   return requestJson(
     `/backtests/calibration-snapshots/${encodeURIComponent(snapshotId)}/approve`,
     CalibrationSnapshotSchema,
     {
       method: "POST",
+      ...(options.force ? { body: JSON.stringify({ force: true }) } : {}),
     },
   );
 }

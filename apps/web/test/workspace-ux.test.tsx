@@ -142,6 +142,11 @@ function trace(overrides: Record<string, unknown> = {}) {
         },
       },
       {
+        stage: "prior",
+        status: "completed",
+        details: { source: "market", probability: 0.979, marketPrice: 0.979, marketLiquidity: 315000, relatedMarketsIgnored: 2 },
+      },
+      {
         stage: "panel_reasoning",
         status: "completed",
         details: {
@@ -369,6 +374,7 @@ describe("judgment trace", () => {
       "Query planning",
       "Retrieval",
       "Relevance rating",
+      "Prior",
       "Panel reasoning",
       "Cross-examination",
       "Aggregation",
@@ -378,6 +384,42 @@ describe("judgment trace", () => {
     expect(within(pipeline).getByText(/33 items/)).toBeVisible();
     expect(within(pipeline).getByText(/polymarket clob failed: upstream timeout/i)).toBeVisible();
     expect(within(pipeline).getByText(/kept 5 of 14/i)).toBeVisible();
+    expect(within(pipeline).getByText(/bound market's price, 97\.9%/i)).toBeVisible();
+    expect(within(pipeline).getByText(/2 related markets found by search were not used/i)).toBeVisible();
+  });
+
+  it("explains an estimated base rate when no market set the prior", async () => {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
+      if (url.pathname === "/judgments/judgment-fed-2") {
+        const estimated = trace({
+          pipelineStages: trace().pipelineStages.map((stage: { stage: string }) =>
+            stage.stage === "prior"
+              ? {
+                  stage: "prior",
+                  status: "completed",
+                  details: {
+                    source: "estimated_base_rate",
+                    probability: 0.12,
+                    referenceClass: "central bank surprise cuts",
+                    rationale: "Unscheduled cuts are rare.",
+                    relatedMarketsIgnored: 0,
+                  },
+                }
+              : stage,
+          ),
+        });
+        return json({ ...judgments[0], verdictTrace: estimated, judgeOpinions: estimated.judgeOpinions });
+      }
+      return base(input, init);
+    });
+
+    renderAt("/judgments/judgment-fed-2");
+
+    const pipeline = await screen.findByRole("list", { name: /pipeline stages/i });
+    expect(within(pipeline).getByText(/estimated base rate of 12\.0%/i)).toBeVisible();
+    expect(within(pipeline).getByText(/unscheduled cuts are rare/i)).toBeVisible();
   });
 
   it("compares every model's samples across the judges and flags the excluded ones", async () => {
@@ -732,6 +774,89 @@ describe("calibration", () => {
 
     expect(await screen.findByText("Brier score")).toBeVisible();
     expect(screen.getByText("0.21")).toBeVisible();
+  });
+
+  function withCalibrationSnapshots(list: unknown[], detail: Record<string, unknown>) {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.pathname === "/backtests/calibration-snapshots") return json(list);
+      if (method === "GET" && url.pathname === "/backtests/calibration-snapshots/snapshot-new") return json(detail);
+      if (method === "POST" && url.pathname === "/backtests/calibration-snapshots/snapshot-new/approve") {
+        await base(input, init);
+        return json({ ...detail, approved: true });
+      }
+      return base(input, init);
+    });
+  }
+
+  it("says judgments run uncalibrated while no snapshot is approved", async () => {
+    withCalibrationSnapshots([snapshots[0]], snapshotDetail(snapshots[0]!));
+
+    renderAt("/calibration");
+
+    const history = await screen.findByRole("list", { name: /snapshot history/i });
+    expect(within(history).queryByText(/in use/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/no snapshot is approved/i)).toBeVisible();
+  });
+
+  it("shows a failed held-out check and only approves the snapshot when asked to override it", async () => {
+    const user = userEvent.setup();
+    const failing = {
+      ...snapshots[0]!,
+      metrics: {
+        ...snapshots[0]!.metrics,
+        heldOut: { folds: 5, sampleSize: 24, brierIdentity: 0.212, brierCalibrated: 0.248, improves: false },
+      },
+    };
+    withCalibrationSnapshots([failing], snapshotDetail(failing));
+
+    renderAt("/calibration");
+
+    expect(await screen.findByText(/held-out check failed/i)).toBeVisible();
+    expect(screen.getByText(/0\.248 calibrated against 0\.212 uncalibrated/i)).toBeVisible();
+    const override = await screen.findByRole("button", { name: /approve anyway/i });
+    expect(screen.queryByRole("button", { name: /^approve snapshot$/i })).not.toBeInTheDocument();
+
+    await user.click(override);
+
+    await waitFor(() => {
+      expect(requests.find((request) => request.path.endsWith("/snapshot-new/approve"))?.body).toEqual({ force: true });
+    });
+  });
+
+  it("approves a snapshot that passed its held-out check without overriding anything", async () => {
+    const user = userEvent.setup();
+    const passing = {
+      ...snapshots[0]!,
+      metrics: {
+        ...snapshots[0]!.metrics,
+        heldOut: { folds: 5, sampleSize: 24, brierIdentity: 0.262, brierCalibrated: 0.214, improves: true },
+      },
+    };
+    withCalibrationSnapshots([passing], snapshotDetail(passing));
+
+    renderAt("/calibration");
+
+    expect(await screen.findByText(/held-out check passed/i)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /^approve snapshot$/i }));
+
+    await waitFor(() => {
+      expect(requests.find((request) => request.path.endsWith("/snapshot-new/approve"))?.body).toBeUndefined();
+    });
+  });
+
+  it("says how far market prices are trusted", async () => {
+    const fitted = {
+      ...snapshotDetail(snapshots[0]!),
+      marketPriorParams: { trustSlope: 0.84, trustIntercept: 0.02, fitted: true, sampleSize: 180 },
+    };
+    withCalibrationSnapshots([snapshots[0]], fitted);
+
+    renderAt("/calibration");
+
+    expect(await screen.findByText(/slope 0\.84 fitted on 180 benchmark prices/i)).toBeVisible();
   });
 });
 

@@ -18,6 +18,7 @@ const STAGE_LABELS: Record<string, string> = {
   query_planning: "Query planning",
   retrieval: "Retrieval",
   relevance_rating: "Relevance rating",
+  prior: "Prior",
   panel_reasoning: "Panel reasoning",
   cross_examination: "Cross-examination",
   aggregation: "Aggregation",
@@ -117,6 +118,39 @@ function StageSummary({ stage }: { stage: Stage }) {
           </p>
           {details.insufficientRelevantEvidence ? (
             <p className="stage__warning">Too little relevant evidence; the verdict uses the prior only.</p>
+          ) : null}
+        </>
+      );
+    }
+    case "prior": {
+      const probability = formatProbability(asNumber(details.probability));
+      const ignored = asNumber(details.relatedMarketsIgnored) ?? 0;
+      const rationale = typeof details.rationale === "string" ? details.rationale : "";
+      const referenceClass = typeof details.referenceClass === "string" ? details.referenceClass : "";
+      return (
+        <>
+          {stage.status === "failed" ? (
+            <p className="stage__warning">
+              The base-rate estimate failed ({String(details.error ?? "unknown error")}); starting from 50%.
+            </p>
+          ) : details.source === "market" ? (
+            <p>The bound market's price, {probability}</p>
+          ) : details.source === "reference_class" ? (
+            <p>Observed base rate of its reference class, {probability}</p>
+          ) : details.source === "estimated_base_rate" ? (
+            <p>
+              Estimated base rate of {probability}
+              {referenceClass ? ` for ${referenceClass}` : ""}
+              {rationale ? `: ${splitRationale(rationale).text}` : ""}
+            </p>
+          ) : (
+            <p>No bound market or base rate; starting from 50%.</p>
+          )}
+          {ignored > 0 ? (
+            <p>
+              {ignored} related market{ignored === 1 ? "" : "s"} found by search {ignored === 1 ? "was" : "were"} not
+              used as the prior.
+            </p>
           ) : null}
         </>
       );
