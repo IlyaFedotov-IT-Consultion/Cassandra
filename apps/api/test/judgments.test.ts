@@ -46,6 +46,47 @@ async function resetDatabase() {
   `);
 }
 
+/**
+ * JSON.parse silently keeps the last of two equal keys, so scan the raw line for
+ * top-level keys that appear more than once.
+ */
+function repeatedTopLevelKeys(line: string): string[] {
+  const seen = new Set<string>();
+  const repeated: string[] = [];
+  let depth = 0;
+  let index = 0;
+
+  while (index < line.length) {
+    const char = line[index];
+
+    if (char === "\"") {
+      let end = index + 1;
+      while (end < line.length && line[end] !== "\"") {
+        end += line[end] === "\\" ? 2 : 1;
+      }
+      const isKey = depth === 1 && line.slice(end + 1).trimStart().startsWith(":");
+      if (isKey) {
+        const key = line.slice(index + 1, end);
+        if (seen.has(key)) {
+          repeated.push(key);
+        }
+        seen.add(key);
+      }
+      index = end + 1;
+      continue;
+    }
+
+    if (char === "{" || char === "[") {
+      depth += 1;
+    } else if (char === "}" || char === "]") {
+      depth -= 1;
+    }
+    index += 1;
+  }
+
+  return repeated;
+}
+
 function createFixtureEnv(overrides: Partial<NodeJS.ProcessEnv> = {}) {
   return getEnv({
     DATABASE_URL,
@@ -401,6 +442,69 @@ describe("judgment routes and service", () => {
     }
   });
 
+  it("lists only the newest judgments when given a limit, and rejects a bad one", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Official launch announcement.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const app = buildApp({
+      dbPool: pool,
+      env: createFixtureEnv(),
+      judgmentQueue: { enqueue: async () => undefined, close: async () => undefined } as JudgmentJobQueue,
+    });
+
+    try {
+      const created: string[] = [];
+      for (let run = 0; run < 3; run += 1) {
+        const response = await app.inject({ method: "POST", url: "/judgments", payload: { eventId: event.id } });
+        created.push(response.json().id);
+      }
+
+      const limited = await app.inject({ method: "GET", url: "/judgments?limit=2" });
+      const all = await app.inject({ method: "GET", url: "/judgments" });
+      const invalid = await app.inject({ method: "GET", url: "/judgments?limit=0" });
+
+      expect(limited.json().map((judgment: { id: string }) => judgment.id)).toEqual([created[2], created[1]]);
+      expect(all.json()).toHaveLength(3);
+      expect(invalid.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("fixes the evaluation time when the judgment is queued, so a retry reuses it", async () => {
+    const event = await createEvent(pool, {
+      question: "Will Example Corp launch Product X by 2026-12-31?",
+      resolutionCriteria: "Official launch announcement.",
+      deadline: "2026-12-31T23:59:59Z",
+      entities: ["Example Corp", "Product X"],
+      referenceClass: "product_launch",
+      marketSymbols: [],
+    });
+    const enqueue = vi.fn(async (_input: { evaluationTime?: string }) => undefined);
+    const app = buildApp({
+      dbPool: pool,
+      env: createFixtureEnv(),
+      judgmentQueue: { enqueue, close: async () => undefined } as JudgmentJobQueue,
+    });
+    const before = Date.now();
+
+    try {
+      const response = await app.inject({ method: "POST", url: "/judgments", payload: { eventId: event.id } });
+
+      expect(response.statusCode).toBe(202);
+      const queuedAt = Date.parse(enqueue.mock.calls[0]?.[0]?.evaluationTime ?? "");
+      expect(queuedAt).toBeGreaterThanOrEqual(before);
+      expect(queuedAt).toBeLessThanOrEqual(Date.now());
+    } finally {
+      await app.close();
+    }
+  });
+
   it("rejects live judgments before queueing when no authoritative search providers are configured", async () => {
     const event = await createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",
@@ -498,6 +602,12 @@ describe("judgment routes and service", () => {
       expect(evidenceLine?.match(/"component":/g) ?? []).toHaveLength(1);
       expect(evidenceLine?.match(/"eventId":/g) ?? []).toHaveLength(1);
       expect(evidenceLine?.match(/"evaluationTime":/g) ?? []).toHaveLength(1);
+
+      expect(lines.some((line) => line.includes("\"event\":\"judgment_execution_log\""))).toBe(true);
+      const linesWithRepeatedKeys = lines
+        .map((line) => ({ line, repeated: repeatedTopLevelKeys(line) }))
+        .filter((entry) => entry.repeated.length > 0);
+      expect(linesWithRepeatedKeys).toEqual([]);
     } finally {
       await app.close();
     }

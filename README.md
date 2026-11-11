@@ -1,4 +1,4 @@
-# Cassandra
+# Cassandra 1.1
 
 Cassandra is a research prototype for multi-source event forecasting. The repo combines a TypeScript orchestration API, a shared schema package, and a Python judge service that produces probabilistic verdict traces and calibration snapshots.
 
@@ -78,7 +78,7 @@ A fuller implementation snapshot lives in [docs/current-status.md](docs/current-
 
    ```bash
    cd services/judge
-   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   uv run uvicorn app.main:app --port 8000 --reload
    ```
 
 6. Run the API watcher.
@@ -122,6 +122,9 @@ The shared environment template is in `.env.example`. The most important values 
 - `REDIS_URL`
 - `LOG_LEVEL`
 - `API_PORT`
+- `API_HOST`
+- `CASSANDRA_CORS_ORIGINS`
+- `CASSANDRA_API_KEY` and `VITE_API_KEY`
 - `JUDGE_BASE_URL`
 - `JUDGE_PORT`
 - `JUDGE_REQUEST_TIMEOUT_MS`
@@ -137,6 +140,13 @@ The shared environment template is in `.env.example`. The most important values 
 - `POLYMARKET_CLOB_URL`
 - `CUSTOM_MARKET_API_BASE_URL`
 - `CUSTOM_MARKET_API_KEY`
+
+Access to the API:
+
+- the API listens on `API_HOST`, which defaults to the loopback interface (`127.0.0.1`)
+- only the browser origins in `CASSANDRA_CORS_ORIGINS` may call it; the default is the local web app. A request from any other origin gets `403`
+- set `CASSANDRA_API_KEY` to require the key as `x-api-key` (or a bearer token) on every route except `/health` and `/ready`. Give the web app the same value as `VITE_API_KEY`
+- in live mode a request can start paid search and model calls, so set the key before you bind the API to another interface
 
 Notable logging behavior:
 
@@ -175,6 +185,19 @@ pnpm harness:real
 ```
 
 The live harness submits judgments through `POST /judgments` and polls `GET /judgments/:id` until the queued run reaches a terminal state.
+
+To produce calibration data in bulk:
+
+```bash
+pnpm harness:calibration                         # prints the plan; runs nothing
+CALIBRATION_CONFIRM=yes pnpm harness:calibration # imports, replays, retrains and reports
+```
+
+The calibration cycle imports a larger set of resolved Polymarket markets, replays them through the live pipeline as one queued evaluation run, retrains calibration on the stored forecasts and reports whether the new snapshot is worth approving. It never approves one. It costs money: every model forecast calls the whole judge ensemble. Its settings are listed at the top of `scripts/harness/calibration-cycle.mts`.
+
+To continue a failed calibration replay, set `CALIBRATION_RUN_ID=<run-id>` together with
+`CALIBRATION_CONFIRM=yes`. The harness resumes that run and skips import; stored forecasts
+are reused. Without confirmation, it only describes the operation.
 
 ## Documentation
 

@@ -42,7 +42,25 @@ const ResearchRunSchema = z
 export type ResearchRunRecord = z.infer<typeof ResearchRunSchema>;
 export type ResearchRunInput = z.infer<typeof ResearchInputSchema>;
 
+// Research runs live in memory only, so the oldest are dropped past this many.
+const MAX_STORED_RESEARCH_RUNS = 200;
 const researchRuns = new Map<string, ResearchRunRecord>();
+
+function storeResearchRun(record: ResearchRunRecord): void {
+  researchRuns.delete(record.id);
+  researchRuns.set(record.id, record);
+
+  while (researchRuns.size > MAX_STORED_RESEARCH_RUNS) {
+    // A Map iterates in insertion order, so its first key is the oldest run.
+    const oldest = researchRuns.keys().next().value;
+
+    if (oldest === undefined) {
+      break;
+    }
+
+    researchRuns.delete(oldest);
+  }
+}
 
 export async function runResearchQuery(
   env: AppEnv,
@@ -81,7 +99,7 @@ export async function runResearchQuery(
     createdAt: new Date().toISOString(),
   });
 
-  researchRuns.set(record.id, record);
+  storeResearchRun(record);
   return record;
 }
 
@@ -107,7 +125,7 @@ export function registerResearchRoutes(
 
     try {
       const record = await runResearch(parsed.data);
-      researchRuns.set(record.id, record);
+      storeResearchRun(record);
       reply.code(201);
       return record;
     } catch (error) {

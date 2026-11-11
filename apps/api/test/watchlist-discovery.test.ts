@@ -96,6 +96,67 @@ describe("clusterCandidateEvidence", () => {
   });
 });
 
+function searchResult(title: string, overrides: Partial<EvidenceItem> = {}): EvidenceItem {
+  // What a live search result looks like: no entities, no claims, unknown stance.
+  return buildEvidenceItem({ title, summary: title, entities: [], claims: [], stance: "unknown", ...overrides });
+}
+
+describe("clustering search results that carry no entities", () => {
+  it("keeps unrelated stories apart", () => {
+    const clusters = clusterCandidateEvidence([
+      searchResult("Fed holds rates steady as inflation cools"),
+      searchResult("Apple unveils new iPhone at September event"),
+      searchResult("Senate passes annual defense spending bill"),
+    ]);
+
+    expect(clusters.map((cluster) => cluster.title).sort()).toEqual([
+      "Apple unveils new iPhone at September event",
+      "Fed holds rates steady as inflation cools",
+      "Senate passes annual defense spending bill",
+    ]);
+  });
+
+  it("groups differently worded headlines about one story", () => {
+    const clusters = clusterCandidateEvidence([
+      searchResult("Fed holds rates steady as inflation cools"),
+      searchResult("Fed holds interest rates steady, signals patience on cuts"),
+      searchResult("Apple unveils new iPhone at September event"),
+    ]);
+
+    expect(clusters).toHaveLength(2);
+    expect(clusters[0]?.supportingEvidenceIds).toHaveLength(2);
+  });
+
+  it("does not merge opposite developments in one story", () => {
+    const clusters = clusterCandidateEvidence([
+      searchResult("Regulator approves Therapy Y for adult patients"),
+      searchResult("Regulator rejects Therapy Y for adult patients"),
+    ]);
+
+    expect(clusters).toHaveLength(2);
+  });
+
+  it("does not call two headlines one story because they share the watchlist's keywords", () => {
+    const headlines = [searchResult("Fed interest rates decision"), searchResult("Fed interest rates outlook")];
+
+    expect(clusterCandidateEvidence(headlines, { genericEntities: ["Fed", "interest rates"] })).toHaveLength(2);
+    // Without knowing those words are shared by the whole watchlist, they look like one story.
+    expect(clusterCandidateEvidence(headlines)).toHaveLength(1);
+  });
+
+  it("splits items by story when their only entities are the watchlist's own keywords", () => {
+    const clusters = clusterCandidateEvidence(
+      [
+        searchResult("Will the Fed cut rates in December?", { entities: ["Fed"] }),
+        searchResult("Will Fed chair Powell resign in 2026?", { entities: ["Fed"] }),
+      ],
+      { genericEntities: ["Fed", "interest rates"] },
+    );
+
+    expect(clusters).toHaveLength(2);
+  });
+});
+
 describe("watchlist discovery", () => {
   beforeAll(async () => {
     await pool.query("select 1");
@@ -233,6 +294,47 @@ describe("watchlist discovery", () => {
     const stored = await listCandidateEventsForWatchlist(pool, watchlist.id);
 
     expect(stored).toHaveLength(1);
+  });
+
+  it("keeps one candidate per story across reruns of live search results, and adds new stories", async () => {
+    const watchlist = await createWatchlist(pool, {
+      name: "Central banks",
+      keywords: ["Fed", "interest rates"],
+      jurisdictions: [],
+      cadence: "daily",
+      sourceToggles: {},
+    });
+    const providerReturning = (titles: string[]) => ({
+      name: "liveSearch",
+      async collect() {
+        return titles.map((title) => searchResult(title, { eventId: watchlist.id }));
+      },
+    });
+
+    const { candidates: initial } = await discoverWatchlistCandidates({
+      pool,
+      watchlist,
+      providers: [providerReturning(["Fed holds rates steady as inflation cools"])],
+      evaluationTime: "2026-10-11T12:00:00Z",
+      mode: "live",
+    });
+    const { candidates: rerun } = await discoverWatchlistCandidates({
+      pool,
+      watchlist,
+      providers: [
+        providerReturning([
+          "Fed holds interest rates steady, signals patience on cuts",
+          "Apple unveils new iPhone at September event",
+        ]),
+      ],
+      evaluationTime: "2026-10-12T12:00:00Z",
+      mode: "live",
+    });
+
+    expect(initial).toHaveLength(1);
+    expect(rerun).toHaveLength(2);
+    expect(rerun.map((candidate) => candidate.id)).toContain(initial[0]?.id);
+    expect(await listCandidateEventsForWatchlist(pool, watchlist.id)).toHaveLength(2);
   });
 
   it("only asks the sources the watchlist has switched on", async () => {

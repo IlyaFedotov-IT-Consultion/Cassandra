@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from app.llm.client import (
+    BaseRateEstimate,
     CrossExaminerResponse,
     EVIDENCE_STRENGTHS,
     EvidenceRating,
@@ -112,6 +113,26 @@ PLAN_SCHEMA: dict[str, Any] = {
     "required": ["subQuestions", "queries"],
 }
 
+BASE_RATE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "referenceClass": {"type": "string"},
+        "probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "rationale": {"type": "string", "minLength": 1},
+    },
+    "required": ["referenceClass", "probability", "rationale"],
+}
+
+BASE_RATE_PROMPT = (
+    "You estimate base rates for forecasting questions. Take the outside view: name a reference class of "
+    "comparable past situations, consider how often they resolved true and how much time is left until "
+    "the deadline, and estimate the probability that this question resolves true. You are given no "
+    "evidence about the current situation and must not assume any. Treat the as-of date as today: ignore "
+    "anything you know about events after the as-of date, including how the question resolved. Return the "
+    "reference class, the probability, and a one- or two-sentence rationale."
+)
+
 RELEVANCE_PROMPT = (
     "You screen evidence for a forecasting question. For every evidence item, rate how useful it is for "
     "forecasting the question on a 1-6 scale: 6 = directly bears on the outcome, 4 = clearly relevant "
@@ -178,6 +199,7 @@ class OpenRouterLLMClient(LLMClient):
         utility_reasoning_effort: str | None = DEFAULT_UTILITY_REASONING_EFFORT,
         utility_max_tokens: int = DEFAULT_UTILITY_MAX_TOKENS,
         retries: int = DEFAULT_RETRIES,
+        request_budget_seconds: float | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         if not api_key:
@@ -197,6 +219,9 @@ class OpenRouterLLMClient(LLMClient):
         self._utility_reasoning_effort = utility_reasoning_effort
         self._utility_max_tokens = utility_max_tokens
         self._retries = retries
+        # A client serves one judge request, so the budget clock starts here. Once the
+        # caller has given up on the request, no further model call is worth paying for.
+        self._deadline = None if request_budget_seconds is None else time.monotonic() + request_budget_seconds
         self._http = http_client or httpx.Client(timeout=timeout)
         self._owns_client = http_client is None
 
@@ -421,6 +446,41 @@ class OpenRouterLLMClient(LLMClient):
             queries=[str(item) for item in parsed.get("queries", []) if isinstance(item, str)],
         )
 
+    def estimate_base_rate(
+        self,
+        *,
+        event: EventInput,
+        evaluation_time: str | None = None,
+    ) -> BaseRateEstimate | None:
+        user_prompt = (
+            f"As of: {evaluation_time or 'unspecified'}\n"
+            f"Question: {event.question}\n"
+            f"Resolution criteria: {event.resolutionCriteria}\n"
+            f"Deadline: {event.deadline}\n"
+            f"Entities: {', '.join(str(entity) for entity in event.entities)}"
+        )
+        parsed = self._chat_json_with_length_retry(
+            model=self._judge_model,
+            messages=[{"role": "system", "content": BASE_RATE_PROMPT}, {"role": "user", "content": user_prompt}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "base_rate_estimate", "strict": True, "schema": BASE_RATE_SCHEMA},
+            },
+            initial_max_tokens=self._judge_max_tokens,
+            reasoning_effort=self._judge_reasoning_effort,
+        )
+        try:
+            probability = float(parsed["probability"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LLMResponseError(f"base rate response missing a probability: {parsed!r}") from exc
+        if not 0.0 <= probability <= 1.0:
+            raise LLMResponseError(f"base rate out of range: {probability}")
+        return BaseRateEstimate(
+            probability=probability,
+            referenceClass=str(parsed.get("referenceClass") or ""),
+            rationale=str(parsed.get("rationale") or ""),
+        )
+
     # -- Helpers -----------------------------------------------------------------
 
     def _build_panel_user_prompt(
@@ -485,14 +545,34 @@ class OpenRouterLLMClient(LLMClient):
 
         last_error: Exception | None = None
         for attempt in range(self._retries + 1):
+            request_options: dict[str, Any] = {}
+            if self._deadline is not None:
+                remaining = self._deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LLMTransportError(
+                        f"judge request budget exhausted before calling {model}; last error: {last_error}"
+                    )
+                request_options["timeout"] = min(self._timeout, remaining)
             try:
-                response = self._http.post(url, headers=headers, json=body)
+                response = self._http.post(url, headers=headers, json=body, **request_options)
             except httpx.TimeoutException as exc:
                 last_error = exc
-                logger.warning("openrouter timeout (attempt %d/%d): %s", attempt + 1, self._retries + 1, exc)
+                logger.warning(
+                    "openrouter timeout (attempt %d/%d): %s",
+                    attempt + 1,
+                    self._retries + 1,
+                    exc,
+                    extra={"event": "openrouter_retry", "reason": "timeout", "attempt": attempt + 1},
+                )
             except httpx.HTTPError as exc:
                 last_error = exc
-                logger.warning("openrouter http error (attempt %d/%d): %s", attempt + 1, self._retries + 1, exc)
+                logger.warning(
+                    "openrouter http error (attempt %d/%d): %s",
+                    attempt + 1,
+                    self._retries + 1,
+                    exc,
+                    extra={"event": "openrouter_retry", "reason": "http_error", "attempt": attempt + 1},
+                )
             else:
                 if response.status_code in RETRYABLE_STATUS:
                     last_error = LLMTransportError(
@@ -503,6 +583,12 @@ class OpenRouterLLMClient(LLMClient):
                         response.status_code,
                         attempt + 1,
                         self._retries + 1,
+                        extra={
+                            "event": "openrouter_retry",
+                            "reason": "retryable_status",
+                            "statusCode": response.status_code,
+                            "attempt": attempt + 1,
+                        },
                     )
                 elif response.status_code >= 400:
                     raise LLMTransportError(
@@ -554,6 +640,12 @@ class OpenRouterLLMClient(LLMClient):
                     model,
                     max_tokens,
                     retry_tokens,
+                    extra={
+                        "event": "openrouter_truncated_retry",
+                        "model": model,
+                        "maxTokens": max_tokens,
+                        "retryMaxTokens": retry_tokens,
+                    },
                 )
                 max_tokens = retry_tokens
 

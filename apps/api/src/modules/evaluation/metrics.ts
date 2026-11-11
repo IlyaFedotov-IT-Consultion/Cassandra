@@ -118,6 +118,75 @@ export function winRateVsReference(
   return wins / comparablePairs.length;
 }
 
+/** A small seeded generator, so a run's interval is the same every time it is computed. */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
+    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export interface ClusteredDifference {
+  /** Mean Brier score minus the reference's, over every forecast. Above zero is worse. */
+  mean: number;
+  low: number;
+  high: number;
+  groups: number;
+}
+
+/**
+ * How much worse (or better) these forecasts score than the reference forecasts on the
+ * same questions, with a 95% interval from resampling whole groups.
+ *
+ * A market forecast at several horizons gives several correlated forecasts, so the unit
+ * that is resampled is the market: treating forecasts as independent would make the
+ * interval too narrow. Returns null when there are fewer than two groups to resample.
+ */
+export function clusteredBrierDifference(
+  pairs: Array<{ groupId: string; predicted: number; outcome: number; referencePredicted?: number }>,
+  options: { resamples?: number; seed?: number } = {},
+): ClusteredDifference | null {
+  const byGroup = new Map<string, { sum: number; count: number }>();
+
+  for (const pair of pairs) {
+    if (typeof pair.referencePredicted !== "number") {
+      continue;
+    }
+
+    const difference = (pair.predicted - pair.outcome) ** 2 - (pair.referencePredicted - pair.outcome) ** 2;
+    const group = byGroup.get(pair.groupId) ?? { sum: 0, count: 0 };
+    group.sum += difference;
+    group.count += 1;
+    byGroup.set(pair.groupId, group);
+  }
+
+  const groups = [...byGroup.values()];
+
+  if (groups.length < 2) {
+    return null;
+  }
+
+  const meanOf = (sample: Array<{ sum: number; count: number }>) =>
+    sample.reduce((total, group) => total + group.sum, 0) /
+    sample.reduce((total, group) => total + group.count, 0);
+  const random = seededRandom(options.seed ?? 7);
+  const resamples = options.resamples ?? 1000;
+  const means = Array.from({ length: resamples }, () =>
+    meanOf(Array.from({ length: groups.length }, () => groups[Math.floor(random() * groups.length)]!)),
+  ).sort((left, right) => left - right);
+
+  return {
+    mean: meanOf(groups),
+    low: means[Math.floor(0.025 * (resamples - 1))]!,
+    high: means[Math.ceil(0.975 * (resamples - 1))]!,
+    groups: groups.length,
+  };
+}
+
 export function sliceMetrics(
   pairs: EvaluationPair[],
   options: {

@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from math import exp, log
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.llm import LLMClient, get_llm_client
 from app.llm.client import LLMError
 from app.models import CalibrationRequest, JudgeRequest, PlanRequest, VerdictTrace
 from app.models_generated import EvidenceItem
+from app.observability import ContextThreadPoolExecutor
 from app.scoring.aggregate import aggregate_posterior
 from app.scoring.calibration import apply_probability_calibration, fit_calibration_snapshot
 from app.scoring.judges.community_signal import evaluate as evaluate_community_signal
@@ -20,16 +20,32 @@ from app.scoring.judges.cross_examiner import evaluate as evaluate_cross_examine
 from app.scoring.judges.official_records import evaluate as evaluate_official_records
 from app.scoring.judges.open_web_research import evaluate as evaluate_open_web_research
 from app.scoring.priors import build_prior_log_odds, extract_market_signal
-from app.scoring.types import CrossExaminerResult
-from app.scoring.uncertainty import posterior_bootstrap_interval
+from app.scoring.types import CrossExaminerResult, PriorResult, RawJudgeOpinion
+from app.scoring.strength_map import DEFAULT_STRENGTH_TO_LOG_BF
+from app.scoring.uncertainty import JudgeSpread, model_spread_interval
 from app.scoring.weights import default_judge_weights, select_regime
 
 
 router = APIRouter()
 
 
-def _llm_dependency() -> Iterator[LLMClient]:
-    llm = get_llm_client()
+# Share of the caller's timeout spent on model calls; the rest covers pooling and the reply.
+REQUEST_BUDGET_SHARE = 0.9
+
+
+def request_budget_seconds(timeout_header: str | None) -> float | None:
+    """How long this request may keep calling models, from the caller's `x-cassandra-timeout-ms`."""
+    try:
+        timeout_ms = float(timeout_header) if timeout_header is not None else None
+    except ValueError:
+        return None
+    if timeout_ms is None or timeout_ms <= 0:
+        return None
+    return timeout_ms / 1000 * REQUEST_BUDGET_SHARE
+
+
+def _llm_dependency(request: Request) -> Iterator[LLMClient]:
+    llm = get_llm_client(request_budget_seconds(request.headers.get("x-cassandra-timeout-ms")))
     try:
         yield llm
     finally:
@@ -179,6 +195,80 @@ def _logit(probability: float) -> float:
     return log(bounded / (1 - bounded))
 
 
+# An estimate made without evidence should never be near-certain.
+BASE_RATE_BOUNDS = (0.02, 0.98)
+
+
+def _bounded_base_rate(probability: float) -> float:
+    low, high = BASE_RATE_BOUNDS
+    return min(max(probability, low), high)
+
+
+def _used_sample_log_bayes_factors(samples: list[dict]) -> list[float]:
+    """The log Bayes factor of each model sample the ensemble median was taken over."""
+    known = [sample for sample in samples if sample.get("evidenceStrength") in DEFAULT_STRENGTH_TO_LOG_BF]
+    # The ensemble drops incoherent samples unless every sample is incoherent.
+    used = [sample for sample in known if not sample.get("excluded")] or known
+    return [DEFAULT_STRENGTH_TO_LOG_BF[sample["evidenceStrength"]] for sample in used]
+
+
+def _resolve_prior(
+    request: JudgeRequest, evidence: list[EvidenceItem], llm: LLMClient
+) -> tuple[PriorResult, dict, list[float]]:
+    """Stage: pick the prior. A bound market or a sampled reference class settles it for
+    free; only when neither exists is the model asked for an outside-view base rate.
+
+    Also returns each ensemble model's base-rate estimate in log-odds (empty unless the
+    prior is an estimate), which the confidence interval resamples."""
+    related_markets_ignored = sum(
+        1
+        for item in evidence
+        if str(item.sourceFamily) == "prediction_market" and (item.metadata or {}).get("matchedBy") == "search"
+    )
+    market_signals = extract_market_signal(evidence)
+    prior = build_prior_log_odds(request.event, request.calibration_snapshot, market_signals=market_signals)
+    status = "completed"
+    details: dict = {}
+    sample_log_odds: list[float] = []
+
+    estimate = getattr(llm, "estimate_base_rate", None)
+    if prior.source == "uninformed" and callable(estimate):
+        try:
+            estimated = estimate(event=request.event, evaluation_time=request.evaluation_time)
+        except LLMError as error:
+            estimated = None
+            status = "failed"
+            details = {"error": str(error)[:300], "fallback": "uninformed prior"}
+        if estimated is not None:
+            prior = build_prior_log_odds(
+                request.event,
+                request.calibration_snapshot,
+                market_signals=market_signals,
+                estimated_base_rate=_bounded_base_rate(float(estimated["probability"])),
+            )
+            sample_log_odds = [
+                _logit(_bounded_base_rate(float(sample["probability"])))
+                for sample in estimated.get("samples") or []
+            ]
+            details = {
+                "model": str(getattr(llm, "model_version", "fake-llm")),
+                "rationale": str(estimated.get("rationale", "")),
+                "referenceClass": estimated.get("referenceClass") or None,
+                "samples": estimated.get("samples") or None,
+            }
+
+    return prior, _stage(
+        "prior",
+        status,
+        source=prior.source,
+        probability=_log_odds_to_probability(prior.prior_log_odds),
+        marketPrice=None if market_signals is None else market_signals.get("price"),
+        marketLiquidity=None if market_signals is None else market_signals.get("depth"),
+        relatedMarketsIgnored=related_markets_ignored,
+        **{key: value for key, value in details.items() if value is not None},
+    ), sample_log_odds
+
+
 def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     ordered_evidence = _sort_evidence_for_judging(request.evidence)
     citations = [
@@ -201,21 +291,41 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     relevant_evidence, relevance_stage, enough_relevant = _rate_relevance(request, ordered_evidence, llm)
     # Prior-only runs (insufficient coverage, or too little relevant evidence after rating)
     # keep the evidence for the market prior and citations, but give the panel nothing to
-    # read, so no LLM call is made.
+    # read, so no panel or cross-examiner call is made.
     prior_only = request.prior_only or not enough_relevant
     panel_evidence = [] if prior_only else relevant_evidence
     # The three judges are independent (and may each fan out to an ensemble), so run them
     # concurrently; result order stays fixed.
-    panel = (evaluate_official_records, evaluate_community_signal, evaluate_open_web_research)
-    with ThreadPoolExecutor(max_workers=len(panel)) as pool:
-        raw_opinions = list(
-            pool.map(
-                lambda evaluate: evaluate(
-                    request.event, panel_evidence, llm=llm, evaluation_time=request.evaluation_time
-                ),
-                panel,
+    panel = (
+        ("official_records", evaluate_official_records),
+        ("community_signal", evaluate_community_signal),
+        ("open_web_research", evaluate_open_web_research),
+    )
+    failed_judges: dict[str, str] = {}
+
+    def run_judge(member):
+        judge_name, evaluate = member
+        try:
+            return evaluate(request.event, panel_evidence, llm=llm, evaluation_time=request.evaluation_time)
+        except LLMError as error:
+            # A judge whose model call failed abstains, exactly like one with nothing to
+            # read; the judges that did answer still decide.
+            failed_judges[judge_name] = str(error)[:300]
+            return RawJudgeOpinion(
+                judge_name=judge_name,
+                probability=0.5,
+                evidence_strength="neutral",
+                rationale=f"{judge_name} could not be evaluated, so it abstains.",
+                warnings=[f"{judge_name} failed: {str(error)[:300]}"],
             )
-        )
+
+    with ContextThreadPoolExecutor(max_workers=len(panel)) as pool:
+        raw_opinions = list(pool.map(run_judge, panel))
+    if failed_judges and not any(opinion.evidence_ids for opinion in raw_opinions):
+        # Nothing but failures: report it, so the caller can retry instead of storing a
+        # verdict that only restates the prior.
+        failures = "; ".join(f"{name}: {message}" for name, message in failed_judges.items())
+        raise HTTPException(status_code=502, detail=f"every panel judge that had evidence failed ({failures})")
     samples_by_judge = {opinion.judge_name: opinion.samples for opinion in raw_opinions}
     informative_opinions = [opinion for opinion in raw_opinions if opinion.evidence_ids]
     cross_examiner = (
@@ -233,11 +343,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             if judge_name in base_weights and isinstance(weight, int | float)
         }
     )
-    prior = build_prior_log_odds(
-        request.event,
-        request.calibration_snapshot,
-        market_signals=extract_market_signal(ordered_evidence),
-    )
+    prior, prior_stage, prior_sample_log_odds = _resolve_prior(request, ordered_evidence, llm)
     aggregate = aggregate_posterior(
         prior_log_odds=prior.prior_log_odds,
         raw_opinions=raw_opinions,
@@ -245,17 +351,27 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
         evidence_lookup={item.id: item for item in relevant_evidence},
         evaluation_time=request.evaluation_time,
     )
-    uses_bootstrap = len(aggregate.informative_contributions) >= 2
-    if uses_bootstrap:
-        interval = posterior_bootstrap_interval(
-            prior_log_odds=prior.prior_log_odds,
-            contributions=aggregate.informative_contributions,
-            weighted_log_odds=aggregate.informative_weighted_log_odds,
-            seed=11,
-        )
+    # The range says how much the forecast depends on which models were asked. It needs an
+    # ensemble: with one model there is no spread to measure.
+    interval = model_spread_interval(
+        prior_log_odds=prior.prior_log_odds,
+        judges=[
+            JudgeSpread(
+                multiplier=judge.multiplier,
+                base_weight=judge.base_weight,
+                log_bayes_factor=judge.log_bayes_factor,
+                sample_log_bayes_factors=_used_sample_log_bayes_factors(samples_by_judge.get(judge.judge_name, [])),
+            )
+            for judge in aggregate.informative_judges
+        ],
+        prior_sample_log_odds=prior_sample_log_odds,
+        seed=11,
+    )
+    measured_spread = interval is not None
+    if interval is not None:
         interval_low, interval_high = interval.low, interval.high
     else:
-        # Too few informative judges to resample: report a fixed, explicitly labelled band.
+        # No spread was measured: report a fixed, explicitly labelled band.
         posterior_log_odds = _logit(aggregate.posterior_probability)
         interval_low = _log_odds_to_probability(posterior_log_odds - FALLBACK_HALF_WIDTH_LOG_ODDS)
         interval_high = _log_odds_to_probability(posterior_log_odds + FALLBACK_HALF_WIDTH_LOG_ODDS)
@@ -279,6 +395,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     confidence_high = max(calibrated_low, calibrated_high, final_probability)
     pipeline_stages = [
         relevance_stage,
+        prior_stage,
         _stage(
             "panel_reasoning",
             "skipped" if prior_only else "completed",
@@ -291,6 +408,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
                 }
                 for opinion in raw_opinions
             },
+            **({"failedJudges": failed_judges} if failed_judges else {}),
         ),
         _stage(
             "cross_examination",
@@ -348,7 +466,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
             ],
             "ensembleMethod": "logarithmic_opinion_pool",
             "calibrationMethod": calibration_method,
-            "uncertaintyMethod": "bootstrap" if uses_bootstrap else "none",
+            "uncertaintyMethod": "model_spread" if measured_spread else "none",
             "weightRegime": select_regime(request.calibration_snapshot.resolvedOutcomeCount),
             "replayFidelity": "exact",
             "conflicts": cross_examiner.conflicts,
@@ -412,5 +530,7 @@ def calibrate(request: CalibrationRequest) -> dict:
     snapshot = fit_calibration_snapshot(
         historical_traces=[trace.model_dump(by_alias=True, exclude_none=True) for trace in request.historical_traces],
         resolved_outcomes=[outcome.model_dump(by_alias=True, exclude_none=True) for outcome in request.resolved_outcomes],
+        market_price_pairs=[pair.model_dump(by_alias=True, exclude_none=True) for pair in request.market_price_pairs],
+        forecast_pairs=[pair.model_dump(by_alias=True) for pair in request.forecast_pairs],
     )
     return snapshot.model_dump(by_alias=True, exclude_none=True)

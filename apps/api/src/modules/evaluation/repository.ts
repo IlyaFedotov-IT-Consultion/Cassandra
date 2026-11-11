@@ -92,7 +92,16 @@ function mapEvaluationRunRow(
     replayFidelity: String(row.replay_fidelity),
     leakageWarnings: Array.isArray(row.leakage_warnings) ? row.leakage_warnings : [],
     createdAt: toIsoString(row.created_at),
+    ...mapRunState(row),
   });
+}
+
+function mapRunState(row: Record<string, unknown>) {
+  return {
+    status: typeof row.status === "string" ? row.status : "completed",
+    progress: row.progress && typeof row.progress === "object" ? row.progress : null,
+    error: typeof row.error === "string" ? row.error : null,
+  };
 }
 
 function mapEvaluationRunSummaryRow(row: Record<string, unknown>): EvaluationRunSummary {
@@ -108,6 +117,7 @@ function mapEvaluationRunSummaryRow(row: Record<string, unknown>): EvaluationRun
     replayFidelity: String(row.replay_fidelity),
     leakageWarnings: Array.isArray(row.leakage_warnings) ? row.leakage_warnings : [],
     createdAt: toIsoString(row.created_at),
+    ...mapRunState(row),
   });
 }
 
@@ -213,6 +223,7 @@ export async function upsertBenchmarkMarkets(
           resolved_value = EXCLUDED.resolved_value,
           market_url = EXCLUDED.market_url,
           end_date = EXCLUDED.end_date,
+          is_current = TRUE,
           updated_at = NOW()
         WHERE benchmark_markets.benchmark_set_id = EXCLUDED.benchmark_set_id
         RETURNING *
@@ -264,25 +275,14 @@ export async function syncBenchmarkMarkets(
   benchmarkSetId: string,
   benchmarkMarketIds: string[],
 ): Promise<number> {
-  const result =
-    benchmarkMarketIds.length > 0
-      ? await pool.query(
-          `
-            DELETE FROM benchmark_markets
-            WHERE benchmark_set_id = $1
-              AND NOT (id = ANY($2::text[]))
-            RETURNING id
-          `,
-          [benchmarkSetId, benchmarkMarketIds],
-        )
-      : await pool.query(
-          `
-            DELETE FROM benchmark_markets
-            WHERE benchmark_set_id = $1
-            RETURNING id
-          `,
-          [benchmarkSetId],
-        );
+  // Selection membership changes; historical prices and paid forecasts must survive.
+  const result = await pool.query(
+    `UPDATE benchmark_markets SET is_current = FALSE
+     WHERE benchmark_set_id = $1 AND is_current = TRUE
+       AND NOT (id = ANY($2::text[]))
+     RETURNING id`,
+    [benchmarkSetId, benchmarkMarketIds],
+  );
 
   return result.rowCount ?? result.rows.length;
 }
@@ -290,20 +290,22 @@ export async function syncBenchmarkMarkets(
 export async function listBenchmarkMarkets(
   pool: Pool,
   benchmarkSetId?: string,
+  includeHistorical = false,
 ): Promise<BenchmarkMarket[]> {
   const result = benchmarkSetId
     ? await pool.query(
         `
           SELECT *
           FROM benchmark_markets
-          WHERE benchmark_set_id = $1
+          WHERE benchmark_set_id = $1 AND ($2 OR is_current)
           ORDER BY resolved_at DESC, id ASC
         `,
-        [benchmarkSetId],
+        [benchmarkSetId, includeHistorical],
       )
     : await pool.query(`
         SELECT *
         FROM benchmark_markets
+        WHERE is_current
         ORDER BY resolved_at DESC, id ASC
       `);
 
@@ -319,6 +321,7 @@ export async function listBenchmarkSets(pool: Pool): Promise<BenchmarkSetSummary
       MAX(resolved_at) AS latest_resolved_at,
       ARRAY_AGG(DISTINCT theme ORDER BY theme) AS themes
     FROM benchmark_markets
+    WHERE is_current
     GROUP BY benchmark_set_id
     ORDER BY latest_resolved_at DESC, benchmark_set_id ASC
   `);
@@ -463,9 +466,15 @@ export async function listEvaluationPredictionsForRun(
   return result.rows.map((row) => mapEvaluationPredictionRow(row as Record<string, unknown>));
 }
 
+/** A run's result: everything about a run that is computed, as opposed to stored state. */
+export type EvaluationRunResult = Pick<
+  EvaluationRun,
+  "benchmarkSetId" | "cutoffs" | "baselines" | "overallMetrics" | "sliceResults" | "replayFidelity" | "leakageWarnings"
+>;
+
 async function insertEvaluationRun(
   queryable: Queryable,
-  input: Omit<EvaluationRun, "id" | "createdAt">,
+  input: EvaluationRunResult,
 ): Promise<EvaluationRun> {
   const runId = randomUUID();
   const runResult = await queryable.query(
@@ -531,7 +540,7 @@ async function insertEvaluationRun(
 
 export async function createEvaluationRun(
   pool: Pool,
-  input: Omit<EvaluationRun, "id" | "createdAt">,
+  input: EvaluationRunResult,
 ): Promise<EvaluationRun> {
   const client = await pool.connect();
 
@@ -551,7 +560,7 @@ export async function createEvaluationRun(
 export async function createEvaluationRunWithPredictions(
   pool: Pool,
   input: {
-    run: Omit<EvaluationRun, "id" | "createdAt">;
+    run: EvaluationRunResult;
     predictions: EvaluationPredictionInput[];
   },
 ): Promise<EvaluationRun> {
@@ -595,4 +604,157 @@ export async function getEvaluationRunById(
     runResult.rows[0] as Record<string, unknown>,
     sliceResult.rows.map((row) => mapSliceMetricRow(row as Record<string, unknown>)),
   );
+}
+
+/** What a queued run was asked to do, kept so the worker (and a resumed run) can read it back. */
+export interface EvaluationRunRequest {
+  benchmarkSetId: string;
+  benchmarkMarketIds?: string[];
+  baselines?: EvaluationRun["baselines"];
+}
+
+export async function createQueuedEvaluationRun(
+  pool: Pool,
+  input: {
+    benchmarkSetId: string;
+    baselines: EvaluationRun["baselines"];
+    cutoffs?: string[];
+    request: EvaluationRunRequest;
+    totalMarkets: number;
+  },
+): Promise<EvaluationRun> {
+  const result = await pool.query(
+    `
+      INSERT INTO evaluation_runs (
+        id, benchmark_set_id, cutoffs, baselines, overall_metrics, replay_fidelity,
+        leakage_warnings, status, progress, request
+      )
+      VALUES ($1, $2, $3::jsonb, $4::jsonb, '{}'::jsonb, 'approximate', '[]'::jsonb, 'queued', $5::jsonb, $6::jsonb)
+      RETURNING *
+    `,
+    [
+      randomUUID(),
+      input.benchmarkSetId,
+      JSON.stringify(input.cutoffs ?? ["30d", "7d", "1d", "6h"]),
+      JSON.stringify(input.baselines),
+      JSON.stringify({ completedMarkets: 0, totalMarkets: input.totalMarkets }),
+      JSON.stringify(input.request),
+    ],
+  );
+
+  return mapEvaluationRunRow(result.rows[0] as Record<string, unknown>, []);
+}
+
+export async function getEvaluationRunRequest(
+  pool: Pool,
+  runId: string,
+): Promise<{ request: EvaluationRunRequest; leakageWarnings: string[] } | null> {
+  const result = await pool.query(`SELECT request, leakage_warnings FROM evaluation_runs WHERE id = $1`, [runId]);
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+
+  if (!row || !row.request || typeof row.request !== "object" || !("benchmarkSetId" in row.request)) {
+    return null;
+  }
+
+  return {
+    request: row.request as EvaluationRunRequest,
+    leakageWarnings: Array.isArray(row.leakage_warnings) ? (row.leakage_warnings as string[]) : [],
+  };
+}
+
+export async function queueFailedEvaluationRun(pool: Pool, runId: string): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE evaluation_runs SET status = 'queued', error = NULL
+     WHERE id = $1 AND status = 'failed' AND request ? 'benchmarkSetId'
+     RETURNING id`,
+    [runId],
+  );
+  return result.rows.length === 1;
+}
+
+export async function markEvaluationRunRunning(pool: Pool, runId: string): Promise<void> {
+  await pool.query(`UPDATE evaluation_runs SET status = 'running', error = NULL WHERE id = $1`, [runId]);
+}
+
+/** Records how far a run has got, with what it has learned about its own fidelity so far. */
+export async function recordEvaluationRunProgress(
+  pool: Pool,
+  runId: string,
+  progress: {
+    completedMarkets: number;
+    totalMarkets: number;
+    replayFidelity: EvaluationRun["replayFidelity"];
+    leakageWarnings: string[];
+  },
+): Promise<void> {
+  await pool.query(
+    `
+      UPDATE evaluation_runs
+      SET progress = $2::jsonb, replay_fidelity = $3, leakage_warnings = $4::jsonb
+      WHERE id = $1
+    `,
+    [
+      runId,
+      JSON.stringify({ completedMarkets: progress.completedMarkets, totalMarkets: progress.totalMarkets }),
+      progress.replayFidelity,
+      JSON.stringify(progress.leakageWarnings),
+    ],
+  );
+}
+
+export async function failEvaluationRun(pool: Pool, runId: string, error: string): Promise<void> {
+  await pool.query(`UPDATE evaluation_runs SET status = 'failed', error = $2 WHERE id = $1`, [runId, error]);
+}
+
+/** Stores a finished run's scores and marks it complete. */
+export async function completeEvaluationRun(
+  pool: Pool,
+  runId: string,
+  result: Pick<EvaluationRun, "overallMetrics" | "sliceResults" | "replayFidelity" | "leakageWarnings">,
+): Promise<void> {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `
+        UPDATE evaluation_runs
+        SET status = 'completed', error = NULL, overall_metrics = $2::jsonb,
+            replay_fidelity = $3, leakage_warnings = $4::jsonb
+        WHERE id = $1
+      `,
+      [runId, JSON.stringify(result.overallMetrics), result.replayFidelity, JSON.stringify(result.leakageWarnings)],
+    );
+    await client.query(`DELETE FROM evaluation_slice_metrics WHERE evaluation_run_id = $1`, [runId]);
+
+    for (const slice of result.sliceResults) {
+      await client.query(
+        `
+          INSERT INTO evaluation_slice_metrics (
+            id, evaluation_run_id, slice_key, baseline, brier_score, log_loss,
+            average_absolute_error, win_rate_vs_polymarket, sample_size
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `,
+        [
+          randomUUID(),
+          runId,
+          slice.sliceKey,
+          slice.baseline,
+          slice.brierScore,
+          slice.logLoss,
+          slice.averageAbsoluteError,
+          slice.winRateVsPolymarket ?? null,
+          slice.sampleSize,
+        ],
+      );
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

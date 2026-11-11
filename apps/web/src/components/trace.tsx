@@ -18,6 +18,7 @@ const STAGE_LABELS: Record<string, string> = {
   query_planning: "Query planning",
   retrieval: "Retrieval",
   relevance_rating: "Relevance rating",
+  prior: "Prior",
   panel_reasoning: "Panel reasoning",
   cross_examination: "Cross-examination",
   aggregation: "Aggregation",
@@ -121,17 +122,61 @@ function StageSummary({ stage }: { stage: Stage }) {
         </>
       );
     }
+    case "prior": {
+      const probability = formatProbability(asNumber(details.probability));
+      const ignored = asNumber(details.relatedMarketsIgnored) ?? 0;
+      const rationale = typeof details.rationale === "string" ? details.rationale : "";
+      const referenceClass = typeof details.referenceClass === "string" ? details.referenceClass : "";
+      return (
+        <>
+          {stage.status === "failed" ? (
+            <p className="stage__warning">
+              The base-rate estimate failed ({String(details.error ?? "unknown error")}); starting from 50%.
+            </p>
+          ) : details.source === "market" ? (
+            <p>The bound market's price, {probability}</p>
+          ) : details.source === "reference_class" ? (
+            <p>Observed base rate of its reference class, {probability}</p>
+          ) : details.source === "estimated_base_rate" ? (
+            <p>
+              Estimated base rate of {probability}
+              {referenceClass ? ` for ${referenceClass}` : ""}
+              {rationale ? `: ${splitRationale(rationale).text}` : ""}
+            </p>
+          ) : (
+            <p>No bound market or base rate; starting from 50%.</p>
+          )}
+          {ignored > 0 ? (
+            <p>
+              {ignored} related market{ignored === 1 ? "" : "s"} found by search {ignored === 1 ? "was" : "were"} not
+              used as the prior.
+            </p>
+          ) : null}
+        </>
+      );
+    }
     case "panel_reasoning": {
       const models = typeof details.models === "string" ? details.models.replace(/^ensemble\[|\]$/g, "").split(",") : [];
       const judges = details.judges && typeof details.judges === "object"
         ? (details.judges as Record<string, { samples?: number; excludedSamples?: number }>)
         : {};
       const excluded = Object.values(judges).reduce((sum, judge) => sum + (judge.excludedSamples ?? 0), 0);
+      const failedJudges =
+        details.failedJudges && typeof details.failedJudges === "object"
+          ? Object.entries(details.failedJudges as Record<string, unknown>)
+          : [];
       return (
-        <p>
-          {models.length > 0 ? models.map(shortModelName).join(", ") : "Fake LLM"}
-          {excluded > 0 ? `; ${excluded} incoherent sample${excluded === 1 ? "" : "s"} excluded` : ""}
-        </p>
+        <>
+          <p>
+            {models.length > 0 ? models.map(shortModelName).join(", ") : "Fake LLM"}
+            {excluded > 0 ? `; ${excluded} incoherent sample${excluded === 1 ? "" : "s"} excluded` : ""}
+          </p>
+          {failedJudges.map(([judge, error]) => (
+            <p key={judge} className="stage__warning">
+              {humanizeToken(judge)} failed and abstained: {String(error)}
+            </p>
+          ))}
+        </>
       );
     }
     case "cross_examination":
@@ -190,6 +235,12 @@ export function PipelineStages({ stages }: { stages: Stage[] }) {
   );
 }
 
+function describeSamples(samples: EnsembleSample[]) {
+  const excluded = samples.filter((sample) => sample.excluded).length;
+  const count = `${samples.length} model sample${samples.length === 1 ? "" : "s"}`;
+  return excluded > 0 ? `${count}, ${excluded} excluded` : count;
+}
+
 export function JudgeCard({ opinion, samples }: { opinion: Opinion; samples: EnsembleSample[] }) {
   const { model, text } = splitRationale(opinion.rationale);
   const name = humanizeToken(opinion.judgeName);
@@ -218,27 +269,9 @@ export function JudgeCard({ opinion, samples }: { opinion: Opinion; samples: Ens
       <p className="judge-card__rationale">{text}</p>
       {model ? <p className="judge-card__source">Rationale from {shortModelName(model)}</p> : null}
       {samples.length > 0 ? (
-        <table className="sample-table" aria-label={`${name} samples`}>
-          <thead>
-            <tr>
-              <th scope="col">Model</th>
-              <th scope="col">Probability</th>
-              <th scope="col">Evidence strength</th>
-            </tr>
-          </thead>
-          <tbody>
-            {samples.map((sample) => (
-              <tr key={sample.model} className={sample.excluded ? "sample-table__row--excluded" : undefined}>
-                <td>{shortModelName(sample.model)}</td>
-                <td>{formatProbability(sample.probability)}</td>
-                <td>
-                  {humanizeToken(sample.evidenceStrength)}
-                  {sample.excluded ? <span className="sample-table__note">Excluded: {sample.excluded}</span> : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <p className="judge-card__source">
+          {describeSamples(samples)}; each is plotted under Model agreement.
+        </p>
       ) : null}
     </article>
   );

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import exp
+from math import exp, log
 from typing import Literal
 
 
@@ -33,18 +33,31 @@ def update_expert_weights(
     current_weights: dict[str, float],
     regrets: dict[str, float],
     resolved_outcome_count: int,
-    base_step_size: float = 0.2,
+    base_step_size: float = 0.5,
     min_weight: float = 0.05,
     max_weight: float = 0.8,
 ) -> dict[str, float]:
+    """Hedge update: each judge's weight is scaled by exp(-step * regret).
+
+    `regrets` are cumulative over every resolved forecast, so the weights move further as
+    evidence about a judge accumulates. A judge with no regret keeps its relative weight.
+    """
     regime = select_regime(resolved_outcome_count)
 
     if regime == "cold_start":
         return dict(current_weights)
 
     step_size = base_step_size * (0.5 if regime == "warming" else 1.0)
+    log_weights = {
+        judge_name: log(weight) - step_size * regrets.get(judge_name, 0.0)
+        for judge_name, weight in current_weights.items()
+        if weight > 0
+    }
+    # Subtracting a shared offset preserves the normalized update and prevents
+    # cumulative regrets from overflowing (or all weights from underflowing).
+    maximum = max(log_weights.values(), default=0.0)
     updated = {
-        judge_name: current_weights[judge_name] * exp(-step_size * regrets.get(judge_name, 0.0))
+        judge_name: exp(log_weights[judge_name] - maximum) if judge_name in log_weights else 0.0
         for judge_name in current_weights
     }
     normalized = _normalize(updated)

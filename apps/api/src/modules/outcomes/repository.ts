@@ -47,9 +47,3 @@ export async function listOutcomes(pool: Pool, eventId?: string): Promise<Outcom
 
   return result.rows.map((row) => mapOutcomeRow(row as Record<string, unknown>));
 }
-
-export async function countOutcomes(pool: Pool): Promise<number> {
-  const result = await pool.query(`SELECT COUNT(*)::int AS count FROM outcomes`);
-
-  return Number(result.rows[0]?.count ?? 0);
-}

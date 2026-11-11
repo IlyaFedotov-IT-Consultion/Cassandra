@@ -56,7 +56,12 @@ export const CalibrationMethodSchema = z.enum([
   "logistic",
   "beta",
 ]);
-export const UncertaintyMethodSchema = z.enum(["none", "bootstrap"]);
+/**
+ * How the confidence range was made. `model_spread` resamples the ensemble's models;
+ * `none` is a fixed-width band, used when no spread was measured. `bootstrap` is the
+ * earlier resampling of the panel's two or three judges, kept so older traces still parse.
+ */
+export const UncertaintyMethodSchema = z.enum(["none", "bootstrap", "model_spread"]);
 export const BaselineNameSchema = z.enum([
   "base_rate_only",
   "polymarket_only",
@@ -453,6 +458,24 @@ export const EvaluationSliceResultSchema = z
   })
   .strict();
 
+/** A run is queued, then works through its markets, then is scored. */
+export const EvaluationRunStatusSchema = z.enum(["queued", "running", "completed", "failed"]);
+
+export const EvaluationRunProgressSchema = z
+  .object({
+    completedMarkets: z.number().int().min(0),
+    totalMarkets: z.number().int().min(0),
+  })
+  .strict();
+
+const evaluationRunStateFields = {
+  /** Runs stored before runs were queued have no status and are complete. */
+  status: EvaluationRunStatusSchema.default("completed"),
+  progress: EvaluationRunProgressSchema.nullable().default(null),
+  /** Why a failed run stopped. Its finished markets keep their predictions. */
+  error: z.string().nullable().default(null),
+};
+
 export const EvaluationRunSchema = z
   .object({
     id: IdSchema,
@@ -464,6 +487,7 @@ export const EvaluationRunSchema = z
     replayFidelity: ReplayFidelitySchema,
     leakageWarnings: z.array(z.string().min(1)).default([]),
     createdAt: TimestampSchema,
+    ...evaluationRunStateFields,
   })
   .strict();
 
@@ -477,6 +501,7 @@ export const EvaluationRunSummarySchema = z
     replayFidelity: ReplayFidelitySchema,
     leakageWarnings: z.array(z.string().min(1)).default([]),
     createdAt: TimestampSchema,
+    ...evaluationRunStateFields,
   })
   .strict();
 

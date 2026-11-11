@@ -41,6 +41,20 @@ class PriorResult:
     market_probability: float | None
     alpha: float
     reference_class_fallback: bool
+    # "market", "reference_class", "estimated_base_rate" or "uninformed".
+    source: str = "uninformed"
+
+
+@dataclass(slots=True)
+class PooledJudge:
+    """How one informative judge entered the pool: contribution = multiplier * log_bayes_factor."""
+
+    judge_name: str
+    # Pool weight, dependency discount, evidence quality and freshness multiplied together.
+    multiplier: float
+    # The snapshot's weight for the judge, which disagreement shrinkage is scaled by.
+    base_weight: float
+    log_bayes_factor: float
 
 
 @dataclass(slots=True)
@@ -52,8 +66,8 @@ class AggregateResult:
     raw_probability: float
     posterior_probability: float
     shrinkage: float
-    informative_contributions: list[float] = field(default_factory=list)
-    informative_weighted_log_odds: list[float] = field(default_factory=list)
+    # One entry per judge that read evidence, in panel order.
+    informative_judges: list[PooledJudge] = field(default_factory=list)
 
 
 @dataclass(slots=True)

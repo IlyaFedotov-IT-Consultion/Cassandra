@@ -1,4 +1,3 @@
-from math import exp, log
 
 from fastapi.testclient import TestClient
 
@@ -132,7 +131,7 @@ def test_judge_endpoint_applies_calibration_map_to_final_probability() -> None:
     assert payload["finalProbability"] > payload["rawPosteriorProbability"]
 
 
-def test_judge_endpoint_reports_the_blended_prior_probability() -> None:
+def test_judge_endpoint_uses_a_bound_market_price_as_the_prior() -> None:
     app.dependency_overrides[_llm_dependency] = lambda: FakeLLMClient({})
     try:
         response = client.post(
@@ -208,20 +207,9 @@ def test_judge_endpoint_reports_the_blended_prior_probability() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    base_rate_probability = (15 + 1) / (20 + 2)
-    market_confidence = (1 - 0.05) * (1 - 0.1) * (1 - exp(-50000 / 50000))
-    market_probability = 1 / (1 + exp(-market_confidence * log(0.7 / 0.3)))
-    expected_prior = 1 / (
-        1
-        + exp(
-            -(
-                0.6 * log(base_rate_probability / (1 - base_rate_probability))
-                + 0.4 * log(market_probability / (1 - market_probability))
-            )
-        )
-    )
-
-    assert abs(payload["priorProbability"] - expected_prior) < 1e-6
+    # A bound market is the prior as priced: neither the reference-class base rate (16/22)
+    # nor the market's depth or spread moves it.
+    assert abs(payload["priorProbability"] - 0.7) < 1e-6
 
 
 def test_judge_endpoint_rejects_invalid_payload() -> None:
@@ -556,3 +544,75 @@ def test_ensemble_samples_and_model_version_are_recorded_in_the_trace() -> None:
     assert [sample["model"] for sample in web["details"]["samples"]] == ["model-a", "model-b"]
     opinion = next(item for item in payload["judgeOpinions"] if item["judgeName"] == "open_web_research")
     assert opinion["logBayesFactor"] == 1.0
+
+
+def _post_with_llm(llm, evidence: list[dict]) -> dict:
+    app.dependency_overrides[_llm_dependency] = lambda: llm
+    try:
+        response = client.post(
+            "/judge",
+            json={
+                "eventId": "event-review",
+                "event": {
+                    "question": "Will Example Corp launch Product X by 2026-12-31?",
+                    "resolutionCriteria": "Official launch announcement.",
+                    "deadline": "2026-12-31T23:59:59Z",
+                    "entities": ["Example Corp", "Product X"],
+                    "referenceClass": None,
+                    "marketSymbols": [],
+                },
+                "evaluationTime": "2026-10-11T12:00:00Z",
+                "evidence": evidence,
+                "calibrationSnapshot": _review_snapshot(),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _web_member(probability: float, strength: str) -> FakeLLMClient:
+    return FakeLLMClient(
+        {"open_web_research": {"probability": probability, "evidenceStrength": strength, "rationale": strength}}
+    )
+
+
+def test_range_reflects_how_far_the_ensemble_models_disagreed() -> None:
+    from app.llm.ensemble import EnsembleLLMClient
+
+    evidence = [_review_evidence("web-1", "web"), _review_evidence("web-2", "web")]
+    agreeing = _post_with_llm(
+        EnsembleLLMClient([(name, _web_member(0.8, "moderate_for")) for name in ("model-a", "model-b", "model-c")]),
+        evidence,
+    )
+    split = _post_with_llm(
+        EnsembleLLMClient(
+            [
+                ("model-a", _web_member(0.9, "strong_for")),
+                ("model-b", _web_member(0.8, "moderate_for")),
+                ("model-c", _web_member(0.45, "weak_against")),
+            ]
+        ),
+        evidence,
+    )
+
+    assert agreeing["uncertaintyMethod"] == "model_spread"
+    assert split["uncertaintyMethod"] == "model_spread"
+    assert agreeing["finalProbability"] == split["finalProbability"]
+    assert agreeing["confidenceHigh"] - agreeing["confidenceLow"] < 1e-9
+    assert split["confidenceHigh"] - split["confidenceLow"] > 0.2
+    assert split["confidenceLow"] < split["finalProbability"] < split["confidenceHigh"]
+
+
+def test_range_is_a_labelled_fixed_band_when_only_one_model_was_asked() -> None:
+    evidence = [
+        _review_evidence("web-1", "web"),
+        _review_evidence("web-2", "web"),
+        _review_evidence("official-1", "official"),
+    ]
+
+    payload = _post_with_llm(FakeLLMClient({}), evidence)
+
+    assert payload["uncertaintyMethod"] == "none"
+    assert payload["confidenceLow"] < payload["finalProbability"] < payload["confidenceHigh"]

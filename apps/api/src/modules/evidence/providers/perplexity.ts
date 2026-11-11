@@ -1,5 +1,6 @@
 import type { EvidenceItem } from "@cassandra/shared";
 
+import { classifySource } from "../sourceFamily.js";
 import type { EvidenceProvider } from "../types.js";
 import {
   createProviderEvidenceItem,
@@ -37,17 +38,22 @@ export function createPerplexityProvider(config: {
               },
             );
 
-      return payload.results.map((document) =>
-        createProviderEvidenceItem({
+      return payload.results.map((document) => {
+        // A government, official or community page is that, whoever found it. Everything
+        // else stays research material for the open-web judge.
+        const classified = input.mode === "fixture" ? null : classifySource(document.url, input.event.entities);
+        const recognised = classified && classified.sourceFamily !== "web" ? classified : null;
+
+        return createProviderEvidenceItem({
           eventId: input.event.id,
-          sourceFamily: "llm_research",
-          sourceType: "perplexity_search_result",
+          sourceFamily: recognised?.sourceFamily ?? "llm_research",
+          sourceType: recognised?.sourceType ?? "perplexity_search_result",
           document,
           metadata: {
             provider: "perplexity",
           },
-        }),
-      );
+        });
+      });
     },
   };
 }

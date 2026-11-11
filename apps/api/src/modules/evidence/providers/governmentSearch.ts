@@ -6,6 +6,7 @@ import {
   loadProviderFixture,
 } from "./fixtureLoader.js";
 import type { ProviderDocument } from "./fixtureLoader.js";
+import { createSearchEvidenceItem } from "../sourceFamily.js";
 import { createZaiWebSearch, searchWithPlannedQueries, type WebSearchFn } from "./webSearch.js";
 
 interface GovernmentPayload {
@@ -23,22 +24,25 @@ export function createGovernmentSearchProvider(
   return {
     name: "governmentSearch",
     async collect(input): Promise<EvidenceItem[]> {
-      const payload =
-        input.mode === "fixture"
-          ? await loadProviderFixture<GovernmentPayload>("governmentSearch", input.event.question)
-          : {
-              results: await searchWithPlannedQueries(
-                search,
-                {
-                  count: 9,
-                  domains,
-                  providerName: "governmentSearch",
-                  query: `${input.event.question} ${input.event.entities.join(" ")} regulator government notice official filing`,
-                  recency: "oneYear",
-                },
-                input.queries,
-              ),
-            };
+      if (input.mode !== "fixture") {
+        const results = await searchWithPlannedQueries(
+          search,
+          {
+            count: 9,
+            domains,
+            providerName: "governmentSearch",
+            query: `${input.event.question} ${input.event.entities.join(" ")} regulator government notice official filing`,
+            recency: "oneYear",
+          },
+          input.queries,
+        );
+
+        return results.map((document) =>
+          createSearchEvidenceItem({ event: input.event, document, provider: "governmentSearch", queryIntent: "government" }),
+        );
+      }
+
+      const payload = await loadProviderFixture<GovernmentPayload>("governmentSearch", input.event.question);
 
       return payload.results.map((document) =>
         createProviderEvidenceItem({

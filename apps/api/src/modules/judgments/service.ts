@@ -17,8 +17,10 @@ import type { AppEnv } from "../../config/env.js";
 import type { AppLogger } from "../../lib/logger.js";
 import {
   InMemoryEvidenceCacheStore,
+  buildEvidenceCacheKey,
   collectEvidenceForEventWithCache,
   createRedisEvidenceCacheStore,
+  evidenceQueryScope,
   type EvidenceCacheStore,
 } from "../evidence/cache.js";
 import { createCommunitySearchProvider } from "../evidence/providers/communitySearch.js";
@@ -36,11 +38,8 @@ import {
 } from "../evidence/providers/webSearch.js";
 import type { AdapterMode, EvidenceProvider } from "../evidence/types.js";
 import { getEventById, type EventRecord } from "../events/repository.js";
-import { countOutcomes } from "../outcomes/repository.js";
-import {
-  getLatestCalibrationSnapshot,
-  retrainCalibrationSnapshot,
-} from "../backtests/repository.js";
+import { JudgeServiceError } from "./errors.js";
+import { getActiveCalibrationSnapshot } from "../backtests/repository.js";
 import {
   InMemoryJudgeCacheStore,
   createRedisJudgeCacheStore,
@@ -158,6 +157,11 @@ export interface QueryPlanResult {
 }
 
 const MAX_PLANNED_QUERIES = 3;
+const RUNTIME_JUDGMENT_WINDOW = 200;
+// Plans are keyed by the hour of the evaluation time, like evidence, so they need not outlive it by much.
+const QUERY_PLAN_CACHE_TTL_SECONDS = 60 * 60 * 2;
+
+export { JudgeServiceError };
 
 interface JudgmentEvidenceItem {
   id: string;
@@ -222,11 +226,11 @@ async function recordJudgmentExecutionLog(args: {
 }): Promise<void> {
   await appendJudgmentExecutionLog(args.pool, args.judgmentId, args.entry);
 
+  // The entry's level picks the logger method and its timestamp matches the line's own
+  // `time`, so neither is repeated in the payload (that would write those keys twice).
   const payload = {
     event: "judgment_execution_log",
     stage: args.entry.stage,
-    level: args.entry.level,
-    timestamp: args.entry.timestamp,
     details: args.entry.details,
   };
 
@@ -291,6 +295,16 @@ function buildJudgeModelVersion(env: AppEnv): string {
   ].join("|");
 }
 
+/** The quoted price is what a market item says; two quotes of one market are different evidence. */
+function marketQuoteFingerprint(item: JudgmentEvidenceItem): string {
+  if (item.sourceFamily !== "prediction_market" && item.sourceFamily !== "market") {
+    return "";
+  }
+
+  const { probability, yesPrice, price, lastTradePrice, outcomePrices } = item.metadata;
+  return JSON.stringify([probability, yesPrice, price, lastTradePrice, outcomePrices]);
+}
+
 function buildEvidenceFingerprint(evidence: JudgmentEvidenceItem[]): string {
   return evidence
     .map((item) =>
@@ -300,6 +314,7 @@ function buildEvidenceFingerprint(evidence: JudgmentEvidenceItem[]): string {
         item.sourceFamily,
         item.sourceType,
         item.publishedAt,
+        marketQuoteFingerprint(item),
       ].join("|"),
     )
     .sort()
@@ -466,9 +481,11 @@ function readLiquidity(item: JudgmentEvidenceItem): number {
 }
 
 /**
- * Per-judge quotas: each panel judge gets up to MAX_EVIDENCE_ITEMS_PER_JUDGE items,
- * round-robin across its source families so no family starves another. Prediction-market
- * items feed the prior (not a judge), so they are selected separately, most liquid first.
+ * The panel reads at most MAX_EVIDENCE_ITEMS_PER_JUDGE items per judge in total. Each judge
+ * first gets up to that many of its own, taken round-robin across its source families so
+ * no family starves another; slots a judge cannot fill then go, one at a time, to judges
+ * that still have candidates. Prediction-market items feed the prior (not a judge), so
+ * they are selected separately, most liquid first.
  */
 function selectEvidenceForJudgeInput(
   event: EventRecord,
@@ -477,31 +494,44 @@ function selectEvidenceForJudgeInput(
   const relevantEvidence = evidence.filter((item) => isEventRelevantEvidence(event, item));
   const candidateEvidence = relevantEvidence.length > 0 ? relevantEvidence : evidence;
   const sortedEvidence = [...candidateEvidence].sort(compareEvidenceForJudging);
-  const selectedEvidence: JudgmentEvidenceItem[] = [];
-
-  for (const panelJudge of PANEL_JUDGES) {
+  const candidatesByJudge = PANEL_JUDGES.map((panelJudge) => {
     const familyQueues = panelJudge.sourceFamilies.map((family) =>
       sortedEvidence.filter((item) => item.sourceFamily === family),
     );
-    let taken = 0;
+    const rounds = Math.max(0, ...familyQueues.map((queue) => queue.length));
 
-    for (let round = 0; taken < MAX_EVIDENCE_ITEMS_PER_JUDGE; round += 1) {
-      const roundItems = familyQueues.flatMap((queue) => {
-        const item = queue[round];
-        return item ? [item] : [];
-      });
+    return Array.from({ length: rounds }, (_, round) =>
+      familyQueues.flatMap((queue) => (queue[round] ? [queue[round]] : [])),
+    ).flat();
+  });
+  const taken = candidatesByJudge.map((candidates) =>
+    Math.min(candidates.length, MAX_EVIDENCE_ITEMS_PER_JUDGE),
+  );
+  let spareSlots =
+    PANEL_JUDGES.length * MAX_EVIDENCE_ITEMS_PER_JUDGE - taken.reduce((sum, count) => sum + count, 0);
 
-      if (roundItems.length === 0) {
+  while (spareSlots > 0) {
+    const judgesWithMore = candidatesByJudge
+      .map((candidates, index) => ({ index, more: candidates.length - (taken[index] ?? 0) }))
+      .filter((judge) => judge.more > 0);
+
+    if (judgesWithMore.length === 0) {
+      break;
+    }
+
+    for (const judge of judgesWithMore) {
+      if (spareSlots === 0) {
         break;
       }
 
-      for (const item of roundItems.slice(0, MAX_EVIDENCE_ITEMS_PER_JUDGE - taken)) {
-        selectedEvidence.push(item);
-        taken += 1;
-      }
+      taken[judge.index] = (taken[judge.index] ?? 0) + 1;
+      spareSlots -= 1;
     }
   }
 
+  const selectedEvidence = candidatesByJudge.flatMap((candidates, index) =>
+    candidates.slice(0, taken[index]),
+  );
   const marketPriorEvidence = sortedEvidence
     .filter((item) => item.sourceFamily === "prediction_market")
     .sort((left, right) => readLiquidity(right) - readLiquidity(left))
@@ -600,19 +630,48 @@ function appendJudgeCacheEvent(
   });
 }
 
+/** Ids the judge service logs on every line of a call, so its logs join the API's. */
+export interface JudgeRequestContext {
+  judgmentId?: string;
+  eventId?: string;
+}
+
+export function createJudgeClient(env: AppEnv, context: JudgeRequestContext = {}): JudgeClient {
+  return new DefaultJudgeClient(env, context);
+}
+
 class DefaultJudgeClient implements JudgeClient {
-  constructor(private readonly env: AppEnv) {}
+  constructor(
+    private readonly env: AppEnv,
+    private readonly context: JudgeRequestContext = {},
+  ) {}
+
+  private requestHeaders(event: EventRecord): { requestId: string; headers: Record<string, string> } {
+    const requestId = randomUUID();
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "x-request-id": requestId,
+      "x-cassandra-event-id": this.context.eventId ?? event.id,
+      // The judge budgets its model calls inside this, so it stops spending once we stop waiting.
+      "x-cassandra-timeout-ms": String(this.env.JUDGE_REQUEST_TIMEOUT_MS),
+    };
+
+    if (this.context.judgmentId) {
+      headers["x-cassandra-judgment-id"] = this.context.judgmentId;
+    }
+
+    return { requestId, headers };
+  }
 
   async judge(input: Parameters<JudgeClient["judge"]>[0]): Promise<VerdictTrace> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.env.JUDGE_REQUEST_TIMEOUT_MS);
+    const { requestId, headers } = this.requestHeaders(input.event);
 
     try {
       const response = await fetch(`${this.env.JUDGE_BASE_URL}/judge`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
+        headers,
         signal: controller.signal,
         body: JSON.stringify({
           eventId: input.event.id,
@@ -633,7 +692,10 @@ class DefaultJudgeClient implements JudgeClient {
       });
 
       if (!response.ok) {
-        throw new Error(`Judge service returned ${response.status} ${response.statusText}`);
+        throw new JudgeServiceError(
+          `Judge service returned ${response.status} ${response.statusText} (request ${requestId})`,
+          response.status,
+        );
       }
 
       // The timeout also covers reading the body, not only receiving headers.
@@ -646,11 +708,12 @@ class DefaultJudgeClient implements JudgeClient {
   async plan(input: { event: EventRecord; evaluationTime: string; maxQueries: number }): Promise<QueryPlanResult> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.env.JUDGE_REQUEST_TIMEOUT_MS);
+    const { requestId, headers } = this.requestHeaders(input.event);
 
     try {
       const response = await fetch(`${this.env.JUDGE_BASE_URL}/plan`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         signal: controller.signal,
         body: JSON.stringify({
           event: {
@@ -668,7 +731,10 @@ class DefaultJudgeClient implements JudgeClient {
       });
 
       if (!response.ok) {
-        throw new Error(`Judge service planning returned ${response.status} ${response.statusText}`);
+        throw new JudgeServiceError(
+          `Judge service planning returned ${response.status} ${response.statusText} (request ${requestId})`,
+          response.status,
+        );
       }
 
       const payload = (await response.json()) as Partial<QueryPlanResult>;
@@ -694,12 +760,16 @@ function pipelineStage(
 /**
  * Pipeline stage 1. Planning is best effort: when the client cannot plan or planning
  * fails, retrieval falls back to each provider's templated query.
+ *
+ * With a cache store, a live plan is kept for its evaluation hour. A retried judgment then
+ * reuses the same queries, which is also what lets the evidence cache answer the retry.
  */
 export async function planEventQueries(args: {
   env: AppEnv;
   event: EventRecord;
   evaluationTime: string;
   judgeClient?: JudgeClient;
+  cacheStore?: EvidenceCacheStore;
 }): Promise<{ queries: string[]; stage: PipelineStage }> {
   const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
 
@@ -710,12 +780,13 @@ export async function planEventQueries(args: {
     };
   }
 
-  try {
-    const plan = await judgeClient.plan({
-      event: args.event,
-      evaluationTime: args.evaluationTime,
-      maxQueries: MAX_PLANNED_QUERIES,
-    });
+  const cacheStore = args.env.CASSANDRA_ADAPTER_MODE === "live" ? args.cacheStore : undefined;
+  const cacheKey = buildEvidenceCacheKey(
+    evidenceQueryScope(args.event, undefined),
+    args.evaluationTime,
+    "query-plan",
+  );
+  const toResult = (plan: QueryPlanResult, cacheStatus: "hit" | "miss" | "bypass") => {
     const queries = plan.queries.map((query) => query.trim()).filter(Boolean).slice(0, MAX_PLANNED_QUERIES);
 
     return {
@@ -724,8 +795,27 @@ export async function planEventQueries(args: {
         subQuestions: plan.subQuestions,
         queries,
         model: plan.model ?? null,
+        cacheStatus,
       }),
     };
+  };
+
+  try {
+    const cached = await cacheStore?.get(cacheKey);
+
+    if (cached) {
+      return toResult(JSON.parse(cached) as QueryPlanResult, "hit");
+    }
+
+    const plan = await judgeClient.plan({
+      event: args.event,
+      evaluationTime: args.evaluationTime,
+      maxQueries: MAX_PLANNED_QUERIES,
+    });
+
+    await cacheStore?.set(cacheKey, JSON.stringify(plan), QUERY_PLAN_CACHE_TTL_SECONDS);
+
+    return toResult(plan, cacheStore ? "miss" : "bypass");
   } catch (error) {
     return {
       queries: [],
@@ -857,16 +947,6 @@ export function createDefaultEvidenceProviders(env: AppEnv): EvidenceProvider[] 
   );
 
   return providers;
-}
-
-async function getOrCreateCalibrationSnapshot(pool: Pool): Promise<CalibrationSnapshot> {
-  const existing = await getLatestCalibrationSnapshot(pool);
-
-  if (existing) {
-    return existing;
-  }
-
-  return retrainCalibrationSnapshot(pool, await countOutcomes(pool));
 }
 
 async function loadJudgmentDetails(
@@ -1042,7 +1122,8 @@ export async function runJudgment(args: JudgmentServiceDeps & {
   const evidenceCacheStore =
     args.evidenceCacheStore ?? new InMemoryEvidenceCacheStore();
   const judgeCacheStore = args.judgeCacheStore ?? new InMemoryJudgeCacheStore();
-  const judgeClient = args.judgeClient ?? new DefaultJudgeClient(args.env);
+  const judgeClient =
+    args.judgeClient ?? createJudgeClient(args.env, { judgmentId: judgment.id, eventId: event.id });
   const logger = args.logger?.child({
     operation: "judgment_run",
     evaluationTime,
@@ -1074,6 +1155,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
       event,
       evaluationTime,
       judgeClient,
+      cacheStore: evidenceCacheStore,
     });
     await recordJudgmentExecutionLog({
       pool: args.pool,
@@ -1176,7 +1258,7 @@ export async function runJudgment(args: JudgmentServiceDeps & {
         `${failedProviders.length} of ${collected.providerRuns.length} evidence provider(s) failed`,
       );
     }
-    const calibrationSnapshot = await getOrCreateCalibrationSnapshot(args.pool);
+    const calibrationSnapshot = await getActiveCalibrationSnapshot(args.pool);
     await recordJudgmentExecutionLog({
       pool: args.pool,
       judgmentId: judgment.id,
@@ -1344,7 +1426,8 @@ export async function listRuntimeEvents(
   pool: Pool,
   filters: ListRuntimeEventsFilters = {},
 ): Promise<RuntimeEventRecord[]> {
-  const judgments = await listJudgments(pool);
+  // The activity log reads execution logs out of judgment rows, so it looks at recent runs only.
+  const judgments = await listJudgments(pool, undefined, RUNTIME_JUDGMENT_WINDOW);
   const normalizedSearch = filters.search?.trim().toLowerCase();
   const runtimeEvents = judgments
     .flatMap((judgment) =>

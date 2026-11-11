@@ -3,7 +3,11 @@ import type { WatchlistDiscoveryResult, WatchlistDiscoveryRun } from "@cassandra
 import { normalizeEvidenceItems } from "../evidence/normalize.js";
 import type { AdapterMode, EvidenceProvider } from "../evidence/types.js";
 import type { CandidateEventRecord, WatchlistRecord } from "./repository.js";
-import { recordWatchlistDiscovery, upsertCandidateEvent } from "./repository.js";
+import {
+  listCandidateEventsForWatchlist,
+  recordWatchlistDiscovery,
+  upsertCandidateEvent,
+} from "./repository.js";
 import { clusterCandidateEvidence } from "./cluster.js";
 import type { Pool } from "pg";
 
@@ -83,7 +87,12 @@ export async function discoverWatchlistCandidates(args: {
     ...item,
     eventId: args.watchlist.id,
   }));
-  const clusters = clusterCandidateEvidence(normalizedEvidence);
+  const clusters = clusterCandidateEvidence(normalizedEvidence, {
+    // Providers stamp the watchlist's keywords on what they find; those tell stories apart no
+    // better than having no entities at all.
+    genericEntities: args.watchlist.keywords,
+    existing: await listCandidateEventsForWatchlist(args.pool, args.watchlist.id),
+  });
 
   const candidates = await Promise.all(
     clusters.map((cluster) =>

@@ -26,6 +26,13 @@ const CreateJudgmentInputSchema = z
   })
   .strict();
 
+const JudgmentListQuerySchema = z
+  .object({
+    eventId: z.string().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(1000).optional(),
+  })
+  .strict();
+
 const RuntimeQuerySchema = z
   .object({
     search: z.string().trim().optional(),
@@ -49,9 +56,18 @@ export function registerJudgmentRoutes(
     area: "judgments",
   });
 
-  app.get("/judgments", async (request) => {
-    const query = request.query as { eventId?: string };
-    return listJudgments(args.pool, query.eventId);
+  app.get("/judgments", async (request, reply) => {
+    const parsed = JudgmentListQuerySchema.safeParse(request.query);
+
+    if (!parsed.success) {
+      reply.code(400);
+      return {
+        error: "Invalid judgment query",
+        issues: parsed.error.issues,
+      };
+    }
+
+    return listJudgments(args.pool, parsed.data.eventId, parsed.data.limit);
   });
 
   app.get("/runtime", async (request, reply) => {
@@ -123,6 +139,9 @@ export function registerJudgmentRoutes(
 
       await args.judgmentQueue.enqueue({
         ...parsed.data,
+        // Fixed here, not in the worker: a retried job then asks the same as-of question,
+        // so the query plan, evidence and judge caches can answer it.
+        evaluationTime: parsed.data.evaluationTime ?? new Date().toISOString(),
         judgmentId: judgment.id,
       });
 

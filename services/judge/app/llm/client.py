@@ -51,6 +51,16 @@ class QueryPlan(TypedDict):
     queries: list[str]
 
 
+class BaseRateEstimate(TypedDict):
+    """An outside-view probability for a question, made without any evidence."""
+
+    probability: float
+    rationale: str
+    referenceClass: NotRequired[str]
+    # Set by ensembles: each member's estimate.
+    samples: NotRequired[list[dict[str, Any]]]
+
+
 class CrossExaminerConflict(TypedDict, total=False):
     judgeA: str
     judgeB: str
@@ -113,4 +123,13 @@ class LLMClient(Protocol):
         evaluation_time: str | None = None,
         max_queries: int = 4,
     ) -> QueryPlan:
+        ...
+
+    def estimate_base_rate(
+        self,
+        *,
+        event: EventInput,
+        evaluation_time: str | None = None,
+    ) -> BaseRateEstimate | None:
+        """Outside-view base rate for the question, or None when the backend has none."""
         ...

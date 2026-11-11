@@ -28,9 +28,15 @@ This document describes the current HTTP API exposed by the Cassandra prototype 
 ```
 
 - The FastAPI judge service uses its default validation behavior and returns `422` for malformed payloads.
-- There is currently no auth layer or versioned prefix such as `/v1`.
+- There is no versioned prefix such as `/v1`.
+- Access:
+  - The API listens on `API_HOST` (default `127.0.0.1`).
+  - A request with an `Origin` header is served only when that origin is listed in `CASSANDRA_CORS_ORIGINS`; any other origin gets `403`, preflight included. Requests without an `Origin` (curl, the harness) are served.
+  - When `CASSANDRA_API_KEY` is set, every route except `GET /health` and `GET /ready` requires it as `x-api-key: <key>` or `Authorization: Bearer <key>`, and answers `401` without it. With no key configured the API is open to whoever can reach it.
 - The API accepts an optional `x-request-id` header. If it is not provided, the API generates one internally.
 - The API emits structured JSON logs for request lifecycle, readiness failures, evidence collection, and judgment execution events.
+- The judge service logs JSON lines in the same shape (`level`, `time`, `service`, `scope`, `event`, `message`), with `service: "cassandra-judge"`. Both services read `LOG_LEVEL`.
+- On every judge call the API sends `x-request-id` (new for each call), `x-cassandra-event-id` and, for a judgment run, `x-cassandra-judgment-id`. The judge writes them as `requestId`, `eventId` and `judgmentId` on every log line of that call, and echoes `x-request-id` in the response. A failed judge call's error names that request id.
 
 ## Common Shared Shapes
 
@@ -227,6 +233,8 @@ Runs candidate discovery for the watchlist now and returns the result. The run w
   - `markets`: `marketProvider`
   - `predictionMarkets`: `polymarketGamma` and `polymarketClob`
 - It clusters the evidence into candidates. Candidates already stored are upserted by signature, so a rerun keeps their promotion status.
+  - An item with entities of its own is identified by them: the entities, the action (launch, approve, delay, reject, announce) and its polarity.
+  - An item without any, which is what a live search result is, or whose only entities are the watchlist's keywords, is identified by its headline. It joins a candidate whose headline shares most of its words, at least two of them not watchlist keywords; that candidate's `candidateSignature.topic` holds the headline words it was first stored with.
 - It runs inside the request, with no queue, because it never calls the judge.
 - It records the run on the watchlist as `lastDiscovery`, with `trigger: "manual"`.
 
@@ -311,6 +319,9 @@ Lists stored judgment runs in reverse chronological order.
 Query parameters:
 
 - `eventId` optional; when supplied, only judgments for that event are returned
+- `limit` optional (1–1000); only the newest that many are returned. `400` with `error: "Invalid judgment query"` for anything else
+
+`GET /runtime` reads the execution logs of the 200 newest judgments.
 
 Response shape:
 
@@ -333,13 +344,19 @@ Request body:
 
 Notes:
 
-- `evaluationTime` is optional; if omitted, the API uses the current time.
+- `evaluationTime` is optional; if omitted, the API uses the time the judgment was queued. A retried run keeps that time, so its query plan, evidence and judge output come from the caches where they were already paid for.
+- A failed run is retried once, and only when the failure is transient: the judge service was overloaded, unreachable or timed out, or every evidence provider failed. Other failures end the run at once.
 - The API persists a judgment with status `queued`, enqueues a BullMQ job in Redis, and returns immediately.
 - The worker later stores a terminal status of `completed`, `insufficient_evidence`, or `failed`.
 - In both `fixture` and `live` modes, the forecasting trace is produced by the Python judge service at `JUDGE_BASE_URL`.
 - When live citation coverage is too weak, the API still calls the judge service, with `priorOnly: true`, and stores the returned prior-only trace as `insufficient_evidence`.
+- Evidence providers run concurrently, so retrieval takes as long as the slowest source.
+- A live search result's `sourceFamily` comes from where it was published, not from which search found it: government domains are `government`, Reddit and X posts are `community`, a press wire or a domain named after one of the event's entities is `official`, and everything else is `web`. `metadata.queryIntent` records what the search was looking for.
+- The panel reads at most 18 evidence items (6 per judge). Slots that a judge with little evidence leaves unused go to judges that have more candidates.
+- Stored evidence is immutable. A page whose content changed, or a new market quote, is stored as a new row with a new id, so the evidence a past trace cites keeps saying what it said then. Unchanged content reuses its row.
 - Before retrieval the API asks the judge service to plan up to 3 sub-question search queries (`POST /plan`); each search provider runs its own query plus up to 2 planned queries. Planning failures fall back to the templated queries.
-- `verdictTrace.pipelineStages` records every stage in order: `query_planning`, `retrieval`, `relevance_rating`, `panel_reasoning`, `cross_examination`, `aggregation`, `calibration`, each with `status` (`completed`, `skipped`, `failed`) and `details`. The execution log has a `planning` entry.
+- `verdictTrace.pipelineStages` records every stage in order: `query_planning`, `retrieval`, `relevance_rating`, `prior`, `panel_reasoning`, `cross_examination`, `aggregation`, `calibration`, each with `status` (`completed`, `skipped`, `failed`) and `details`. The execution log has a `planning` entry.
+- The judgment uses the approved calibration snapshot. While none is approved it uses the identity baseline, whose id is `baseline-identity`.
 - In `fixture` mode, evidence providers still use canned fixture payloads and the judge service normally runs with its fake LLM backend.
 
 Success:
@@ -360,9 +377,16 @@ Builds a new calibration snapshot from resolved outcomes and stored verdict trac
 
 Behavior:
 
-- loads the most recent trace per resolved event
-- sends `historicalTraces` and `resolvedOutcomes` to `POST /calibrate` on the judge service
-- persists the returned calibration snapshot in Postgres
+- loads, per resolved event, the latest trace evaluated before the resolution, separately for completed and prior-only judgments
+- loads benchmark market prices recorded before each market resolved, with how the market resolved
+- loads replayed model forecasts from evaluation runs: the newest prediction per market, cutoff and model baseline whose trace completed, with its pre-calibration probability
+- sends `historicalTraces`, `resolvedOutcomes`, `marketPricePairs` and `forecastPairs` to `POST /calibrate` on the judge service
+
+Request body (optional): `{ "includeReplay": false }` leaves the replayed forecasts out. Replays search today's web, so their forecasts are somewhat better informed than a live forecast was; this trains on resolved judgments only.
+- persists the returned calibration snapshot in Postgres, unapproved
+- in `fixture` mode nothing is fitted: the stored snapshot records the sample size and keeps `calibrationParams.method: "identity"`
+
+A new snapshot changes no forecast until it is approved.
 
 Success:
 
@@ -392,6 +416,22 @@ Errors:
 - `400` if `id` is missing
 - `404` with `error: "Calibration snapshot not found"`
 
+### `POST /backtests/calibration-snapshots/:id/approve`
+
+Makes a snapshot the one judgments use and un-approves every other snapshot.
+
+Request body (optional): `{ "force": true }`.
+
+A snapshot whose `calibrationParams.method` is not `identity` is approved only when `metrics.heldOut.improves` is `true`, that is, when its calibration map scored a better Brier than uncalibrated forecasts on held-out data. `force` approves it regardless.
+
+Success: `200` with the approved `CalibrationSnapshot`.
+
+Errors:
+
+- `400` with `error: "Invalid approval input"`
+- `404` with `error: "Calibration snapshot not found"`
+- `409` when the held-out check is missing or failed and `force` was not sent; `error` gives the scores
+
 ### `POST /evaluation/benchmarks/import/polymarket`
 
 Imports resolved Polymarket benchmark markets into Postgres.
@@ -400,14 +440,25 @@ Request body:
 
 ```json
 {
-  "benchmarkSetId": "custom-benchmark-set"
+  "benchmarkSetId": "custom-benchmark-set",
+  "limit": 30,
+  "windowDays": 120,
+  "themeLimit": 10,
+  "pages": 20
 }
 ```
 
-Fields:
+Fields, all optional:
 
-- `benchmarkSetId` is optional
-- when omitted, imports use the default benchmark set `polymarket_recent_resolved`
+- `benchmarkSetId`: defaults to `polymarket_recent_resolved`
+- `limit`: how many markets to keep (1–500, default 50)
+- `windowDays`: how far back a market may have resolved (1–365, default 56)
+- `themeLimit`: the most markets kept from one theme (1–500, default 12)
+- `pages`: how many pages of 100 recently closed markets to scan (1–50, default 9)
+
+Refreshing a set marks omitted markets inactive for new evaluations; historical markets, price snapshots and forecasts are retained. Queued runs store their selected market IDs so a later import cannot change their membership.
+
+A larger set gives calibration more to learn from: the calibration regime counts resolved markets, and a calibration map is fitted from 20.
 
 Success response:
 
@@ -490,11 +541,22 @@ Fields:
 - `benchmarkMarketIds` is optional and scopes the run to specific imported benchmarks
 - `baselines` is optional and defaults inside the evaluation flow when omitted
 - this endpoint requires `CASSANDRA_ADAPTER_MODE=live`
+- each market is replayed at 30 days, 7 days, 1 day and 6 hours before its scheduled `endDate` (before `resolvedAt` when the end date is unknown). Cutoffs at or after the market's resolution are skipped, and `leakageWarnings` names the skipped horizons
+- price snapshots are stored per cutoff at import, so re-import the benchmark set before running against markets imported under the earlier, resolution-anchored cutoffs
+- the run is queued and worked through in the background, one market at a time. Each market's predictions are stored as soon as that market is done, and the run's `progress` is updated
+- a run that fails keeps the predictions of its finished markets. Resume it explicitly with `POST /evaluation/runs/:id/resume`; it continues from stored predictions. Failed jobs are not automatically retried on server restart
+- a model baseline's prediction carries `metadata.calibration`: the probability before any calibration map, the prior, the trace status and each judge's log Bayes factor. Calibration trains on these (see `POST /backtests/retrain`)
+- `base_rate_only` is the share of the benchmark set's markets that had resolved Yes by the cutoff, in the market's own theme when at least five of its markets had resolved, with one pseudo-count each way
+- `overallMetrics.paired.vsPolymarket` gives, per baseline, its Brier score minus Polymarket's on the paired sample as `{ mean, low, high, groups }`: a 95% interval from resampling whole markets, or `null` with fewer than two markets
+- a baseline that produced no predictions is reported as `{ "sampleSize": 0 }`, without scores
 
 Success:
 
-- status `201`
-- response body is an `EvaluationRun`
+- status `202`
+- response body is the queued `EvaluationRun`, with `status: "queued"` and `progress`
+- poll `GET /evaluation/runs/:id` until `status` is `completed` or `failed`
+
+When the API is built without an evaluation queue (as in tests), the run executes inside the request and the response is `201` with the finished run.
 
 Errors:
 
@@ -503,14 +565,28 @@ Errors:
 - `404` with `error: "No benchmark markets available for evaluation"`
 - `404` with `error: "Benchmark markets not found: ..."`
 
+### `POST /evaluation/runs/:id/resume`
+
+Resumes an existing failed run using its stored request and forecasts. Requires live mode, a running evaluation queue, and an authoritative search provider for model baselines. This can incur costs for missing forecasts.
+
+- `202`: the same run, queued again; completed forecasts are retained
+- `400`: malformed run UUID
+- `404`: run not found
+- `409`: run is not failed, its stored request is unavailable, or live/provider requirements are not met
+- `503`: no evaluation queue configured
+- Concurrent resume requests claim the failed run atomically; at most one queues it. A queue submission error leaves it failed and resumable.
+- The calibration harness accepts `CALIBRATION_RUN_ID=<id>` to resume a failed run or wait for an existing one. It skips import and still requires `CALIBRATION_CONFIRM=yes` before making requests.
+
 ### `GET /evaluation/runs/:id`
 
-Fetches a previously stored evaluation run.
+Fetches a stored evaluation run, finished or not.
 
 Success:
 
 - status `200`
 - response body is an `EvaluationRun`
+- `status` is `queued`, `running`, `completed` or `failed`; `progress` is `{ completedMarkets, totalMarkets }`; `error` says why a failed run stopped
+- `overallMetrics` and `sliceResults` are empty until the run completes
 
 Errors:
 
@@ -592,9 +668,17 @@ Request body:
 
 Notes:
 
-- `priorOnly` (optional, default `false`): skip the judge panel and return an `insufficient_evidence` trace built from the base-rate and market prior only. No LLM calls are made.
-- The market prior reads the most liquid `prediction_market` evidence item whose metadata carries a Yes probability (`probability`, `yesPrice`, `price` for a Yes token, or `outcomePrices` with `outcomes`) and its `liquidity`/`depth`. Unknown liquidity gets partial trust; traditional `market` quotes are never treated as probabilities.
-- A panel judge with no evidence for its source families is neutral and does not call the LLM.
+- `priorOnly` (optional, default `false`): skip the judge panel and return an `insufficient_evidence` trace that reports the prior only. The panel and the cross-examiner are not called.
+- The prior comes from the first source available, and sources are never blended:
+  1. **Bound market.** The most liquid `prediction_market` evidence item that carries a Yes probability (`probability`, `yesPrice`, `price` for a Yes token, or `outcomePrices` with `outcomes`). Items with `metadata.matchedBy: "search"` are related markets, not this question, and never set the prior; traditional `market` quotes are never treated as probabilities. The price is mapped through the snapshot's `marketPriorParams` (`trustSlope`, `trustIntercept`), which default to using the price as it is. Liquidity and spread do not discount it.
+  2. **Reference class.** The observed base rate, once the event's `referenceClass` has at least `minimumSample` resolved events in the snapshot.
+  3. **Estimated base rate.** The judge model's outside-view estimate for the question, made without evidence and bounded to 0.02–0.98. With an ensemble it is the median in log-odds.
+  4. **Uninformed.** 0.5, when no estimate is available.
+- The `prior` pipeline stage records the `source` (`market`, `reference_class`, `estimated_base_rate`, `uninformed`), the `probability`, the market price and liquidity, `relatedMarketsIgnored`, and for an estimate its `rationale`, `referenceClass` and per-model `samples`. Its status is `failed` when the estimate failed and the prior fell back to 0.5.
+- A panel judge with no evidence for its source families is neutral and does not call the LLM. The pool is a weighted average over the judges that had evidence: a judge without evidence holds no weight, so it does not scale the others down.
+- A judge whose model call fails abstains in the same way, with the failure in its `warnings` and in the `panel_reasoning` stage's `failedJudges`. The request fails with `502` only when every judge that had evidence failed.
+- `confidenceLow` and `confidenceHigh` say how much the forecast depends on which models were asked (`uncertaintyMethod: "model_spread"`): the ensemble's models are redrawn with replacement, the per-judge and base-rate medians retaken, and the result pooled as the forecast was, 500 times; the range is the middle 90%. When nothing was answered by more than one model there is no spread to measure, and the range is a fixed band of one log-odds unit either side (`"none"`). Traces from before this change may say `"bootstrap"`, a resampling of the panel's judges.
+- The caller's `x-cassandra-timeout-ms` header sets the request's model budget: the judge stops starting model calls at 90% of it. Without the header, `JUDGE_REQUEST_BUDGET_SECONDS` applies (default 330).
 - Relevance stage: before the panel runs, every non-market evidence item is rated 1–6 for the question by the utility model, items below 4 are dropped, and the rest are passed to the judges with question-focused summaries (the original snippet is kept in `metadata.originalSummary`). If rating rejected evidence and fewer than 2 relevant items remain, the trace is prior-only with status `insufficient_evidence`. A rating failure falls back to unfiltered evidence.
 - Ensemble consistency guard: a sample whose moderate/strong label contradicts its own probability (for example `strong_against` with p ≥ 0.75) is marked `excluded` in `samples` and left out of the median, unless every sample is incoherent.
 - Judge prompts include the `evaluationTime` as the as-of date.
@@ -621,17 +705,32 @@ Success: `200` with `{ "subQuestions": [...], "queries": [...], "model": "..." }
 
 Builds a calibration snapshot from historical traces and resolved outcomes.
 
-- One training pair per event: its latest trace evaluated before the outcome's `resolvedAt`.
+- One training pair per event: its latest completed trace evaluated before the outcome's `resolvedAt`. Prior-only (`insufficient_evidence`) traces do not train the calibration map or the judge weights; their events still count toward reference-class base rates.
 - The fit uses each trace's `preCalibrationProbability`. Older calibrated traces without it are skipped.
 - `resolvedOutcomeCount` and the regime count matched training pairs.
 - `warming` fits Platt scaling (penalised toward identity); `steady` fits isotonic regression (pool adjacent violators).
+- `metrics.heldOut` reports a 5-fold cross-validation of the calibration map: `brierIdentity`, `brierCalibrated`, `logLossIdentity`, `logLossCalibrated`, `folds`, `sampleSize` and `improves`. It is absent in `cold_start`, where the map is the identity.
+- `marketPriorParams` is fitted from `marketPricePairs`: a Platt fit of outcomes on market log-odds, stored as `trustSlope`, `trustIntercept`, `fitted` and `sampleSize`. Pairs may carry `groupId` (the API sends the benchmark market ID). The fit gives each market total weight one across its horizons, and `sampleSize` counts distinct markets. With fewer than 40 markets, or only one kind of outcome, it stays at slope 1 and intercept 0. Legacy callers without `groupId` count each pair separately.
+- `forecastPairs` are replayed benchmark forecasts: `{ groupId, probability, outcome, priorProbability, judgeOpinions }`. They train the map and the weights alongside resolved judgments. `groupId` names the market: its forecasts at several horizons are not independent, so the regime and `resolvedOutcomeCount` count markets and events, and held-out folds keep each market's forecasts together.
+- Judge weights are a Hedge update over every resolved forecast: for each forecast where a judge had evidence, its regret is the Brier score of the prior moved by that judge's log Bayes factor alone, minus the Brier score of the prior left alone. Weights are scaled by `exp(-step × cumulative regret)`, then clipped to 0.05–0.8.
+- `metrics.trainingSources` is `{ judgments, replayForecasts, groups }`. With nothing to score, `metrics` carries no `brierScore`, `logLoss` or `expectedCalibrationError`.
 
 Request body:
 
 ```json
 {
   "historicalTraces": [],
-  "resolvedOutcomes": []
+  "resolvedOutcomes": [],
+  "marketPricePairs": [{ "groupId": "market-1", "price": 0.7, "outcome": true }],
+  "forecastPairs": [
+    {
+      "groupId": "market-1",
+      "probability": 0.64,
+      "outcome": true,
+      "priorProbability": 0.5,
+      "judgeOpinions": [{ "judgeName": "open_web_research", "logBayesFactor": 0.5, "hadEvidence": true }]
+    }
+  ]
 }
 ```
 
@@ -648,7 +747,7 @@ The main forecasting artifact includes:
 
 - event and evaluation metadata
 - prior, raw posterior (before disagreement shrinkage), `preCalibrationProbability` (after shrinkage, before calibration), and final probability
-- confidence interval
+- confidence range and `uncertaintyMethod` (`model_spread`, `none`, or the earlier `bootstrap`)
 - judge opinions and weight breakdown
 - dependency matrix and disagreement shrinkage
 - conflicts and missing evidence
@@ -669,7 +768,7 @@ Evaluation run responses include:
 - `leakageWarnings`
 - `createdAt`
 
-Benchmark markets carry `endDate`, the scheduled end, alongside `resolvedAt`, the close time. Replay uses `endDate` as the event deadline.
+Benchmark markets carry `endDate`, the scheduled end, alongside `resolvedAt`, the close time. Replay uses `endDate` as the event deadline and as the anchor for its cutoffs.
 
 ### `BenchmarkSetSummary`
 

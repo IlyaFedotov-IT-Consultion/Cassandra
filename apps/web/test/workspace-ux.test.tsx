@@ -142,6 +142,11 @@ function trace(overrides: Record<string, unknown> = {}) {
         },
       },
       {
+        stage: "prior",
+        status: "completed",
+        details: { source: "market", probability: 0.979, marketPrice: 0.979, marketLiquidity: 315000, relatedMarketsIgnored: 2 },
+      },
+      {
         stage: "panel_reasoning",
         status: "completed",
         details: {
@@ -309,6 +314,7 @@ beforeEach(() => {
       if (method === "GET" && url.pathname === "/events/event-fed") return json(event);
       if (method === "GET" && url.pathname === "/judgments") return json(judgments);
       if (method === "GET" && url.pathname === "/judgments/judgment-fed-2") return json({ ...judgments[0], judgeOpinions: trace().judgeOpinions });
+      if (method === "GET" && url.pathname === "/judgments/judgment-fed-1") return json({ ...judgments[1], judgeOpinions: trace().judgeOpinions });
       if (method === "GET" && url.pathname === "/judgments/judgment-new") {
         return json({ id: "judgment-new", eventId: "event-fed", status: "queued", verdictTrace: null, executionLog: [], judgeOpinions: [], createdAt: "2026-11-07T12:00:00Z", updatedAt: "2026-11-07T12:00:00Z" });
       }
@@ -368,6 +374,7 @@ describe("judgment trace", () => {
       "Query planning",
       "Retrieval",
       "Relevance rating",
+      "Prior",
       "Panel reasoning",
       "Cross-examination",
       "Aggregation",
@@ -377,18 +384,125 @@ describe("judgment trace", () => {
     expect(within(pipeline).getByText(/33 items/)).toBeVisible();
     expect(within(pipeline).getByText(/polymarket clob failed: upstream timeout/i)).toBeVisible();
     expect(within(pipeline).getByText(/kept 5 of 14/i)).toBeVisible();
+    expect(within(pipeline).getByText(/bound market's price, 97\.9%/i)).toBeVisible();
+    expect(within(pipeline).getByText(/2 related markets found by search were not used/i)).toBeVisible();
   });
 
-  it("shows each model's sample and flags the ones the consistency guard excluded", async () => {
+  function withJudgmentTrace(overrides: Record<string, unknown>) {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
+      if (url.pathname === "/judgments/judgment-fed-2") {
+        const changed = trace(overrides);
+        return json({ ...judgments[0], verdictTrace: changed, judgeOpinions: changed.judgeOpinions });
+      }
+      return base(input, init);
+    });
+  }
+
+  it("says where the forecast range comes from", async () => {
+    withJudgmentTrace({ uncertaintyMethod: "model_spread" });
+    renderAt("/judgments/judgment-fed-2");
+    expect(await screen.findByText("Range across the ensemble's models")).toBeVisible();
+  });
+
+  it("says when the range is a fixed band because no model spread was measured", async () => {
+    withJudgmentTrace({ uncertaintyMethod: "none" });
+    renderAt("/judgments/judgment-fed-2");
+    expect(await screen.findByText("Fixed-width range: no spread between models was measured")).toBeVisible();
+  });
+
+  it("keeps the earlier label for traces whose range came from resampling judges", async () => {
+    withJudgmentTrace({ uncertaintyMethod: "bootstrap" });
+    renderAt("/judgments/judgment-fed-2");
+    expect(await screen.findByText("Range from resampling judges")).toBeVisible();
+  });
+
+  it("warns when a judge failed and abstained", async () => {
+    withJudgmentTrace({
+      pipelineStages: trace().pipelineStages.map((stage: { stage: string; details: Record<string, unknown> }) =>
+        stage.stage === "panel_reasoning"
+          ? { ...stage, details: { ...stage.details, failedJudges: { official_records: "upstream returned garbage" } } }
+          : stage,
+      ),
+    });
     renderAt("/judgments/judgment-fed-2");
 
-    const samples = await screen.findByRole("table", { name: /open web research samples/i });
-    const rows = within(samples).getAllByRole("row").slice(1);
+    const pipeline = await screen.findByRole("list", { name: /pipeline stages/i });
+    expect(
+      within(pipeline).getByText("Official records failed and abstained: upstream returned garbage"),
+    ).toBeVisible();
+  });
+
+  it("explains an estimated base rate when no market set the prior", async () => {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
+      if (url.pathname === "/judgments/judgment-fed-2") {
+        const estimated = trace({
+          pipelineStages: trace().pipelineStages.map((stage: { stage: string }) =>
+            stage.stage === "prior"
+              ? {
+                  stage: "prior",
+                  status: "completed",
+                  details: {
+                    source: "estimated_base_rate",
+                    probability: 0.12,
+                    referenceClass: "central bank surprise cuts",
+                    rationale: "Unscheduled cuts are rare.",
+                    relatedMarketsIgnored: 0,
+                  },
+                }
+              : stage,
+          ),
+        });
+        return json({ ...judgments[0], verdictTrace: estimated, judgeOpinions: estimated.judgeOpinions });
+      }
+      return base(input, init);
+    });
+
+    renderAt("/judgments/judgment-fed-2");
+
+    const pipeline = await screen.findByRole("list", { name: /pipeline stages/i });
+    expect(within(pipeline).getByText(/estimated base rate of 12\.0%/i)).toBeVisible();
+    expect(within(pipeline).getByText(/unscheduled cuts are rare/i)).toBeVisible();
+  });
+
+  it("compares every model's samples across the judges and flags the excluded ones", async () => {
+    const user = userEvent.setup();
+    renderAt("/judgments/judgment-fed-2");
+
+    const agreement = await screen.findByRole("region", { name: "Model agreement" });
+    expect(within(agreement).getAllByRole("button", { name: / for open web research/i })).toHaveLength(3);
+
+    await user.click(within(agreement).getByText("Show as table"));
+
+    const rows = within(within(agreement).getByRole("table", { name: /model samples/i })).getAllByRole("row").slice(1);
     expect(rows).toHaveLength(3);
     expect(within(rows[0]!).getByText("gpt-6.1-sol")).toBeVisible();
     expect(within(rows[0]!).getByText("96.0%")).toBeVisible();
     expect(within(rows[2]!).getByText(/excluded: label contradicts probability/i)).toBeVisible();
     expect(screen.queryByText(/\[openai\/gpt-6\.1-sol@high\]/)).not.toBeInTheDocument();
+  });
+
+  it("charts how the forecast moved from the prior to the final number", async () => {
+    renderAt("/judgments/judgment-fed-2");
+
+    const path = await screen.findByRole("group", { name: /how the forecast moved/i });
+    const steps = within(path).getAllByRole("listitem").map((item) => item.getAttribute("aria-label") ?? "");
+    expect(steps[0]).toMatch(/^prior/i);
+    expect(steps.some((step) => /^open web research/i.test(step))).toBe(true);
+    expect(steps.at(-1)).toMatch(/^final.*99\.4%/i);
+  });
+
+  it("traces the kept evidence from each provider to the judges that read it", async () => {
+    renderAt("/judgments/judgment-fed-2");
+
+    const flow = await screen.findByRole("region", { name: "Evidence flow" });
+    expect(within(flow).getByRole("button", { name: /^web: 2 kept/i })).toBeVisible();
+    expect(within(flow).getByRole("button", { name: /^polymarket clob: 0 retrieved, 0 kept, failed/i })).toBeVisible();
+    expect(within(flow).getByLabelText("2 items from Web read by Open web research")).toBeInTheDocument();
+    expect(within(flow).getByText("Kept")).toBeVisible();
   });
 
   it("shows how relevant each cited source was rated", async () => {
@@ -427,8 +541,18 @@ describe("event detail", () => {
   it("charts the forecast across runs", async () => {
     renderAt("/events/event-fed");
 
-    const chart = await screen.findByRole("img", { name: /forecast history/i });
+    const chart = await screen.findByRole("group", { name: /forecast history/i });
     expect(within(chart).getAllByLabelText(/forecast \d+\.\d%/i)).toHaveLength(2);
+  });
+
+  it("opens a run from its point on the forecast history", async () => {
+    const user = userEvent.setup();
+    renderAt("/events/event-fed");
+
+    await user.click(await screen.findByRole("button", { name: /forecast 97\.0%/i }));
+
+    expect(await screen.findByRole("button", { name: /run again/i })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: /verdict/i })).getByText("97.0%")).toBeVisible();
   });
 
   it("records the resolved outcome for the event", async () => {
@@ -474,6 +598,7 @@ describe("event detail", () => {
       "https://www.federalreserve.gov/resolution",
     );
     expect(screen.getByRole("button", { name: /update outcome/i })).toBeVisible();
+    expect(within(screen.getByRole("group", { name: /forecast history/i })).getByText("Resolved Yes")).toBeInTheDocument();
   });
 
   it("keeps the event usable when outcomes fail to load", async () => {
@@ -486,7 +611,7 @@ describe("event detail", () => {
 
     renderAt("/events/event-fed");
 
-    expect(await screen.findByRole("img", { name: /forecast history/i })).toBeVisible();
+    expect(await screen.findByRole("group", { name: /forecast history/i })).toBeVisible();
     expect(await screen.findByText(/couldn't load the recorded outcome/i)).toBeVisible();
     expect(screen.getByRole("button", { name: /record outcome/i })).toBeVisible();
   });
@@ -645,6 +770,103 @@ describe("watchlist discovery", () => {
 });
 
 describe("evaluation run", () => {
+  function withEvaluationRun(overrides: Record<string, unknown>) {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
+      if (url.pathname === "/evaluation/runs/run-paired") return json({ ...evaluationRun, ...overrides });
+      if (url.pathname === "/evaluation/runs") return json([{ ...evaluationRun, ...overrides, sliceResults: undefined }]);
+      if (url.pathname === "/evaluation/benchmark-sets") return json([]);
+      return base(input, init);
+    });
+  }
+
+  it("shows how far a running run has got instead of scores", async () => {
+    withEvaluationRun({
+      status: "running",
+      progress: { completedMarkets: 3, totalMarkets: 30 },
+      overallMetrics: {},
+      sliceResults: [],
+    });
+
+    renderAt("/evaluation/runs/run-paired");
+
+    expect(await screen.findByText("Running: 3 of 30 markets replayed")).toBeVisible();
+    expect(screen.getByText(/scores appear when the run finishes/i)).toBeVisible();
+    expect(screen.queryByRole("table", { name: /paired comparison/i })).not.toBeInTheDocument();
+  });
+
+  it("says why a run failed and that its finished markets were kept", async () => {
+    withEvaluationRun({
+      status: "failed",
+      error: "judge service is down",
+      progress: { completedMarkets: 5, totalMarkets: 30 },
+      overallMetrics: {},
+      sliceResults: [],
+    });
+
+    renderAt("/evaluation/runs/run-paired");
+
+    expect(await screen.findByText("Failed after 5 of 30 markets: judge service is down")).toBeVisible();
+    expect(screen.getByText(/forecasts of the finished markets are kept/i)).toBeVisible();
+  });
+
+  it("resumes the failed run and shows its queued progress", async () => {
+    withEvaluationRun({ status: "failed", error: "interrupted", progress: { completedMarkets: 5, totalMarkets: 30 }, overallMetrics: {}, sliceResults: [] });
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    let resumed = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/evaluation/runs/run-paired/resume" && init?.method === "POST") {
+        resumed = true;
+        return json({ ...evaluationRun, status: "queued", progress: { completedMarkets: 5, totalMarkets: 30 } }, 202);
+      }
+      if (resumed && url.pathname === "/evaluation/runs/run-paired") return json({ ...evaluationRun, status: "queued", progress: { completedMarkets: 5, totalMarkets: 30 } });
+      return base(input, init);
+    });
+    renderAt("/evaluation/runs/run-paired");
+    await userEvent.click(await screen.findByRole("button", { name: "Resume run" }));
+    expect(await screen.findByText("Queued: 30 markets to replay")).toBeVisible();
+    expect(resumed).toBe(true);
+  });
+
+  it("compares each baseline with the market, with an interval over markets", async () => {
+    withEvaluationRun({
+      overallMetrics: {
+        ...evaluationRun.overallMetrics,
+        paired: {
+          ...evaluationRun.overallMetrics.paired,
+          vsPolymarket: {
+            base_rate_only: { mean: 0.071, low: 0.02, high: 0.125, groups: 28 },
+            model_with_polymarket: { mean: -0.004, low: -0.03, high: 0.021, groups: 28 },
+            model_without_polymarket: null,
+          },
+        },
+      },
+    });
+
+    renderAt("/evaluation/runs/run-paired");
+
+    expect(
+      await screen.findByText(
+        "Base rate only: Brier 0.071 worse than Polymarket (95% interval 0.020 to 0.125 over 28 markets)",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Model with Polymarket: Brier 0.004 better than Polymarket (95% interval -0.030 to 0.021 over 28 markets); the interval includes no difference",
+      ),
+    ).toBeVisible();
+  });
+
+  it("marks an unfinished run in the run history", async () => {
+    withEvaluationRun({ status: "running", progress: { completedMarkets: 3, totalMarkets: 30 }, overallMetrics: {} });
+
+    renderAt("/evaluation");
+
+    expect(await screen.findByText("Running, 3 of 30 markets")).toBeVisible();
+  });
+
   it("compares baselines on the paired sample and marks the best score", async () => {
     renderAt("/evaluation/runs/run-paired");
 
@@ -677,10 +899,10 @@ describe("evaluation run", () => {
   it("plots how well each baseline's probabilities were calibrated", async () => {
     renderAt("/evaluation/runs/run-paired");
 
-    const chart = await screen.findByRole("img", { name: /reliability/i });
+    const chart = await screen.findByRole("group", { name: /reliability/i });
     const legend = within(chart.closest("figure")!).getByRole("list", { name: /legend/i });
-    expect(within(legend).getByText("Base rate only")).toBeVisible();
-    expect(within(legend).getByText("Polymarket only")).toBeVisible();
+    expect(within(legend).getByRole("button", { name: "Base rate only" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(legend).getByRole("button", { name: "Polymarket only" })).toHaveAttribute("aria-pressed", "true");
   });
 });
 
@@ -695,6 +917,106 @@ describe("calibration", () => {
 
     expect(await screen.findByText("Brier score")).toBeVisible();
     expect(screen.getByText("0.21")).toBeVisible();
+  });
+
+  function withCalibrationSnapshots(list: unknown[], detail: Record<string, unknown>) {
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input.toString(), "http://localhost");
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.pathname === "/backtests/calibration-snapshots") return json(list);
+      if (method === "GET" && url.pathname === "/backtests/calibration-snapshots/snapshot-new") return json(detail);
+      if (method === "POST" && url.pathname === "/backtests/calibration-snapshots/snapshot-new/approve") {
+        await base(input, init);
+        return json({ ...detail, approved: true });
+      }
+      return base(input, init);
+    });
+  }
+
+  it("says judgments run uncalibrated while no snapshot is approved", async () => {
+    withCalibrationSnapshots([snapshots[0]], snapshotDetail(snapshots[0]!));
+
+    renderAt("/calibration");
+
+    const history = await screen.findByRole("list", { name: /snapshot history/i });
+    expect(within(history).queryByText(/in use/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/no snapshot is approved/i)).toBeVisible();
+  });
+
+  it("shows a failed held-out check and only approves the snapshot when asked to override it", async () => {
+    const user = userEvent.setup();
+    const failing = {
+      ...snapshots[0]!,
+      metrics: {
+        ...snapshots[0]!.metrics,
+        heldOut: { folds: 5, sampleSize: 24, brierIdentity: 0.212, brierCalibrated: 0.248, improves: false },
+      },
+    };
+    withCalibrationSnapshots([failing], snapshotDetail(failing));
+
+    renderAt("/calibration");
+
+    expect(await screen.findByText(/held-out check failed/i)).toBeVisible();
+    expect(screen.getByText(/0\.248 calibrated against 0\.212 uncalibrated/i)).toBeVisible();
+    const override = await screen.findByRole("button", { name: /approve anyway/i });
+    expect(screen.queryByRole("button", { name: /^approve snapshot$/i })).not.toBeInTheDocument();
+
+    await user.click(override);
+
+    await waitFor(() => {
+      expect(requests.find((request) => request.path.endsWith("/snapshot-new/approve"))?.body).toEqual({ force: true });
+    });
+  });
+
+  it("approves a snapshot that passed its held-out check without overriding anything", async () => {
+    const user = userEvent.setup();
+    const passing = {
+      ...snapshots[0]!,
+      metrics: {
+        ...snapshots[0]!.metrics,
+        heldOut: { folds: 5, sampleSize: 24, brierIdentity: 0.262, brierCalibrated: 0.214, improves: true },
+      },
+    };
+    withCalibrationSnapshots([passing], snapshotDetail(passing));
+
+    renderAt("/calibration");
+
+    expect(await screen.findByText(/held-out check passed/i)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /^approve snapshot$/i }));
+
+    await waitFor(() => {
+      expect(requests.find((request) => request.path.endsWith("/snapshot-new/approve"))?.body).toBeUndefined();
+    });
+  });
+
+  it("says what a snapshot was trained on", async () => {
+    const trained = {
+      ...snapshots[0]!,
+      metrics: {
+        ...snapshots[0]!.metrics,
+        trainingSources: { judgments: 4, replayForecasts: 176, groups: 28 },
+      },
+    };
+    withCalibrationSnapshots([trained], snapshotDetail(trained));
+
+    renderAt("/calibration");
+
+    expect(
+      await screen.findByText("4 resolved judgments and 176 replayed forecasts, from 28 markets and events"),
+    ).toBeVisible();
+  });
+
+  it("says how far market prices are trusted", async () => {
+    const fitted = {
+      ...snapshotDetail(snapshots[0]!),
+      marketPriorParams: { trustSlope: 0.84, trustIntercept: 0.02, fitted: true, sampleSize: 180 },
+    };
+    withCalibrationSnapshots([snapshots[0]], fitted);
+
+    renderAt("/calibration");
+
+    expect(await screen.findByText(/slope 0\.84 fitted on 180 benchmark prices/i)).toBeVisible();
   });
 });
 

@@ -956,6 +956,7 @@ describe("workspace app", () => {
           onlineLearningParams: {},
           metrics: {
             ece: 0.08,
+            heldOut: { folds: 5, sampleSize: 25, brierIdentity: 0.26, brierCalibrated: 0.22, improves: true },
           },
           weightRegime: "warming",
           resolvedOutcomeCount: 25,

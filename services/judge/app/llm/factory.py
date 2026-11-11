@@ -30,8 +30,20 @@ def _int_env(name: str, default: int) -> int:
     try:
         return max(1, int(value))
     except ValueError:
-        logger.warning("invalid integer for %s=%r; using default %d", name, value, default)
+        logger.warning(
+            "invalid integer for %s=%r; using default %d",
+            name,
+            value,
+            default,
+            extra={"event": "judge_config_invalid", "variable": name, "fallback": default},
+        )
         return default
+
+
+# Used when the caller sends no timeout of its own. Kept below the API's default
+# JUDGE_REQUEST_TIMEOUT_MS (360 s), so the judge stops paying for model calls before the
+# API stops waiting for the answer.
+DEFAULT_REQUEST_BUDGET_SECONDS = 330
 
 
 def _effort_env(name: str) -> str | None:
@@ -41,7 +53,7 @@ def _effort_env(name: str) -> str | None:
     return None if value == "off" else value
 
 
-def get_llm_client() -> LLMClient:
+def get_llm_client(request_budget_seconds: float | None = None) -> LLMClient:
     """Return the configured LLM client, falling back to FakeLLMClient.
 
     Real OpenRouter calls are only made when ``CASSANDRA_JUDGE_LLM`` is set to
@@ -51,6 +63,10 @@ def get_llm_client() -> LLMClient:
     ``OPENROUTER_JUDGE_MODELS`` (comma-separated, each optionally ``model@effort``)
     builds a multi-model judge ensemble; otherwise ``OPENROUTER_JUDGE_MODEL`` with
     ``OPENROUTER_JUDGE_REASONING_EFFORT`` is used as a single judge.
+
+    ``request_budget_seconds`` is how long this request may keep calling models; the
+    caller derives it from the API's own timeout. Without it, ``JUDGE_REQUEST_BUDGET_SECONDS``
+    applies.
     """
     backend = (os.environ.get("CASSANDRA_JUDGE_LLM") or "fake").strip().lower()
     api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
@@ -58,7 +74,8 @@ def get_llm_client() -> LLMClient:
     if backend == "openrouter" and not api_key:
         logger.warning(
             "CASSANDRA_JUDGE_LLM=openrouter but OPENROUTER_API_KEY is empty; "
-            "falling back to FakeLLMClient."
+            "falling back to FakeLLMClient.",
+            extra={"event": "judge_llm_key_missing", "backend": "fake"},
         )
     if backend != "openrouter" or not api_key:
         return FakeLLMClient()
@@ -75,6 +92,11 @@ def get_llm_client() -> LLMClient:
             "OPENROUTER_CROSS_EXAMINER_MAX_TOKENS", DEFAULT_CROSS_EXAMINER_MAX_TOKENS
         ),
         "search_max_tokens": _int_env("OPENROUTER_SEARCH_MAX_TOKENS", DEFAULT_SEARCH_MAX_TOKENS),
+        "request_budget_seconds": (
+            request_budget_seconds
+            if request_budget_seconds is not None
+            else float(_int_env("JUDGE_REQUEST_BUDGET_SECONDS", DEFAULT_REQUEST_BUDGET_SECONDS))
+        ),
         "utility_model": env("OPENROUTER_UTILITY_MODEL", DEFAULT_UTILITY_MODEL),
         "utility_reasoning_effort": (
             (os.environ.get("OPENROUTER_UTILITY_REASONING_EFFORT") or DEFAULT_UTILITY_REASONING_EFFORT).strip().lower()
@@ -88,7 +110,17 @@ def get_llm_client() -> LLMClient:
 
     if len(specs) <= 1:
         model, effort = specs[0] if specs else (env("OPENROUTER_JUDGE_MODEL", DEFAULT_JUDGE_MODEL), None)
-        logger.info("judge llm backend=openrouter judge_model=%s cross_model=%s", model, cross_model)
+        logger.info(
+            "judge llm backend=openrouter judge_model=%s cross_model=%s",
+            model,
+            cross_model,
+            extra={
+                "event": "judge_llm_configured",
+                "backend": "openrouter",
+                "judgeModels": [model],
+                "crossExaminerModel": cross_model,
+            },
+        )
         return OpenRouterLLMClient(
             judge_model=model,
             judge_reasoning_effort=effort or default_effort,
@@ -120,5 +152,11 @@ def get_llm_client() -> LLMClient:
         "judge llm backend=openrouter ensemble=%s cross_model=%s",
         [name for name, _ in members],
         cross_model,
+        extra={
+            "event": "judge_llm_configured",
+            "backend": "openrouter",
+            "judgeModels": [name for name, _ in members],
+            "crossExaminerModel": cross_model,
+        },
     )
     return EnsembleLLMClient(members, cross_examiner=cross_examiner, utility=cross_examiner)

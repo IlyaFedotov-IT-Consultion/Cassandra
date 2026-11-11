@@ -44,10 +44,56 @@ const MIN_RELIABLE_TRACES = 20;
 
 type SnapshotSummary = Awaited<ReturnType<typeof listCalibrationSnapshots>>[number];
 
-/** Mirrors the API's getLatestCalibrationSnapshot: newest approved, else newest. */
+/** Mirrors the API's getActiveCalibrationSnapshot: the newest approved snapshot, or none. */
 export function findSnapshotInUse(snapshots: SnapshotSummary[]) {
   const newestFirst = [...snapshots].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  return newestFirst.find((snapshot) => snapshot.approved) ?? newestFirst[0] ?? null;
+  return newestFirst.find((snapshot) => snapshot.approved) ?? null;
+}
+
+interface HeldOutCheck {
+  sampleSize: number;
+  brierIdentity: number;
+  brierCalibrated: number;
+  improves: boolean;
+}
+
+function readHeldOut(metrics: Record<string, unknown>): HeldOutCheck | null {
+  const heldOut = metrics.heldOut;
+
+  if (!heldOut || typeof heldOut !== "object") {
+    return null;
+  }
+
+  const { sampleSize, brierIdentity, brierCalibrated, improves } = heldOut as Record<string, unknown>;
+
+  return typeof brierIdentity === "number" && typeof brierCalibrated === "number"
+    ? { sampleSize: typeof sampleSize === "number" ? sampleSize : 0, brierIdentity, brierCalibrated, improves: improves === true }
+    : null;
+}
+
+/** What the snapshot learned from: live judgments that resolved, and replayed benchmark forecasts. */
+function describeTrainingSources(metrics: Record<string, unknown>) {
+  const sources = metrics.trainingSources;
+
+  if (!sources || typeof sources !== "object") {
+    return null;
+  }
+
+  const { judgments, replayForecasts, groups } = sources as Record<string, unknown>;
+
+  return typeof judgments === "number" && typeof replayForecasts === "number" && typeof groups === "number"
+    ? `${judgments} resolved judgments and ${replayForecasts} replayed forecasts, from ${groups} markets and events`
+    : null;
+}
+
+function describeMarketTrust(params: Record<string, unknown>) {
+  const sampleSize = typeof params.sampleSize === "number" ? params.sampleSize : 0;
+
+  if (params.fitted === true && typeof params.trustSlope === "number") {
+    return `Slope ${formatDecimal(params.trustSlope)} fitted on ${sampleSize} benchmark prices (1.00 means prices are used as they are)`;
+  }
+
+  return `Used as priced: ${sampleSize} resolved benchmark prices are too few to fit a correction`;
 }
 
 function readMetric(metrics: Record<string, unknown>, key: string) {
@@ -87,7 +133,7 @@ export function CalibrationPage() {
     enabled: Boolean(selectedSnapshotId),
   });
   const approveMutation = useMutation({
-    mutationFn: approveCalibrationSnapshot,
+    mutationFn: ({ id, force }: { id: string; force: boolean }) => approveCalibrationSnapshot(id, { force }),
     onSuccess(snapshot) {
       queryClient.setQueryData(
         ["calibration-snapshots"],
@@ -146,12 +192,17 @@ export function CalibrationPage() {
   const detail = snapshotDetailQuery.data?.id === selectedSnapshot?.id ? (snapshotDetailQuery.data ?? null) : null;
   const metrics = (selectedSnapshot?.metrics ?? {}) as Record<string, unknown>;
   const hasScores = typeof metrics.brierScore === "number";
+  const heldOut = readHeldOut(metrics);
+  const trainingSources = describeTrainingSources(metrics);
+  const changesForecasts = detail ? (detail.calibrationParams.method ?? "identity") !== "identity" : false;
+  // The API refuses to approve a map that is not shown to help; approving then needs an explicit override.
+  const needsOverride = changesForecasts && heldOut?.improves !== true;
 
   return (
     <div className="page-stack">
       <PageIntro
         title="Calibration"
-        description="Each snapshot maps raw ensemble probabilities onto observed outcome frequencies. Judgments use the newest approved snapshot, or the newest one when none is approved."
+        description="Each snapshot maps raw ensemble probabilities onto observed outcome frequencies. Judgments use the approved snapshot; until one is approved they run uncalibrated."
         actions={
           <button type="button" disabled={retrainMutation.isPending} onClick={() => retrainMutation.mutate()}>
             {retrainMutation.isPending ? "Retraining…" : "Retrain snapshot"}
@@ -164,6 +215,12 @@ export function CalibrationPage() {
             retrainMutation.error instanceof Error ? retrainMutation.error.message : "Unable to retrain calibration"
           }
         />
+      ) : null}
+      {snapshots.length > 0 && inUseId === null ? (
+        <p className="helper-text">
+          No snapshot is approved: judgments run uncalibrated, with equal judge weights and market prices used as
+          priced.
+        </p>
       ) : null}
       <section className="split-view">
         <SectionCard title="Snapshot history">
@@ -229,12 +286,35 @@ export function CalibrationPage() {
                   Not scored yet: this snapshot was trained before any judgment had a resolved outcome.
                 </p>
               ) : null}
+              {heldOut ? (
+                <p className="helper-text">
+                  <strong>{heldOut.improves ? "Held-out check passed." : "Held-out check failed."}</strong> On{" "}
+                  {heldOut.sampleSize} forecasts the map had not seen, the Brier score is{" "}
+                  {heldOut.brierCalibrated.toFixed(3)} calibrated against {heldOut.brierIdentity.toFixed(3)}{" "}
+                  uncalibrated (lower is better).
+                </p>
+              ) : changesForecasts ? (
+                <p className="helper-text">
+                  <strong>No held-out check.</strong> This snapshot changes forecasts but was never scored on
+                  forecasts it had not seen.
+                </p>
+              ) : null}
               <dl className="meta-list">
                 <div>
                   <dt>Calibration</dt>
                   <dd>
                     {detail ? describeCalibration(detail.calibrationParams) : "Loading…"}
                   </dd>
+                </div>
+                {trainingSources ? (
+                  <div>
+                    <dt>Trained on</dt>
+                    <dd>{trainingSources}</dd>
+                  </div>
+                ) : null}
+                <div>
+                  <dt>Market prices</dt>
+                  <dd>{detail ? describeMarketTrust(detail.marketPriorParams) : "Loading…"}</dd>
                 </div>
                 <div>
                   <dt>Weight regime</dt>
@@ -263,14 +343,25 @@ export function CalibrationPage() {
               <div className="detail-actions">
                 <button
                   type="button"
-                  disabled={approveMutation.isPending || selectedSnapshot.approved}
-                  onClick={() => approveMutation.mutate(selectedSnapshot.id)}
+                  disabled={approveMutation.isPending || selectedSnapshot.approved || !detail}
+                  onClick={() => approveMutation.mutate({ id: selectedSnapshot.id, force: needsOverride })}
                 >
-                  {approveMutation.isPending ? "Approving…" : selectedSnapshot.approved ? "Approved" : "Approve snapshot"}
+                  {approveMutation.isPending
+                    ? "Approving…"
+                    : selectedSnapshot.approved
+                      ? "Approved"
+                      : needsOverride
+                        ? "Approve anyway"
+                        : "Approve snapshot"}
                 </button>
-                {!selectedSnapshot.approved ? (
+                {selectedSnapshot.approved ? null : needsOverride ? (
+                  <p className="helper-text">
+                    Nothing shows this snapshot's calibration map improving forecasts. Approving it anyway makes
+                    judgments use it.
+                  </p>
+                ) : (
                   <p className="helper-text">Approving makes judgments use this snapshot.</p>
-                ) : null}
+                )}
               </div>
               {detail ? (
                 <details className="disclosure">

@@ -64,8 +64,8 @@ describe("repository layer", () => {
     expect(loaded?.marketSymbols).toEqual(["EXMPL"]);
   });
 
-  it("deduplicates evidence rows while preserving publishedAt", async () => {
-    const event = await createEvent(pool, {
+  async function evidenceEvent() {
+    return createEvent(pool, {
       question: "Will Example Corp launch Product X by 2026-12-31?",
       resolutionCriteria:
         "Counts only if Example Corp posts a general availability announcement on its official site.",
@@ -74,51 +74,90 @@ describe("repository layer", () => {
       referenceClass: "product_launch",
       marketSymbols: [],
     });
+  }
 
-    await insertEvidenceItems(pool, [
-      {
-        id: "11111111-1111-4111-8111-111111111111",
-        eventId: event.id,
-        sourceFamily: "web",
-        sourceType: "web_article",
-        title: "Example Corp teases Product X",
-        url: "https://news.example.com/product-x",
-        publisher: "Example News",
-        publishedAt: "2026-10-10T09:00:00Z",
-        retrievedAt: "2026-10-10T10:00:00Z",
-        summary: "Product X is expected this year.",
-        rawText: null,
-        entities: ["Example Corp", "Product X"],
-        claims: ["Product X may launch this year"],
-        stance: "supports",
-        qualitySignals: {},
-        metadata: {},
-      },
-      {
-        id: "22222222-2222-4222-8222-222222222222",
-        eventId: event.id,
-        sourceFamily: "web",
-        sourceType: "web_article",
-        title: "Example Corp teases Product X again",
-        url: "https://news.example.com/product-x",
-        publisher: "Example News",
-        publishedAt: "2026-10-10T09:00:00Z",
-        retrievedAt: "2026-10-10T11:00:00Z",
-        summary: "Same article discovered twice.",
-        rawText: null,
-        entities: ["Example Corp", "Product X"],
-        claims: ["Product X may launch this year"],
-        stance: "supports",
-        qualitySignals: {},
-        metadata: {},
-      },
+  function article(eventId: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id: "11111111-1111-4111-8111-111111111111",
+      eventId,
+      sourceFamily: "web" as const,
+      sourceType: "web_article" as const,
+      title: "Example Corp teases Product X",
+      url: "https://news.example.com/product-x",
+      publisher: "Example News",
+      publishedAt: "2026-10-10T09:00:00Z",
+      retrievedAt: "2026-10-10T10:00:00Z",
+      summary: "Product X is expected this year.",
+      rawText: null,
+      entities: ["Example Corp", "Product X"],
+      claims: ["Product X may launch this year"],
+      stance: "supports" as const,
+      qualitySignals: {},
+      metadata: {},
+      ...overrides,
+    };
+  }
+
+  it("stores an unchanged piece of evidence once, however often it is collected", async () => {
+    const event = await evidenceEvent();
+
+    const [first] = await insertEvidenceItems(pool, [article(event.id)]);
+    const [again] = await insertEvidenceItems(pool, [
+      article(event.id, { id: "22222222-2222-4222-8222-222222222222", retrievedAt: "2026-10-12T10:00:00Z" }),
     ]);
 
+    expect(again?.id).toBe(first?.id);
     const evidence = await listEvidenceForEvent(pool, event.id);
-
     expect(evidence).toHaveLength(1);
     expect(evidence[0]?.publishedAt).toBe("2026-10-10T09:00:00.000Z");
-    expect(evidence[0]?.url).toBe("https://news.example.com/product-x");
+  });
+
+  it("keeps the evidence an earlier judgment cited when the same page later says something else", async () => {
+    const event = await evidenceEvent();
+
+    const [cited] = await insertEvidenceItems(pool, [article(event.id)]);
+    const [revised] = await insertEvidenceItems(pool, [
+      article(event.id, { summary: "Example Corp has postponed Product X to next year." }),
+    ]);
+
+    expect(revised?.id).not.toBe(cited?.id);
+    const evidence = await listEvidenceForEvent(pool, event.id);
+    expect(evidence.find((item) => item.id === cited?.id)?.summary).toBe("Product X is expected this year.");
+    expect(evidence.find((item) => item.id === revised?.id)?.summary).toBe(
+      "Example Corp has postponed Product X to next year.",
+    );
+  });
+
+  it("stores each market quote, so an earlier judgment's price is not overwritten by a later one", async () => {
+    const event = await evidenceEvent();
+    const quote = (probability: number, at: string) =>
+      article(event.id, {
+        sourceFamily: "prediction_market",
+        sourceType: "quote_snapshot",
+        url: "https://polymarket.com/event/example-product-x",
+        publishedAt: at,
+        retrievedAt: at,
+        metadata: { probability },
+      });
+
+    const [earlier] = await insertEvidenceItems(pool, [quote(0.4, "2026-10-10T10:00:00Z")]);
+    await insertEvidenceItems(pool, [quote(0.7, "2026-10-12T10:00:00Z")]);
+
+    const evidence = await listEvidenceForEvent(pool, event.id);
+    expect(evidence).toHaveLength(2);
+    expect(evidence.find((item) => item.id === earlier?.id)?.metadata).toEqual({ probability: 0.4 });
+  });
+
+  it("treats an undated item as unchanged when only its placeholder date moved", async () => {
+    const event = await evidenceEvent();
+    const undated = (at: string) =>
+      article(event.id, { publishedAt: at, retrievedAt: at, metadata: { publishedAtSource: "unknown" } });
+
+    const [first] = await insertEvidenceItems(pool, [undated("2026-10-10T10:00:00Z")]);
+    const [again] = await insertEvidenceItems(pool, [undated("2026-10-12T10:00:00Z")]);
+
+    expect(again?.id).toBe(first?.id);
+    expect(await listEvidenceForEvent(pool, event.id)).toHaveLength(1);
   });
 
   it("remaps colliding evidence ids so distinct urls can both persist", async () => {

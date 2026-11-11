@@ -61,6 +61,7 @@ class _RecordingLLM(FakeLLMClient):
     def __init__(self, responses=None, *, fail_rating: bool = False) -> None:
         super().__init__(responses or {})
         self.panel_evidence: dict[str, list] = {}
+        self.base_rate_requests = 0
         self._fail_rating = fail_rating
 
     def judge_panel(self, *, judge_name, event, evidence, default_rationale, evaluation_time=None):
@@ -69,13 +70,17 @@ class _RecordingLLM(FakeLLMClient):
             judge_name=judge_name, event=event, evidence=evidence, default_rationale=default_rationale
         )
 
+    def estimate_base_rate(self, *, event, evaluation_time=None):
+        self.base_rate_requests += 1
+        return super().estimate_base_rate(event=event, evaluation_time=evaluation_time)
+
     def rate_evidence(self, *, event, evidence, evaluation_time=None):
         if self._fail_rating:
             raise LLMResponseError("rating model returned garbage")
         return super().rate_evidence(event=event, evidence=evidence, evaluation_time=evaluation_time)
 
 
-def _judge(evidence: list[dict], llm: FakeLLMClient) -> dict:
+def _judge(evidence: list[dict], llm: FakeLLMClient, **request_fields) -> dict:
     app.dependency_overrides[_llm_dependency] = lambda: llm
     try:
         response = client.post(
@@ -86,6 +91,7 @@ def _judge(evidence: list[dict], llm: FakeLLMClient) -> dict:
                 "evaluationTime": "2026-10-11T12:00:00Z",
                 "evidence": evidence,
                 "calibrationSnapshot": _snapshot(),
+                **request_fields,
             },
         )
     finally:
@@ -161,7 +167,7 @@ def test_trace_records_panel_cross_examination_aggregation_and_calibration_stage
     trace = _judge([_item("w1"), _item("w3")], _RecordingLLM(RATINGS))
 
     names = [stage["stage"] for stage in trace["pipelineStages"]]
-    assert names == ["relevance_rating", "panel_reasoning", "cross_examination", "aggregation", "calibration"]
+    assert names == ["relevance_rating", "prior", "panel_reasoning", "cross_examination", "aggregation", "calibration"]
     assert _stage(trace, "panel_reasoning")["details"]["models"] == "fake-llm"
 
 
@@ -189,3 +195,129 @@ def test_plan_endpoint_returns_deduplicated_sub_question_queries() -> None:
     payload = response.json()
     assert payload["subQuestions"] == ["Has Example Corp announced a date?", "Are retailers stocking Product X?"]
     assert payload["queries"] == ["Example Corp Product X launch date announcement", "Product X retail availability"]
+
+
+BASE_RATE = {"__base_rate__": {"probability": 0.1, "referenceClass": "product launches", "rationale": "Most slip."}}
+
+
+def test_estimated_base_rate_is_the_prior_when_no_market_is_bound() -> None:
+    trace = _judge([_item("w1"), _item("w3")], _RecordingLLM({**RATINGS, **BASE_RATE}))
+
+    assert abs(trace["priorProbability"] - 0.1) < 1e-9
+    stage = _stage(trace, "prior")
+    assert stage["status"] == "completed"
+    assert stage["details"]["source"] == "estimated_base_rate"
+    assert stage["details"]["rationale"] == "Most slip."
+    assert stage["details"]["referenceClass"] == "product launches"
+
+
+def test_a_bound_market_sets_the_prior_without_asking_for_a_base_rate() -> None:
+    llm = _RecordingLLM({**RATINGS, **BASE_RATE})
+
+    trace = _judge(
+        [_item("w1"), _item("w3"), _item("m1", "prediction_market", {"price": 0.8, "matchedBy": "id"})], llm
+    )
+
+    assert llm.base_rate_requests == 0
+    assert abs(trace["priorProbability"] - 0.8) < 1e-9
+    assert _stage(trace, "prior")["details"]["source"] == "market"
+
+
+def test_a_related_market_is_recorded_but_does_not_set_the_prior() -> None:
+    trace = _judge(
+        [_item("w1"), _item("w3"), _item("m1", "prediction_market", {"probability": 0.9, "matchedBy": "search"})],
+        _RecordingLLM({**RATINGS, **BASE_RATE}),
+    )
+
+    assert abs(trace["priorProbability"] - 0.1) < 1e-9
+    assert _stage(trace, "prior")["details"]["relatedMarketsIgnored"] == 1
+    assert _stage(trace, "aggregation")["details"]["marketPriorUsed"] is False
+
+
+def test_prior_stays_uninformed_when_no_base_rate_can_be_estimated() -> None:
+    trace = _judge([_item("w1"), _item("w3")], _RecordingLLM(RATINGS))
+
+    assert trace["priorProbability"] == 0.5
+    assert _stage(trace, "prior")["details"]["source"] == "uninformed"
+
+
+def test_a_failing_base_rate_estimate_falls_back_to_an_uninformed_prior() -> None:
+    class _FailingBaseRate(_RecordingLLM):
+        def estimate_base_rate(self, *, event, evaluation_time=None):
+            raise LLMResponseError("no usable estimate")
+
+    trace = _judge([_item("w1"), _item("w3")], _FailingBaseRate(RATINGS))
+
+    assert trace["status"] == "completed"
+    assert trace["priorProbability"] == 0.5
+    stage = _stage(trace, "prior")
+    assert stage["status"] == "failed"
+    assert "no usable estimate" in stage["details"]["error"]
+
+
+def test_an_extreme_base_rate_estimate_is_bounded() -> None:
+    llm = _RecordingLLM({**RATINGS, "__base_rate__": {"probability": 0.9999, "rationale": "Certain."}})
+
+    trace = _judge([_item("w1"), _item("w3")], llm)
+
+    assert abs(trace["priorProbability"] - 0.98) < 1e-9
+
+
+def test_a_prior_only_judgment_without_a_market_still_reports_the_estimated_base_rate() -> None:
+    llm = _RecordingLLM(BASE_RATE)
+
+    trace = _judge([_item("w1")], llm, priorOnly=True)
+
+    assert trace["status"] == "insufficient_evidence"
+    assert llm.panel_evidence == {}
+    assert abs(trace["finalProbability"] - 0.1) < 1e-9
+
+
+class _OfficialJudgeDown(_RecordingLLM):
+    def judge_panel(self, *, judge_name, event, evidence, default_rationale, evaluation_time=None):
+        if judge_name == "official_records":
+            raise LLMResponseError("upstream returned garbage")
+        return super().judge_panel(
+            judge_name=judge_name,
+            event=event,
+            evidence=evidence,
+            default_rationale=default_rationale,
+            evaluation_time=evaluation_time,
+        )
+
+
+def test_a_judge_whose_model_call_fails_abstains_and_the_others_still_decide() -> None:
+    llm = _OfficialJudgeDown({**RATINGS, "open_web_research": {"probability": 0.8, "evidenceStrength": "moderate_for", "rationale": "On track."}})
+
+    trace = _judge([_item("o1", "official"), _item("w1"), _item("w3")], llm)
+
+    assert trace["status"] == "completed"
+    by_name = {opinion["judgeName"]: opinion for opinion in trace["judgeOpinions"]}
+    assert by_name["official_records"]["evidenceStrength"] == "neutral"
+    assert by_name["official_records"]["effectiveLogOddsContribution"] == 0.0
+    assert any("upstream returned garbage" in warning for warning in by_name["official_records"]["warnings"])
+    assert by_name["open_web_research"]["effectiveLogOddsContribution"] > 0
+    assert trace["finalProbability"] > 0.5
+    assert "upstream returned garbage" in _stage(trace, "panel_reasoning")["details"]["failedJudges"]["official_records"]
+    # The evidence was there; the judge failed. That is not missing evidence.
+    assert all(record["sourceFamily"] != "official" for record in trace["missingEvidence"])
+
+
+def test_the_judgment_fails_when_every_judge_that_had_evidence_failed() -> None:
+    app.dependency_overrides[_llm_dependency] = lambda: _OfficialJudgeDown(RATINGS)
+    try:
+        response = client.post(
+            "/judge",
+            json={
+                "eventId": "event-stages",
+                "event": EVENT,
+                "evaluationTime": "2026-10-11T12:00:00Z",
+                "evidence": [_item("o1", "official"), _item("o2", "official")],
+                "calibrationSnapshot": _snapshot(),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    assert "official_records" in response.json()["detail"]

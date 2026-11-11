@@ -4,6 +4,7 @@ import type { CalibrationSnapshot, EvidenceItem, VerdictTrace } from "@cassandra
 import { describe, expect, it } from "vitest";
 
 import { getEnv } from "../src/config/env.js";
+import { InMemoryJudgeCacheStore } from "../src/modules/judgments/judgeCache.js";
 import type { EventRecord } from "../src/modules/events/repository.js";
 import {
   evaluateEventForecast,
@@ -159,11 +160,47 @@ describe("judge input selection", () => {
     const counts = countBy(calls[0]?.evidence ?? []);
     expect(counts.official).toBeGreaterThan(0);
     expect(counts.government).toBeGreaterThan(0);
-    expect((counts.official ?? 0) + (counts.government ?? 0)).toBeLessThanOrEqual(6);
     expect(counts.community).toBe(5);
+    // 18 panel slots in all: the slot the community judge could not fill went to another judge.
+    expect((calls[0]?.evidence ?? []).filter((item) => item.sourceFamily !== "prediction_market")).toHaveLength(18);
     expect(counts.web).toBeGreaterThan(0);
     expect(counts.llm_research).toBeGreaterThan(0);
     expect(counts.prediction_market).toBe(1);
+  });
+
+  it("gives a judge with more candidates the slots that judges with little evidence leave unused", async () => {
+    const collected = [
+      evidenceItem("official", 0),
+      ...Array.from({ length: 14 }, (_, index) => evidenceItem("web", index)),
+    ];
+    const { calls, client } = capturingJudgeClient(judgeTrace());
+
+    await evaluateEventForecast({
+      env: fixtureEnv,
+      event,
+      evaluationTime: "2026-06-10T00:00:00Z",
+      evidence: collected,
+      calibrationSnapshot: snapshot,
+      judgeClient: client,
+    });
+
+    expect(countBy(calls[0]?.evidence ?? [])).toEqual({ official: 1, web: 14 });
+  });
+
+  it("never sends the panel more than its total budget of slots", async () => {
+    const collected = Array.from({ length: 40 }, (_, index) => evidenceItem("web", index));
+    const { calls, client } = capturingJudgeClient(judgeTrace());
+
+    await evaluateEventForecast({
+      env: fixtureEnv,
+      event,
+      evaluationTime: "2026-06-10T00:00:00Z",
+      evidence: collected,
+      calibrationSnapshot: snapshot,
+      judgeClient: client,
+    });
+
+    expect(calls[0]?.evidence).toHaveLength(18);
   });
 
   it("delegates insufficient-evidence traces to the judge service in prior-only mode", async () => {
@@ -192,5 +229,33 @@ describe("judge input selection", () => {
     expect(calls[0]?.evidence.map((item) => item.id)).toEqual([market.id]);
     expect(trace.status).toBe("insufficient_evidence");
     expect(trace.priorProbability).toBe(0.72);
+  });
+
+  it("does not reuse a cached verdict after the market price moved", async () => {
+    const liveEnv = getEnv({ ...process.env, CASSANDRA_ADAPTER_MODE: "live", LOG_LEVEL: "silent" });
+    const judgeCacheStore = new InMemoryJudgeCacheStore();
+    const { calls, client } = capturingJudgeClient(judgeTrace());
+    const evidenceAt = (probability: number) => [
+      evidenceItem("web", 0),
+      evidenceItem("official", 1),
+      evidenceItem("prediction_market", 2, { probability, matchedBy: "id" }),
+    ];
+    const run = (probability: number) =>
+      evaluateEventForecast({
+        env: liveEnv,
+        event,
+        evaluationTime: "2026-06-10T00:00:00Z",
+        evidence: evidenceAt(probability),
+        calibrationSnapshot: snapshot,
+        judgeCacheStore,
+        judgeClient: client,
+      });
+
+    await run(0.4);
+    await run(0.4);
+    expect(calls).toHaveLength(1);
+
+    await run(0.7);
+    expect(calls).toHaveLength(2);
   });
 });

@@ -88,7 +88,7 @@ describe("evaluation repository", () => {
     expect(query.mock.calls[0]?.[0]).toContain("benchmark_set_id");
     expect(query.mock.calls[0]?.[1]).toContain(benchmark.benchmarkSetId);
     expect(query.mock.calls[1]?.[0]).toContain("WHERE benchmark_set_id = $1");
-    expect(query.mock.calls[1]?.[1]).toEqual([benchmark.benchmarkSetId]);
+    expect(query.mock.calls[1]?.[1]).toEqual([benchmark.benchmarkSetId, false]);
   });
 
   it("rejects reassigning a benchmark market to a different benchmark set", async () => {
@@ -119,7 +119,7 @@ describe("evaluation repository", () => {
     );
   });
 
-  it("syncs benchmark markets by deleting stale rows from a benchmark set", async () => {
+  it("syncs benchmark markets by retiring stale rows from a benchmark set", async () => {
     const query = vi.fn().mockResolvedValueOnce({
       rows: [{ id: "market-stale" }],
       rowCount: 1,
@@ -134,7 +134,7 @@ describe("evaluation repository", () => {
 
     expect(deleted).toBe(1);
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining("DELETE FROM benchmark_markets"),
+      expect.stringContaining("UPDATE benchmark_markets"),
       ["polymarket_recent_resolved", ["market-1", "market-2"]],
     );
   });
@@ -151,8 +151,8 @@ describe("evaluation repository", () => {
 
     expect(deleted).toBe(2);
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining("DELETE FROM benchmark_markets"),
-      ["polymarket_recent_resolved"],
+      expect.stringContaining("UPDATE benchmark_markets"),
+      ["polymarket_recent_resolved", []],
     );
   });
 

@@ -2,7 +2,7 @@ import { BenchmarkMarketSchema, type BenchmarkMarket } from "@cassandra/shared";
 import type { Pool } from "pg";
 
 import { assertLiveEvaluationMode } from "./liveMode.js";
-import { buildReplayCutoffs } from "./replay.js";
+import { buildMarketReplayCutoffs } from "./replay.js";
 import {
   syncBenchmarkMarkets,
   upsertBenchmarkMarkets,
@@ -17,17 +17,20 @@ export const RECENT_BENCHMARK_THEME_LIMIT = 12;
 const RECENT_BENCHMARK_MIN_OPEN_HOURS = 24;
 const HISTORY_LOOKBACK_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const HISTORY_FIDELITY_MINUTES = 60;
-const RECENT_BENCHMARK_PAGE_REQUESTS: ReadonlyArray<{ limit: number; offset?: number }> = [
-  { limit: 100 },
-  { limit: 100, offset: 100 },
-  { limit: 100, offset: 200 },
-  { limit: 100, offset: 300 },
-  { limit: 100, offset: 400 },
-  { limit: 100, offset: 500 },
-  { limit: 100, offset: 600 },
-  { limit: 100, offset: 700 },
-  { limit: 100, offset: 800 },
-] as const;
+const RECENT_BENCHMARK_PAGES = 9;
+const BENCHMARK_PAGE_SIZE = 100;
+
+/** How a benchmark set is chosen from recently resolved markets. Every field has a default. */
+export interface BenchmarkSelection {
+  /** How many markets to keep. */
+  limit?: number;
+  /** How far back a market may have resolved, in days. */
+  windowDays?: number;
+  /** The most markets kept from one theme. */
+  themeLimit?: number;
+  /** How many pages of recently closed markets to scan. */
+  pages?: number;
+}
 const THEME_PRIORITY = [
   "politics_elections",
   "macro_economics",
@@ -372,7 +375,10 @@ function isStructurallyCompatibleBenchmarkMarket(args: {
 
 function curateBenchmarkEntries(
   entries: NormalizedPolymarketBenchmarkEntry[],
+  selection: BenchmarkSelection = {},
 ): NormalizedPolymarketBenchmarkEntry[] {
+  const limit = selection.limit ?? RECENT_BENCHMARK_IMPORT_LIMIT;
+  const themeLimit = selection.themeLimit ?? RECENT_BENCHMARK_THEME_LIMIT;
   const groupedEntries = new Map<string, NormalizedPolymarketBenchmarkEntry[]>();
 
   for (const entry of entries) {
@@ -401,7 +407,7 @@ function curateBenchmarkEntries(
   const selectedEntries: NormalizedPolymarketBenchmarkEntry[] = [];
   const selectedByTheme = new Map<string, number>();
 
-  while (selectedEntries.length < RECENT_BENCHMARK_IMPORT_LIMIT) {
+  while (selectedEntries.length < limit) {
     let addedEntry = false;
 
     for (const theme of orderedThemes) {
@@ -411,7 +417,7 @@ function curateBenchmarkEntries(
         continue;
       }
 
-      if ((selectedByTheme.get(theme) ?? 0) >= RECENT_BENCHMARK_THEME_LIMIT) {
+      if ((selectedByTheme.get(theme) ?? 0) >= themeLimit) {
         continue;
       }
 
@@ -425,7 +431,7 @@ function curateBenchmarkEntries(
       selectedByTheme.set(theme, (selectedByTheme.get(theme) ?? 0) + 1);
       addedEntry = true;
 
-      if (selectedEntries.length >= RECENT_BENCHMARK_IMPORT_LIMIT) {
+      if (selectedEntries.length >= limit) {
         break;
       }
     }
@@ -528,8 +534,9 @@ function normalizePolymarketBenchmarkEntries(
 function filterRecentBenchmarkEntries(
   entries: NormalizedPolymarketBenchmarkEntry[],
   now: Date,
+  windowDays = RECENT_BENCHMARK_WINDOW_DAYS,
 ): NormalizedPolymarketBenchmarkEntry[] {
-  const cutoffMillis = now.getTime() - RECENT_BENCHMARK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const cutoffMillis = now.getTime() - windowDays * 24 * 60 * 60 * 1000;
 
   return entries.filter(
     (entry) => new Date(entry.market.resolvedAt).getTime() >= cutoffMillis,
@@ -620,7 +627,7 @@ async function buildBenchmarkPriceSnapshots(args: {
       continue;
     }
 
-    for (const cutoff of buildReplayCutoffs(entry.market.resolvedAt)) {
+    for (const cutoff of buildMarketReplayCutoffs(entry.market)) {
       const probability = await fetchSnapshotAtCutoff({
         clobBaseUrl: args.clobBaseUrl,
         fetchImpl: args.fetchImpl,
@@ -650,10 +657,15 @@ async function buildBenchmarkPriceSnapshots(args: {
 async function fetchResolvedPolymarketMarkets(args: {
   baseUrl: string;
   fetchImpl: typeof fetch;
+  pages?: number;
 }): Promise<PolymarketMarketPayload[]> {
   const marketsById = new Map<string, PolymarketMarketPayload>();
 
-  for (const pageRequest of RECENT_BENCHMARK_PAGE_REQUESTS) {
+  const pageRequests = Array.from({ length: args.pages ?? RECENT_BENCHMARK_PAGES }, (_, page) =>
+    page === 0 ? { limit: BENCHMARK_PAGE_SIZE } : { limit: BENCHMARK_PAGE_SIZE, offset: page * BENCHMARK_PAGE_SIZE },
+  ) as Array<{ limit: number; offset?: number }>;
+
+  for (const pageRequest of pageRequests) {
     const url = new URL("/markets", args.baseUrl);
     url.searchParams.set("closed", "true");
     url.searchParams.set("uma_resolution_status", "resolved");
@@ -698,6 +710,7 @@ export async function importResolvedPolymarketBenchmarks(args: {
   benchmarkSetId?: string;
   mode?: "fixture" | "live";
   now?: Date;
+  selection?: BenchmarkSelection;
 }): Promise<BenchmarkMarket[]> {
   assertLiveEvaluationMode({
     CASSANDRA_ADAPTER_MODE: args.mode ?? "live",
@@ -708,12 +721,14 @@ export async function importResolvedPolymarketBenchmarks(args: {
       await fetchResolvedPolymarketMarkets({
         baseUrl: args.baseUrl,
         fetchImpl: args.fetchImpl ?? fetch,
+        pages: args.selection?.pages,
       }),
       args.benchmarkSetId,
     ),
     args.now ?? new Date(),
+    args.selection?.windowDays,
   );
-  return curateBenchmarkEntries(entries).map((entry) => entry.market);
+  return curateBenchmarkEntries(entries, args.selection).map((entry) => entry.market);
 }
 
 export async function importAndStoreResolvedPolymarketBenchmarks(args: {
@@ -724,6 +739,7 @@ export async function importAndStoreResolvedPolymarketBenchmarks(args: {
   benchmarkSetId?: string;
   mode?: "fixture" | "live";
   now?: Date;
+  selection?: BenchmarkSelection;
 }): Promise<BenchmarkMarket[]> {
   assertLiveEvaluationMode({
     CASSANDRA_ADAPTER_MODE: args.mode ?? "live",
@@ -735,12 +751,14 @@ export async function importAndStoreResolvedPolymarketBenchmarks(args: {
       await fetchResolvedPolymarketMarkets({
         baseUrl: args.baseUrl,
         fetchImpl,
+        pages: args.selection?.pages,
       }),
       args.benchmarkSetId,
     ),
     args.now ?? new Date(),
+    args.selection?.windowDays,
   );
-  const curatedEntries = curateBenchmarkEntries(entries);
+  const curatedEntries = curateBenchmarkEntries(entries, args.selection);
   const insertedMarkets = await upsertBenchmarkMarkets(
     args.pool,
     curatedEntries.map((entry) => entry.market),

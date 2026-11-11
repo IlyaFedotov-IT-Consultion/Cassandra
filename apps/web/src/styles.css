@@ -715,43 +715,11 @@ textarea::placeholder {
   padding-left: 1.1rem;
 }
 
-/* ---- How the forecast moved ---- */
-
-.flow {
-  display: grid;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.flow__row {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--rule);
-}
-
-.flow__row strong {
-  font-family: var(--font-figure);
-  font-weight: 400;
-  white-space: nowrap;
-}
-
-.flow__row--total {
-  border-top: 2px solid var(--ink);
-  border-bottom: 0;
-  font-size: 1.125rem;
-}
-
-.flow__row--total strong {
-  color: var(--signal);
-}
-
 /* ---- Judges ---- */
 
 .judge-grid {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: 16px;
 }
 
@@ -762,20 +730,8 @@ textarea::placeholder {
   padding: 20px 22px;
 }
 
-.judge-card:has(> .sample-table) {
-  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr);
-  column-gap: 32px;
-}
-
 .judge-card > * {
-  grid-column: 1;
   min-width: 0;
-}
-
-.judge-card > .sample-table {
-  grid-column: 2;
-  grid-row: 1 / span 4;
-  align-self: start;
 }
 
 .judge-card--idle {
@@ -797,7 +753,7 @@ textarea::placeholder {
 .judge-card__figures {
   display: grid;
   grid-template-columns: repeat(3, max-content);
-  gap: 8px 32px;
+  gap: 8px 24px;
   margin: 0;
 }
 
@@ -1825,6 +1781,547 @@ tbody th[scope="row"] {
 .reliability__notes {
   display: grid;
   gap: 14px;
+}
+
+/* ---- Chart interaction: hit areas, focus, states ---- */
+
+.chart__hit {
+  fill: transparent;
+  stroke: none;
+}
+
+.chart__point {
+  cursor: pointer;
+  outline: none;
+  transition: opacity 120ms ease;
+}
+
+.chart__point[data-state="dimmed"] {
+  opacity: 0.22;
+}
+
+.chart__point[data-state="active"] .chart__dot,
+.chart__point:focus-visible .chart__dot {
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+
+.chart__point:focus-visible .chart__hit {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+.chart__dot--other {
+  fill: var(--ink-soft);
+}
+
+.chart__dot--hollow {
+  fill: var(--plate);
+  stroke-width: 2;
+}
+
+.chart__dot--hollow.chart__dot--series-1 { stroke: var(--series-1); }
+.chart__dot--hollow.chart__dot--series-2 { stroke: var(--series-2); }
+.chart__dot--hollow.chart__dot--series-3 { stroke: var(--series-3); }
+.chart__dot--hollow.chart__dot--series-4 { stroke: var(--series-4); }
+.chart__dot--hollow.chart__dot--other { stroke: var(--ink-soft); }
+
+.chart__band {
+  fill: var(--signal);
+  fill-opacity: 0.1;
+  stroke: none;
+}
+
+.chart__crosshair {
+  stroke: var(--ink-soft);
+  stroke-width: 1;
+}
+
+.chart__final {
+  stroke: var(--signal);
+  stroke-width: 2;
+}
+
+.chart__outcome line {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+.chart__annotation {
+  fill: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chart__row-label {
+  fill: var(--ink);
+  font-family: var(--font-title);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chart__judge-tick {
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.chart__focus-frame {
+  border-radius: var(--radius-small);
+}
+
+.chart__focus-frame:focus {
+  outline: none;
+}
+
+.chart__focus-frame:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 4px;
+}
+
+.chart__plot--selectable {
+  cursor: pointer;
+}
+
+.chart__hint {
+  margin-top: 6px;
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+}
+
+.chart-tooltip--start {
+  transform: translate(-12px, calc(-100% - 12px));
+}
+
+.chart-tooltip--end {
+  transform: translate(calc(-100% + 12px), calc(-100% - 12px));
+}
+
+.chart-tooltip strong {
+  font-family: var(--font-figure);
+  font-size: 0.9375rem;
+  font-weight: 400;
+}
+
+.chart-tooltip__quote {
+  max-width: 280px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.24);
+  white-space: normal;
+}
+
+/* A readout panel under a diagram: the detail for whatever is hovered or focused. */
+.chart-readout {
+  min-height: 2.9em;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--ink);
+  background: var(--plate-sunk);
+  color: var(--ink);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.chart-table {
+  margin-top: 12px;
+}
+
+/* ---- Legend toggles ---- */
+
+.chart-legend__toggle {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  background: var(--plate);
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+
+.chart-legend__toggle:hover {
+  border-color: var(--rule-strong);
+  background: var(--plate);
+  color: var(--ink);
+}
+
+.chart-legend__toggle[aria-pressed="true"] {
+  border-color: var(--ink);
+  background: var(--plate-sunk);
+  color: var(--ink);
+}
+
+/* A show/hide toggle that is off: its series is not drawn, so its key fades too. */
+.chart-legend__toggle--visibility[aria-pressed="false"] .chart-legend__swatch,
+.chart-legend__toggle--visibility[aria-pressed="false"] .chart-legend__dot {
+  opacity: 0.35;
+}
+
+.chart-legend__dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.chart-legend__dot--series-0 { background: var(--ink-soft); }
+.chart-legend__dot--series-1 { background: var(--series-1); }
+.chart-legend__dot--series-2 { background: var(--series-2); }
+.chart-legend__dot--series-3 { background: var(--series-3); }
+.chart-legend__dot--series-4 { background: var(--series-4); }
+
+.chart-legend__dot--hollow {
+  border: 2px solid var(--ink-soft);
+  background: var(--plate);
+}
+
+.chart-legend__tick {
+  flex: none;
+  width: 2px;
+  height: 14px;
+  border-radius: 1px;
+  background: var(--ink);
+}
+
+.chart-legend__swatch--final {
+  background: var(--signal);
+}
+
+/* ---- Segmented control ---- */
+
+.segmented {
+  display: inline-flex;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-small);
+}
+
+.segmented__option {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: var(--plate);
+  color: var(--ink);
+}
+
+.segmented__option + .segmented__option {
+  border-left: 1px solid var(--rule-strong);
+}
+
+.segmented__option:hover {
+  background: var(--plate-sunk);
+}
+
+.segmented__option[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--plate);
+}
+
+/* ---- How the forecast moved: one row per step ---- */
+
+.path-chart {
+  margin: 0;
+}
+
+.path-chart__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 14px;
+}
+
+.path-chart__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.path-chart__row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 12rem) minmax(0, 1fr) 6rem;
+  align-items: center;
+  column-gap: 12px;
+}
+
+.path-chart__rows .path-chart__row {
+  border-radius: var(--radius-small);
+  cursor: default;
+}
+
+.path-chart__rows .path-chart__row:focus {
+  outline: none;
+}
+
+.path-chart__rows .path-chart__row:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.path-chart__rows .path-chart__row[data-state="active"] {
+  background: var(--plate-sunk);
+}
+
+.path-chart__label {
+  padding-left: 8px;
+  color: var(--ink);
+  font-size: 0.875rem;
+  line-height: 1.2;
+}
+
+.path-chart__row--prior .path-chart__label,
+.path-chart__row--final .path-chart__label {
+  font-weight: 600;
+}
+
+.path-chart__cell {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.path-chart__axis,
+.path-chart__track {
+  display: block;
+  overflow: visible;
+}
+
+.path-chart__connector {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+}
+
+.path-chart__step {
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.path-chart__head {
+  fill: var(--ink);
+}
+
+.path-chart__row--shrinkage .path-chart__step,
+.path-chart__row--calibration .path-chart__step,
+.path-chart__row--adjustment .path-chart__step {
+  stroke: var(--ink-soft);
+}
+
+.path-chart__row--shrinkage .path-chart__head,
+.path-chart__row--calibration .path-chart__head,
+.path-chart__row--adjustment .path-chart__head {
+  fill: var(--ink-soft);
+}
+
+.path-chart__start {
+  fill: var(--plate);
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+
+.path-chart__end {
+  fill: var(--signal);
+  stroke: var(--plate);
+  stroke-width: 2;
+}
+
+.path-chart__still {
+  fill: var(--ink-soft);
+}
+
+.path-chart__value {
+  display: grid;
+  justify-items: end;
+  padding-right: 8px;
+  line-height: 1.15;
+}
+
+.path-chart__value strong {
+  font-family: var(--font-figure);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.path-chart__value small {
+  color: var(--ink-soft);
+  font-family: var(--font-figure);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.path-chart__row--final .path-chart__value strong {
+  color: var(--signal);
+}
+
+/* Narrow layout: the plot takes the label's column; each name sits above its arrow. */
+.path-chart__frame--compact .path-chart__row {
+  grid-template-columns: minmax(0, 1fr) 4.5rem;
+  column-gap: 8px;
+}
+
+.path-chart__inline-label {
+  fill: var(--ink);
+  font-size: 12px;
+  paint-order: stroke;
+  stroke: var(--plate);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.path-chart__row--prior .path-chart__inline-label,
+.path-chart__row--final .path-chart__inline-label {
+  font-weight: 600;
+}
+
+.path-chart__rows .path-chart__row[data-state="active"] .path-chart__inline-label {
+  stroke: var(--plate-sunk);
+}
+
+/* ---- Evidence flow ---- */
+
+.flow-diagram {
+  margin: 0;
+}
+
+.flow-funnel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
+  gap: 12px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flow-funnel__stage {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.flow-funnel__label {
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+}
+
+.flow-funnel__count {
+  font-family: var(--font-figure);
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.flow-funnel__bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--grid);
+}
+
+.flow-funnel__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--ink);
+}
+
+.flow-funnel__note {
+  margin: 10px 0 14px;
+  max-width: 80ch;
+}
+
+.flow-diagram__plot {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.flow-link {
+  fill: var(--ink);
+  fill-opacity: 0.16;
+  transition: fill-opacity 120ms ease;
+}
+
+.flow-link[data-state="active"] {
+  fill-opacity: 0.42;
+}
+
+.flow-link[data-state="muted"] {
+  fill-opacity: 0.05;
+}
+
+.flow-node {
+  cursor: pointer;
+  outline: none;
+  transition: opacity 120ms ease;
+}
+
+.flow-node[data-state="muted"] {
+  opacity: 0.5;
+}
+
+.flow-node__hit {
+  fill: transparent;
+}
+
+.flow-node:focus-visible .flow-node__hit {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+.flow-node__bar {
+  fill: var(--ink);
+}
+
+.flow-node[data-failed] .flow-node__bar {
+  fill: var(--bad);
+}
+
+.flow-node__label {
+  fill: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.flow-node__count {
+  fill: var(--ink-soft);
+  font-family: var(--font-figure);
+  font-size: 10px;
+}
+
+@media (max-width: 640px) {
+  .path-chart__row {
+    grid-template-columns: minmax(5.5rem, 7.5rem) minmax(0, 1fr) 4.25rem;
+    column-gap: 8px;
+  }
+
+  .path-chart__label {
+    padding-left: 4px;
+    font-size: 0.8125rem;
+  }
+
+  .path-chart__value {
+    padding-right: 4px;
+  }
+
+  .flow-node__label {
+    font-size: 11px;
+  }
+
+  .flow-node__count {
+    font-size: 9px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart__point,
+  .flow-link,
+  .flow-node {
+    transition: none;
+  }
 }
 
 /* ---- Narrow screens: the rail becomes a header ---- */
