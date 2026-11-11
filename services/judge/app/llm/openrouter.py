@@ -489,10 +489,22 @@ class OpenRouterLLMClient(LLMClient):
                 response = self._http.post(url, headers=headers, json=body)
             except httpx.TimeoutException as exc:
                 last_error = exc
-                logger.warning("openrouter timeout (attempt %d/%d): %s", attempt + 1, self._retries + 1, exc)
+                logger.warning(
+                    "openrouter timeout (attempt %d/%d): %s",
+                    attempt + 1,
+                    self._retries + 1,
+                    exc,
+                    extra={"event": "openrouter_retry", "reason": "timeout", "attempt": attempt + 1},
+                )
             except httpx.HTTPError as exc:
                 last_error = exc
-                logger.warning("openrouter http error (attempt %d/%d): %s", attempt + 1, self._retries + 1, exc)
+                logger.warning(
+                    "openrouter http error (attempt %d/%d): %s",
+                    attempt + 1,
+                    self._retries + 1,
+                    exc,
+                    extra={"event": "openrouter_retry", "reason": "http_error", "attempt": attempt + 1},
+                )
             else:
                 if response.status_code in RETRYABLE_STATUS:
                     last_error = LLMTransportError(
@@ -503,6 +515,12 @@ class OpenRouterLLMClient(LLMClient):
                         response.status_code,
                         attempt + 1,
                         self._retries + 1,
+                        extra={
+                            "event": "openrouter_retry",
+                            "reason": "retryable_status",
+                            "statusCode": response.status_code,
+                            "attempt": attempt + 1,
+                        },
                     )
                 elif response.status_code >= 400:
                     raise LLMTransportError(
@@ -554,6 +572,12 @@ class OpenRouterLLMClient(LLMClient):
                     model,
                     max_tokens,
                     retry_tokens,
+                    extra={
+                        "event": "openrouter_truncated_retry",
+                        "model": model,
+                        "maxTokens": max_tokens,
+                        "retryMaxTokens": retry_tokens,
+                    },
                 )
                 max_tokens = retry_tokens
 

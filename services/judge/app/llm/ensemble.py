@@ -8,7 +8,6 @@ factors for the evidence strength, which is robust to one outlying member.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from math import exp, log
 from statistics import median
 
@@ -23,6 +22,7 @@ from app.llm.client import (
     SearchResult,
 )
 from app.models_generated import EventInput, EvidenceItem
+from app.observability import ContextThreadPoolExecutor
 from app.scoring.strength_map import DEFAULT_STRENGTH_TO_LOG_BF
 from app.scoring.types import RawJudgeOpinion
 
@@ -112,7 +112,7 @@ class EnsembleLLMClient(LLMClient):
             except LLMError as error:
                 return name, None, error
 
-        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(self._members))) as pool:
+        with ContextThreadPoolExecutor(max_workers=min(self._max_workers, len(self._members))) as pool:
             results = list(pool.map(ask, self._members))
 
         samples = [

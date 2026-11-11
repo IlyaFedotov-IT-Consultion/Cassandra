@@ -30,7 +30,13 @@ def _int_env(name: str, default: int) -> int:
     try:
         return max(1, int(value))
     except ValueError:
-        logger.warning("invalid integer for %s=%r; using default %d", name, value, default)
+        logger.warning(
+            "invalid integer for %s=%r; using default %d",
+            name,
+            value,
+            default,
+            extra={"event": "judge_config_invalid", "variable": name, "fallback": default},
+        )
         return default
 
 
@@ -58,7 +64,8 @@ def get_llm_client() -> LLMClient:
     if backend == "openrouter" and not api_key:
         logger.warning(
             "CASSANDRA_JUDGE_LLM=openrouter but OPENROUTER_API_KEY is empty; "
-            "falling back to FakeLLMClient."
+            "falling back to FakeLLMClient.",
+            extra={"event": "judge_llm_key_missing", "backend": "fake"},
         )
     if backend != "openrouter" or not api_key:
         return FakeLLMClient()
@@ -88,7 +95,17 @@ def get_llm_client() -> LLMClient:
 
     if len(specs) <= 1:
         model, effort = specs[0] if specs else (env("OPENROUTER_JUDGE_MODEL", DEFAULT_JUDGE_MODEL), None)
-        logger.info("judge llm backend=openrouter judge_model=%s cross_model=%s", model, cross_model)
+        logger.info(
+            "judge llm backend=openrouter judge_model=%s cross_model=%s",
+            model,
+            cross_model,
+            extra={
+                "event": "judge_llm_configured",
+                "backend": "openrouter",
+                "judgeModels": [model],
+                "crossExaminerModel": cross_model,
+            },
+        )
         return OpenRouterLLMClient(
             judge_model=model,
             judge_reasoning_effort=effort or default_effort,
@@ -120,5 +137,11 @@ def get_llm_client() -> LLMClient:
         "judge llm backend=openrouter ensemble=%s cross_model=%s",
         [name for name, _ in members],
         cross_model,
+        extra={
+            "event": "judge_llm_configured",
+            "backend": "openrouter",
+            "judgeModels": [name for name, _ in members],
+            "crossExaminerModel": cross_model,
+        },
     )
     return EnsembleLLMClient(members, cross_examiner=cross_examiner, utility=cross_examiner)

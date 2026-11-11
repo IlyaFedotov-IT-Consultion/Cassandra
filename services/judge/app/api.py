@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from math import exp, log
 from urllib.parse import urlparse
@@ -13,6 +12,7 @@ from app.llm import LLMClient, get_llm_client
 from app.llm.client import LLMError
 from app.models import CalibrationRequest, JudgeRequest, PlanRequest, VerdictTrace
 from app.models_generated import EvidenceItem
+from app.observability import ContextThreadPoolExecutor
 from app.scoring.aggregate import aggregate_posterior
 from app.scoring.calibration import apply_probability_calibration, fit_calibration_snapshot
 from app.scoring.judges.community_signal import evaluate as evaluate_community_signal
@@ -207,7 +207,7 @@ def _build_judge_trace(request: JudgeRequest, llm: LLMClient) -> VerdictTrace:
     # The three judges are independent (and may each fan out to an ensemble), so run them
     # concurrently; result order stays fixed.
     panel = (evaluate_official_records, evaluate_community_signal, evaluate_open_web_research)
-    with ThreadPoolExecutor(max_workers=len(panel)) as pool:
+    with ContextThreadPoolExecutor(max_workers=len(panel)) as pool:
         raw_opinions = list(
             pool.map(
                 lambda evaluate: evaluate(
